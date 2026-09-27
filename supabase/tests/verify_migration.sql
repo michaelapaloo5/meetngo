@@ -689,15 +689,22 @@ select count(*) as probes,
 \echo ''
 \echo '-- 5. match_offers_for_trip and the single-winner accept_offer --'
 
+-- match_offers_for_trip is revoked from anon and authenticated, so it is called
+-- here as service_role, which is exactly how Task 6's request-ride Edge Function
+-- calls it. The refusal for a signed-in caller is section 6 probe 36, because
+-- that probe has to catch the error rather than let it abort the statement.
+set local role service_role;
+insert into t_rpc (seq, probe, expectation, observed) values
+  (1, 'match_offers_for_trip is still callable by service_role, the Task 6 path', :'driver_c',
+   (select coalesce(string_agg(driver_id::text, ',' order by driver_id::text), '<none>')
+      from match_offers_for_trip(:'trip_a')));
+reset role;
+
 -- Probe 2 must run before probe 3: it proves a non-owner is refused while the
 -- offer is still pending, not after it has already been accepted.
 set local role authenticated;
 set local request.jwt.claim.sub = :'rider_a';
 insert into t_rpc (seq, probe, expectation, observed) values
-  (1, 'match_offers_for_trip keeps only online, approved, located drivers within 5 km',
-   :'driver_c',
-   (select coalesce(string_agg(driver_id::text, ',' order by driver_id::text), '<none>')
-      from match_offers_for_trip(:'trip_a'))),
   (2, 'the trip owner cannot accept a driver offer on their own trip', 'false',
    (select coalesce(accepted::text, '<no row>') from accept_offer(:'offer_c')));
 reset role;
@@ -999,7 +1006,15 @@ insert into write_probe (ord, seq, as_role, as_sub, widen_grant, probe, expectat
   -- 33: the anon key that ships in the APK has no UPDATE on trips at all.
   (35, 35, 'anon', '', false,
    'anon key updates a trip', 'blocked 42501',
-   $$update trips set state = 'completed' where id = 'a0000000-0000-4000-8000-000000000004'$$);
+   $$update trips set state = 'completed' where id = 'a0000000-0000-4000-8000-000000000004'$$),
+  -- The last unguarded SECURITY DEFINER surface. A signed-in caller with a real
+  -- subject must be refused outright, not quietly given an empty candidate list,
+  -- so the expected outcome is the permission error itself and the runner records
+  -- the SQLSTATE rather than swallowing it. The service-role half of this pair is
+  -- section 5 probe 1.
+  (36, 36, 'authenticated', '11111111-1111-4111-8111-111111111111', false,
+   'a signed-in rider cannot read the driver candidate list for a trip', 'blocked 42501',
+   $$select * from match_offers_for_trip('a0000000-0000-4000-8000-000000000001')$$);
 
 do $$
 declare
@@ -1037,30 +1052,30 @@ begin
 end
 $$;
 
--- 36-38: reads the removed driver directory policy used to expose. With no
+-- 37-39: reads the removed driver directory policy used to expose. With no
 -- role = 'driver' SELECT policy, a signed-in rider sees exactly one profiles
 -- row, their own, and the anon key that ships in the APK sees none.
 set local role authenticated;
 set local request.jwt.claim.sub = :'rider_a';
 insert into t_write (seq, probe, expectation, observed) values
-  (36, 'a rider sees no driver rows through the profiles table', '0',
+  (37, 'a rider sees no driver rows through the profiles table', '0',
    (select count(*)::text from profiles where role = 'driver')),
-  (37, 'a rider sees only their own profiles row', '1',
+  (38, 'a rider sees only their own profiles row', '1',
    (select count(*)::text from profiles));
 reset role;
 set local role anon;
 set local request.jwt.claim.sub = '';
 insert into t_write (seq, probe, expectation, observed) values
-  (38, 'the anon key reads no profiles row at all, so no KYC PII leaks', '0',
+  (39, 'the anon key reads no profiles row at all, so no KYC PII leaks', '0',
    (select count(*)::text from profiles));
 reset role;
 
--- 39-40: the signup path. handle_new_user ran when the fixture inserted these
+-- 40-41: the signup path. handle_new_user ran when the fixture inserted these
 -- two auth.users rows, and every other column took its default.
 insert into t_write (seq, probe, expectation, observed) values
-  (39, 'a signup asking for role admin gets a rider', 'rider',
+  (40, 'a signup asking for role admin gets a rider', 'rider',
    (select role::text from profiles where id = :'signup_x')),
-  (40, 'a signup asking for role driver gets a driver with default KYC', 'driver|notStarted|5.0|0',
+  (41, 'a signup asking for role driver gets a driver with default KYC', 'driver|notStarted|5.0|0',
    (select role::text || '|' || kyc_status::text || '|' || rating::text || '|' || trip_count::text
       from profiles where id = :'signup_d'));
 

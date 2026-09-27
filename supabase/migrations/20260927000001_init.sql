@@ -253,6 +253,29 @@ as $$
   limit 5;
 $$;
 
+-- Service-role only. Hosted Supabase grants EXECUTE on every public function to
+-- anon and authenticated, and this one is SECURITY DEFINER, so any caller who
+-- learned a foreign trip_id could read which drivers are online, KYC-approved and
+-- within 5 km of that pickup, with their ids and their distances. That is the
+-- same class of leak as the accept_offer ownership hole, and this is the last
+-- unguarded SECURITY DEFINER surface in the schema.
+--
+-- Do not "fix" this with an `auth.uid() is not null` guard or a party-membership
+-- check. Task 6's request-ride Edge Function calls it with the service-role
+-- client, and a service-role PostgREST request carries no request.jwt.claim.sub,
+-- so auth.uid() is null there and either guard would make the candidate query
+-- return nothing and every ride request would find zero drivers. EXECUTE is
+-- already granted to service_role, so this revoke is the whole change.
+--
+-- `public` has to be in the list, and omitting it leaves the hole open.
+-- PostgreSQL grants EXECUTE on every function to PUBLIC by default and Supabase
+-- does not take that away, so the ACL still reads `=X/postgres` after revoking
+-- from anon and authenticated alone. anon and authenticated are members of
+-- PUBLIC implicitly, so a signed-in caller still got through. Revoking from
+-- public as well is what actually closes it; service_role keeps its explicit
+-- grant.
+revoke execute on function match_offers_for_trip(uuid) from public, anon, authenticated;
+
 -- Single-winner offer acceptance.
 --
 -- Lock order is trip first, then offer, and it has to stay that way. Each caller
