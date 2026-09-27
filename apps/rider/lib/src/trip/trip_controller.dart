@@ -8,10 +8,16 @@ import 'receipt_screen.dart' show Settlement;
 /// The settlement and the demo payment, as state a screen can read and a test can
 /// drive.
 ///
-/// Both calls are the only outlets on this class, and an exception escaping
-/// either reaches the framework as an unhandled async error rather than as
-/// anything the rider can read, so both catch. Both also apply the discipline
-/// Task 10 applied to `sosRaised` on `TrackingController`:
+/// All three of these methods are the only outlets on this class, and anything
+/// escaping one reaches the framework as an unhandled async error rather than as
+/// anything the rider can read, so all three catch. The catch is on `Object` and
+/// not on `Exception`, and that is load-bearing rather than defensive: a 200
+/// whose `trip` lacks a column throws a `TypeError` out of `Trip.fromJson`, and
+/// a `TypeError` is an `Error`, not an `Exception`. Measured with such a body
+/// before this was widened, `complete()` threw `_TypeError` out of the method
+/// with `error == null` -- the unreadable failure this paragraph exists to
+/// prevent. All three also apply the discipline Task 10 applied to `sosRaised` on
+/// `TrackingController`:
 ///
 ///  * every failure path sets `error`, and **none** of them clears
 ///    `settlement`. A receipt that was already on screen and a rating that then
@@ -22,8 +28,8 @@ import 'receipt_screen.dart' show Settlement;
 ///
 /// There is deliberately no client-side `canTransition(state, completed)` guard
 /// on `complete`, even though `TrackingController.cancel` has one. The local trip
-/// is a cache: the driver's app moves the state under it, so a rider whose copy
-/// still says `arriving` is exactly the rider whose call the server would
+/// is a cache: the driver's app moves the state under the rider, so a rider whose
+/// copy still says `arriving` is exactly the rider whose call the server would
 /// accept. The function refuses a trip that is not `completed` with a 409 whose
 /// `error` key this class reports, and that refusal is made against the row the
 /// database holds.
@@ -93,7 +99,7 @@ class TripController extends ChangeNotifier {
         if (stars != null) 'rating': {'stars': stars, 'comment': comment},
       });
       _apply(data);
-    } on Exception catch (e) {
+    } on Object catch (e) {
       // `settlement` is deliberately untouched. It is not cleared here, and not
       // set to null, because a failed call is not evidence that the money did
       // not move -- and a screen that blanks a total it already showed is
@@ -129,7 +135,7 @@ class TripController extends ChangeNotifier {
       });
       final state = _paymentStateOf(data['state']);
       if (state != null) _paymentState = state;
-    } on Exception catch (e) {
+    } on Object catch (e) {
       _report(e);
     } finally {
       _busy = false;
@@ -143,7 +149,7 @@ class TripController extends ChangeNotifier {
     try {
       final fresh = await trips.activeTrip();
       if (fresh != null) _trip = fresh;
-    } on Exception catch (e) {
+    } on Object catch (e) {
       // The trip on screen is left as it was: a failed read is not evidence
       // about the trip, and replacing it with nothing would take away the only
       // thing a settlement screen has to show.
@@ -153,16 +159,16 @@ class TripController extends ChangeNotifier {
   }
 
   void _apply(Map<String, dynamic> data) {
-    // The row the function echoed is the row the database holds, and the local
-    // copy can be a state behind: the driver's app moves the state under the
-    // rider. `Trip.fromJson` casts with `as` and no null case, so a row that
-    // does not parse throws a `TypeError` -- an `Error`, not an `Exception` --
-    // which is deliberately not caught here, the same rule
-    // `TrackingController` follows for `activeTrip`: a malformed row is a
-    // programming fault and reporting it as "could not reach the server" would
-    // be a worse lie. `busy` is still cleared on the way out, by the `finally`.
-    final trip = data['trip'];
-    if (trip is Map) _trip = Trip.fromJson(trip.cast<String, dynamic>());
+    // The **money first, the row last**, and the order is the point rather than
+    // the order the body would read most naturally in. `Trip.fromJson` casts with
+    // `as` and no null case, so a row that does not parse throws a `TypeError`,
+    // and whatever is read before the throw is what survives it. Applied in this
+    // order, a response whose `trip` is unreadable still leaves the rider a total
+    // and a payment state, which are the two facts a receipt exists to show, and
+    // `trip` keeps the copy the controller already had. The throw is caught one
+    // level up by `complete`'s `on Object` and reported by `_report` as a row
+    // this app cannot read, not as a network failure: the response arrived, so
+    // claiming otherwise would be a lie.
     final settlement = _settlementOf(data['settlement']);
     if (settlement != null) _settlement = settlement;
     final paymentState = _paymentStateOf(data['paymentState']);
@@ -178,10 +184,26 @@ class TripController extends ChangeNotifier {
           ? reason
           : 'Your rating was not saved';
     }
+    // The row the function echoed is the row the database holds, and the local
+    // copy can be a state behind: the driver's app moves the state under the
+    // rider. Read last, for the reason at the top of this method.
+    final trip = data['trip'];
+    if (trip is Map) _trip = Trip.fromJson(trip.cast<String, dynamic>());
   }
 
-  void _report(Exception e) {
-    _error = e is TripRequestFailure ? e.message : _unreachable;
+  /// The message for a failure, and which of the three buckets it fell into.
+  ///
+  /// An `Object` rather than an `Exception`, because the clause that calls this
+  /// is `on Object` and a `TypeError` from a row this app cannot read is the case
+  /// that most needs a message. It is deliberately **not** reported as a network
+  /// failure: the response arrived, and "Could not reach the server" on a screen
+  /// that already has a receipt on it is a lie the rider cannot act on.
+  void _report(Object failure) {
+    if (failure is TripRequestFailure) {
+      _error = failure.message;
+      return;
+    }
+    _error = failure is Exception ? _unreachable : _unreadable;
   }
 
   /// A number off a JSON body, or null when it is not one. A `num` is what a
@@ -219,4 +241,9 @@ class TripController extends ChangeNotifier {
   /// assertion, say, which is an `Error` and not an `Exception` and is
   /// deliberately not caught.
   static const _unreachable = 'Could not reach the server';
+
+  /// For a response this app could not read: a row missing a column
+  /// `Trip.fromJson` casts, or a fault in this file. Distinct from
+  /// [_unreachable] so a rider is never told the server is down when it answered.
+  static const _unreadable = 'The trip details could not be read';
 }

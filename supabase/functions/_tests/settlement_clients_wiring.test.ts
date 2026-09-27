@@ -1,4 +1,4 @@
-import { assert } from 'https://deno.land/std@0.224.0/testing/asserts.ts';
+import { assert, assertEquals } from 'https://deno.land/std@0.224.0/testing/asserts.ts';
 
 // Static assertions over the two port builders this task ships:
 // `complete-trip/clients.ts` and `demo-pay/index.ts`.
@@ -30,15 +30,18 @@ const strip = (path: string) =>
     // comment and passes on a real change.
     .then((raw) => raw.replace(/^\s*\/\/.*$/gm, ''));
 
-const [completeSource, demoSource, completeIndex, demoIndex] = await Promise.all([
-  strip('../complete-trip/clients.ts'),
-  strip('../demo-pay/index.ts'),
-  strip('../complete-trip/index.ts'),
-  // Read twice on purpose: the port builder above is asserted on the client
-  // construction, and the wiring on the request's own text, and the two live in
-  // the same file.
-  strip('../demo-pay/index.ts'),
-]);
+const [completeSource, demoSource, completeIndex, demoIndex, rowsSource, handlerSource] =
+  await Promise.all([
+    strip('../complete-trip/clients.ts'),
+    strip('../demo-pay/index.ts'),
+    strip('../complete-trip/index.ts'),
+    // Read twice on purpose: the port builder above is asserted on the client
+    // construction, and the wiring on the request's own text, and the two live in
+    // the same file.
+    strip('../demo-pay/index.ts'),
+    strip('../_shared/rows.ts'),
+    strip('../complete-trip/handler.ts'),
+  ]);
 
 const has = (body: string, pattern: RegExp): boolean =>
   pattern.test(body.replace(/\s+/g, ' '));
@@ -329,4 +332,68 @@ Deno.test('the index files authenticate through the port and refuse a bare token
       `${name} must authenticate through the port, not a client of its own`,
     );
   }
+});
+
+// --- the two shared response rules ---------------------------------------
+
+Deno.test('both builders import the shared rules and re-declare neither of them', () => {
+  // `ok()` is the only place a PostgREST error becomes a string, and a builder
+  // that re-inlined a copy of it would be invisible to `_tests/rows.test.ts`,
+  // which pins the shared one. These two assertions are what make the pin in that
+  // file a statement about the builders and not only about a module nothing uses.
+  for (const [name, source] of [
+    ['complete-trip/clients.ts', completeSource],
+    ['demo-pay/index.ts', demoSource],
+  ] as const) {
+    assert(
+      has(source, /import\s*\{\s*first\s*,\s*ok\s*\}\s*from\s*'\.\.\/_shared\/rows\.ts'/),
+      `${name} must import first and ok from _shared/rows.ts`,
+    );
+    assert(
+      !has(source, /const\s+ok\s*=/),
+      `${name} must not declare its own ok(); a second copy is the defect this move removed`,
+    );
+    assert(
+      !has(source, /const\s+first\s*=/),
+      `${name} must not declare its own first()`,
+    );
+  }
+  // And the shared module is the two rules and nothing else, so a third thing
+  // cannot quietly arrive in it with an import of its own that nothing pins.
+  assert(
+    has(rowsSource, /export const ok = \(error: \{ message: string \} \| null\): string \| null =>/),
+    '_shared/rows.ts must declare ok() with the error-or-null signature the ports use',
+  );
+  assert(
+    has(rowsSource, /error\?\.message \?\? null/),
+    '_shared/rows.ts must read the message off the error, and answer null when there is none',
+  );
+});
+
+// --- the decision decides the kinds --------------------------------------
+
+Deno.test('both ledger writes take their kinds from the decision, not a literal', () => {
+  // A mutation here survives every behavioural test in this task, and the reason
+  // is worth writing down rather than discovering again: `handleComplete` calls
+  // `settleAgainstTripState` itself, so a fake `Deps` cannot change the decision,
+  // and for every *reachable* decision the charge path's kinds are exactly
+  // `['fare', 'commission']`. Making the handler write that pair by hand instead
+  // of reading `decision.ledgerKinds` therefore changes nothing observable today.
+  // Measured: that mutation passes all 36 handler tests and all 220 in the suite.
+  //
+  // So it is pinned structurally, the same way the reused row's `state` is: by
+  // asserting the coupling rather than hoping a reachable state diverges. The
+  // mutation that *is* behavioural -- `ledgerKinds: ['fare']` on a completed trip
+  // -- is pinned by the money identity in `complete_trip_handler.test.ts`, and it
+  // dies there because the entries are counted.
+  const calls = handlerSource.match(/ledgerEntriesFor\(\s*decision\.ledgerKinds\s*,\s*settlement\s*\)/g) ?? [];
+  assertEquals(
+    calls.length,
+    2,
+    'both the void path and the charge path must take their kinds from decision.ledgerKinds',
+  );
+  assert(
+    !/ledgerEntriesFor\(\s*\[/.test(handlerSource),
+    'no call may pass a literal kind list; the decision decides what is written',
+  );
 });

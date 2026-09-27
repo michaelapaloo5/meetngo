@@ -30,6 +30,7 @@ Trip completedTrip() => Trip(
 Widget wrap({
   PaymentState state = PaymentState.succeeded,
   void Function(int stars, String comment)? onRated,
+  Settlement? settlement,
 }) =>
     ScreenUtilInit(
       designSize: const Size(390, 844),
@@ -37,11 +38,17 @@ Widget wrap({
         theme: MngTheme.light,
         home: ReceiptScreen(
           trip: completedTrip(),
-          settlement: const Settlement(
-            fareGhs: 20.40,
-            commissionGhs: 3.06,
-            driverPayoutGhs: 17.34,
-          ),
+          // The fare is a parameter because the long money is what makes the
+          // itemised rows overflow. Pinned at GHS 20.40 they are nowhere near
+          // the card's edge at 200%, so a fixture that only ever renders
+          // `GHS 20.40` cannot fail when their width guards are removed --
+          // which is exactly what a fixture that cannot fail looks like.
+          settlement: settlement ??
+              const Settlement(
+                fareGhs: 20.40,
+                commissionGhs: 3.06,
+                driverPayoutGhs: 17.34,
+              ),
           paymentState: state,
           onRated: onRated ?? (_, _) {},
         ),
@@ -194,6 +201,64 @@ void main() {
     await tester.pumpWidget(wrap());
     await tester.pump();
     expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('no overflow at 200% with a fare of nine digits', (tester) async {
+    // The fixture above is the one that cannot fail. `GHS 20.40` is nine
+    // characters and the card is 350 logical pixels wide, so the receipt's own
+    // money rows have slack to spare at 200% -- and a width guard on them can
+    // be deleted without anything going red. `numeric(10,2)` holds eight digits
+    // before the point (`init.sql:61`), so `GHS 99999999.99` is a fare the
+    // database can actually hold, and the two money rows are then 63 and 35
+    // pixels past the card's edge with their guards removed and 120 and 120 at
+    // `GHS 112221.00`. Measured by applying the mutation and reading the
+    // `RenderFlex` message, not predicted.
+    useDesignSurface(tester);
+    tester.platformDispatcher.textScaleFactorTestValue = 2.0;
+    addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
+    await tester.pumpWidget(wrap(
+      settlement: const Settlement(
+        fareGhs: 99999999.99,
+        commissionGhs: 14999999.99,
+        driverPayoutGhs: 84999999.99,
+      ),
+    ));
+    await tester.pump();
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('the money is scaled down to fit, not clipped, on every money row',
+      (tester) async {
+    // `FittedBox` is the half that does the work on both rows, and it is the half
+    // no overflow assertion can pin: a `Flexible` on its own keeps the value
+    // inside the Row by *clipping* it, which throws nothing and prints the wrong
+    // amount. Measured matrix at 200%, by deleting each half in turn:
+    //
+    //   total row   both clean | neither 58px | `Flexible` only clean (clips)
+    //              | `FittedBox` only 58px
+    //   itemised    both clean | neither 63px+35px at GHS 112221.00
+    //              | `Flexible` only clean (clips) | `FittedBox` only 63px+35px
+    //
+    // So this asserts the presence of the wrapper, which is the only thing that
+    // can catch the clipping variant. It pins the mechanism rather than the
+    // outcome; the outcome is pinned by the two tests above, which catch the
+    // whole wrapper going.
+    useDesignSurface(tester);
+    await tester.pumpWidget(wrap());
+    expect(
+      find.ancestor(
+        of: find.byKey(const Key('receiptTotal')),
+        matching: find.byType(FittedBox),
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.ancestor(
+        of: find.text('GHS 17.34'),
+        matching: find.byType(FittedBox),
+      ),
+      findsOneWidget,
+    );
   });
 
   testWidgets('submitting without a star selection is blocked', (tester) async {

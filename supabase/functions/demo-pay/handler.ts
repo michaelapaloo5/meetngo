@@ -41,8 +41,8 @@ export interface DemoPayDeps {
   // Resolves a bearer token to a user id, the same port `complete-trip` has and
   // for the same reason: `index.ts` authenticates with `getUser(token)` and a
   // port is the only way to do that without the handler importing supabase-js.
-  // `error` and `userId` are both checked by the caller, because `getUser`
-  // answers a revoked token with a null user *and* an error.
+  // As there, only `userId` is checked -- a null `callerId` is the 401 -- and
+  // `error` is carried for the house shape rather than read.
   authenticate(token: string): Promise<{ userId: string | null; error: string | null }>;
   // The same two answers as `complete-trip`'s read ports: a database error and
   // an absent row are different statuses, so the port carries both.
@@ -116,6 +116,12 @@ export async function handleDemoPay(input: {
   // that was paid. A double tap on a pay button is not a rare event, it is the
   // reason this branch exists.
   if (open) {
+    // `open.state` and not a literal `pending`, and the port is what decides:
+    // `clients` filters this read on `state = 'pending'`, so a reused row is
+    // pending today, and hardcoding it would make the response disagree with the
+    // row it echoes the moment that filter moved. The test answers with a row
+    // whose state is **not** `pending` precisely so the assertion can tell the
+    // echo from the literal.
     return json(200, { payment: open, state: open.state });
   }
 
@@ -130,5 +136,9 @@ export async function handleDemoPay(input: {
   if (createError) return json(500, { error: createError });
   if (!created) return json(500, { error: 'payment was not written' });
 
+  // As above: the state reported is the state of the row that was written, read
+  // back off the port. A real provider's confirmation would arrive as a
+  // `succeeded` row, and a literal here would report `pending` for a charge the
+  // provider has already taken.
   return json(200, { payment: created, state: created.state });
 }

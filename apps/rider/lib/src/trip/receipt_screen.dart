@@ -66,11 +66,16 @@ class ReceiptScreen extends StatelessWidget {
                     _row('Distance', '${trip.distanceKm.toStringAsFixed(1)} km'),
                     _row('Driver payout', 'GHS ${settlement.driverPayoutGhs.toStringAsFixed(2)}'),
                     Divider(color: MngColors.divider, height: 24.h),
-                    // `Flexible` plus `FittedBox` on the value, not a bare `Row` of
-                    // two `Text`s: at 200% text scale the total is 40px of type
-                    // and a bare `Row` overflows the card by exactly that much.
-                    // The label ellipsizes and the money scales down, so the
-                    // receipt cannot overflow and cannot clip a total to nothing.
+                    // `Flexible` plus `FittedBox` on the value, not a bare `Row`
+                    // of two `Text`s. The title is 20px of type
+                    // (`app_theme.dart:39-40`) and so is 40px of it at 200%, and
+                    // the bare `Row` then overflows the card by 58 pixels --
+                    // measured by deleting both wrappers and reading the
+                    // `RenderFlex` message at `GHS 20.40`; at
+                    // `GHS 99999999.99` it is 300. The label ellipsizes and the
+                    // money scales down, so the receipt can neither overflow nor
+                    // clip a total to nothing. Which half does the work is
+                    // measured in the test file: `FittedBox`, not `Flexible`.
                     Row(
                       children: [
                         Flexible(
@@ -131,9 +136,13 @@ class ReceiptScreen extends StatelessWidget {
 
   Widget _row(String label, String value) => Padding(
         padding: EdgeInsets.symmetric(vertical: 6.h),
-        // The same width discipline as the total row: the label ellipsizes and
-        // the value scales down, so a long value at 200% text scale is small
-        // rather than an overflow stripe.
+        // The same width discipline as the total row, and the same measured
+        // asymmetry: at `GHS 20.40` these rows are nowhere near the card's edge
+        // at 200% and the wrapper is doing nothing, and at `GHS 112221.00` the
+        // money rows overflow it by 63 and 35 pixels with the wrapper removed.
+        // `numeric(10,2)` holds eight digits before the point
+        // (`init.sql:61`), so that fare is one the database can hold. The label
+        // ellipsizes and the value scales down.
         child: Row(
           children: [
             Flexible(

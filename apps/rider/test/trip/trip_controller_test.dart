@@ -251,6 +251,42 @@ void main() {
     expect(c.error, isNull);
   });
 
+  test('a trip row this app cannot read is an error, and keeps the money', () async {
+    // `rider_id` deleted from the echoed row. `Trip.fromJson` casts it with
+    // `as String`, so this throws a `TypeError`, and a `TypeError` is an `Error`
+    // and not an `Exception` -- so a catch on `Exception` does not see it.
+    // Measured on this host before the catch was widened: `complete()` threw
+    // `_TypeError` out of the method with `error == null` and `settlement == null`,
+    // which is an unreadable failure on a method whose whole contract is that
+    // the rider can read one. The order in `_apply` is what keeps the money: a
+    // bad row costs the row, not the total.
+    final body = settledBody();
+    final echoed = <String, dynamic>{...body['trip']! as Map<String, dynamic>};
+    echoed.remove('rider_id');
+    final functions = FakeTripFunctions()
+      ..answer = {
+        ...body,
+        'trip': echoed,
+      };
+    final c = controllerWith(functions: functions, initialTrip: tripInState(TripState.ongoing));
+
+    await expectLater(c.complete(), completes);
+
+    expect(c.error, isNotNull);
+    // Not "Could not reach the server": the response arrived, and telling the
+    // rider the server is down when it answered is a lie they cannot act on.
+    expect(c.error, isNot('Could not reach the server'));
+    expect(c.error, contains('could not be read'));
+    // The two facts the receipt exists for survive a row this app cannot parse.
+    expect(c.settlement, isNotNull);
+    expect(c.settlement!.driverPayoutGhs, 17.34);
+    expect(c.paymentState, PaymentState.succeeded);
+    // And the trip on screen is the copy the controller already had, not null.
+    expect(c.trip, isNotNull);
+    expect(c.trip!.state, TripState.ongoing);
+    expect(c.busy, isFalse);
+  });
+
   test('a failed rating insert is an error and the settlement still stands', () async {
     // The function answers 200 with `ratingState: 'failed'` on purpose: the money
     // is already written and a rating must not unsettle it. The rider still has
@@ -407,10 +443,11 @@ void main() {
   });
 }
 
-/// Stands in for the raw transport exception a direct HTTP call lets through,
-/// so the controller's `on Exception` clause is exercised by something that
-/// behaves the way the real one does. `http` is not a dependency of this
-/// package, so its `ClientException` cannot be named here.
+/// Stands in for the raw transport exception an HTTP call lets through, so the
+/// controller's `on Object` clause is exercised by something that behaves the way
+/// the real one does -- an `Exception`, and so routed to "Could not reach the
+/// server" rather than to the unreadable-response message. `http` is not a
+/// dependency of this package, so its `ClientException` cannot be named here.
 class FakeTransportException implements Exception {
   const FakeTransportException();
 }

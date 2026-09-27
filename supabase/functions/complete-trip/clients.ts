@@ -20,6 +20,10 @@
 // `request-ride/index.ts`, `offers/clients.ts` and `cancel-trip/clients.ts` all
 // use.
 import { createClient, type SupabaseClient } from 'https://esm.sh/@supabase/supabase-js@2.45.4';
+// `first` and `ok` are shared with `demo-pay` and live apart from both builders
+// so a test can reach them without importing supabase-js; `_shared/rows.ts` gives
+// the measurement, and `_tests/rows.test.ts` pins them.
+import { first, ok } from '../_shared/rows.ts';
 import type {
   CompleteDeps,
   LedgerEntryInput,
@@ -27,11 +31,6 @@ import type {
   RatingInput,
   TripRow,
 } from './handler.ts';
-
-const first = <T>(rows: T[] | null): T | null =>
-  (Array.isArray(rows) ? rows[0] ?? null : null);
-
-const ok = (error: { message: string } | null) => error?.message ?? null;
 
 /**
  * PostgreSQL's SQLSTATE for `unique_violation`, which is what

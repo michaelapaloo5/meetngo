@@ -80,9 +80,14 @@ export interface RatingInput {
 }
 
 export interface CompleteDeps {
-  // Resolves a bearer token to a user id. `error` and `userId` are both checked:
-  // `getUser` answers a revoked or malformed token with a null user *and* an
-  // error, and either alone is enough to refuse.
+  // Resolves a bearer token to a user id. **Only `userId` is checked**: this
+  // handler takes the identity as its `callerId` argument and answers 401 on a
+  // null one, and the port's `error` is carried for the house shape -- Task 10's
+  // `CancelDeps.authenticate` and Task 6's `OfferDeps.authenticate` both declare
+  // it, and both of *their* handlers do check both
+  // (`cancel-trip/handler.ts:110-111`, `offers/handler.ts:88-89`). Nothing in
+  // this file reads it, so a comment here claiming otherwise is a claim about
+  // code that is not there.
   authenticate(token: string): Promise<{ userId: string | null; error: string | null }>;
   findTrip(tripId: string): Promise<{ row: TripRow | null; error: string | null }>;
   /**
@@ -267,16 +272,17 @@ export async function handleComplete(input: {
       const { row: voided, error: voidError } = await deps.markPaymentVoided(payment.id);
       if (voidError) return json(500, { error: 'void write failed' });
       if (!voided) return json(404, { error: 'payment not found' });
-      // A `void` entry of **zero**, not a negative one. The charge being voided
-      // never became a credit, so the driver's record of this trip is nothing
-      // rather than a debit. `kind` is one of the five the CHECK allows
-      // (`init.sql:126`) and `ledger_entries.driver_id` is `not null`
+      // One entry, of the kind the decision asked for -- `['void']` for every
+      // state that reaches here. `ledger_entries.driver_id` is `not null`
       // (`init.sql:123`), which is why this is written only when the trip has a
-      // driver at all.
+      // driver at all; the amount, a zero rather than a negative, is
+      // `ledgerEntriesFor`'s.
       if (trip.driver_id) {
-        const written = await deps.writeLedger(trip.id, trip.driver_id, [
-          { kind: 'void', amountGhs: 0, note: 'Trip was not completed, charge voided' },
-        ]);
+        const entries = ledgerEntriesFor(decision.ledgerKinds, settlement);
+        if (entries === null) {
+          return json(500, { error: 'settlement asked for a ledger entry this build does not know' });
+        }
+        const written = await deps.writeLedger(trip.id, trip.driver_id, entries);
         if (!written.ok) {
           return json(500, { error: 'void ledger write failed' });
         }
@@ -298,30 +304,32 @@ export async function handleComplete(input: {
     if (!paid) return json(404, { error: 'payment not found' });
   }
   if (trip.driver_id) {
-    // The money identity. The two amounts must sum to
-    // `Settlement.driverPayoutGhs` and to `payouts.amount_ghs`, and they do by
-    // construction rather than by coincidence:
+    // The money identity, and the kinds come from `decision.ledgerKinds` rather
+    // than from a second hand-written list. The decision is what worked out what
+    // this trip owes, so a copy of the two kinds written out here could disagree
+    // with it: `ledgerKinds: ['fare']` on a completed trip was a mutation no test
+    // could see, because the handler wrote its own pair whatever the decision
+    // said. It cannot now -- fewer kinds, fewer rows -- and the identity is
+    // asserted over what the fakes were asked to write, not over an expression in
+    // the test.
     //
-    //   - the `fare` entry is the **gross** `settlement.fareGhs`;
-    //   - the `commission` entry is `-(fareGhs - driverPayoutGhs)`, *derived*
-    //     and not `settlement.commissionGhs`.
-    //
-    // The draft had the fare entry carrying the **net** payout *and* a negative
-    // commission against the same `driver_id`, which is `not null`
-    // (`init.sql:123`). That netted 14.28 against a 17.34 payout, and
-    // `ledger_entries` is the driver's only per-trip record of what they are
-    // owed, so the error was permanent. Deriving the commission from the payout
-    // keeps the pair summing correctly even if `settleFare`'s rounding ever
-    // moves: the sum is an identity in the code, not a coincidence of two
-    // independently rounded numbers.
-    const { ok: ledgerOk } = await deps.writeLedger(trip.id, trip.driver_id, [
-      { kind: 'fare', amountGhs: settlement.fareGhs, note: 'Trip fare' },
-      {
-        kind: 'commission',
-        amountGhs: -(settlement.fareGhs - settlement.driverPayoutGhs),
-        note: 'Platform commission 15%',
-      },
-    ]);
+    // The two amounts must sum to `Settlement.driverPayoutGhs` and to
+    // `payouts.amount_ghs`, and they do by construction rather than by
+    // coincidence: the `fare` entry is the **gross** `settlement.fareGhs`, and
+    // the `commission` entry is `-(fareGhs - driverPayoutGhs)`, derived and not
+    // `settlement.commissionGhs`. The draft had the fare entry carrying the
+    // **net** payout *and* a negative commission against the same `driver_id`,
+    // which is `not null` (`init.sql:123`); that netted 14.28 against a 17.34
+    // payout, and `ledger_entries` is the driver's only per-trip record of what
+    // they are owed, so the error would have been permanent. Deriving the
+    // commission from the payout keeps the pair summing correctly even if
+    // `settleFare`'s rounding ever moves: the sum is an identity in the code, not
+    // a coincidence of two independently rounded numbers.
+    const entries = ledgerEntriesFor(decision.ledgerKinds, settlement);
+    if (entries === null) {
+      return json(500, { error: 'settlement asked for a ledger entry this build does not know' });
+    }
+    const { ok: ledgerOk } = await deps.writeLedger(trip.id, trip.driver_id, entries);
     if (!ledgerOk) return json(500, { error: 'ledger write failed' });
 
     const { ok: payoutOk } = await deps.writePayout(
@@ -333,6 +341,51 @@ export async function handleComplete(input: {
   }
 
   return json(200, { trip, settlement, paymentState: decision.paymentState, ...await rateTrip(input, trip, deps) });
+}
+
+/**
+ * The `ledger_entries` rows a decision asks for, or null for a kind this build
+ * does not have an amount for.
+ *
+ * `settleAgainstTripState` decides which kinds a trip owes and this turns that
+ * list into rows, so the two cannot drift: the list the decision reports is the
+ * list that is written, and a test can read both off the same call. The three
+ * kinds are the three `settleAgainstTripState` can return, and each is one of
+ * the five `ledger_entries.kind`'s CHECK allows (`init.sql:126`).
+ *
+ * The commission's amount is **derived** from the payout,
+ * `-(fareGhs - driverPayoutGhs)`, and not read off `commissionGhs`, so the pair
+ * sums to the payout by construction. It is the arithmetic `settleFare` already
+ * did, restated here only because the row is written by a different function in
+ * a different file.
+ */
+export function ledgerEntriesFor(
+  kinds: string[],
+  settlement: { fareGhs: number; driverPayoutGhs: number },
+): LedgerEntryInput[] | null {
+  const entries: LedgerEntryInput[] = [];
+  for (const kind of kinds) {
+    switch (kind) {
+      case 'fare':
+        entries.push({ kind, amountGhs: settlement.fareGhs, note: 'Trip fare' });
+        break;
+      case 'commission':
+        entries.push({
+          kind,
+          amountGhs: -(settlement.fareGhs - settlement.driverPayoutGhs),
+          note: 'Platform commission 15%',
+        });
+        break;
+      case 'void':
+        // Zero, not a negative: the charge being voided never became a credit,
+        // so the driver's record of this trip is nothing rather than a debit.
+        entries.push({ kind, amountGhs: 0, note: 'Trip was not completed, charge voided' });
+        break;
+      default:
+        return null;
+    }
+  }
+  return entries;
 }
 
 /**

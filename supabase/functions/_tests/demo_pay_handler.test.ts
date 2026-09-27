@@ -19,7 +19,6 @@ interface Options {
   row?: TripRow | null;
   tripError?: string | null;
   userId?: string | null;
-  authError?: string | null;
   open?: PaymentRow | null;
   openError?: string | null;
   created?: PaymentRow | null;
@@ -60,7 +59,9 @@ const harness = (options: Options = {}) => {
       calls.authenticated.push(token);
       return Promise.resolve({
         userId: options.userId === undefined ? 'rider-1' : options.userId,
-        error: options.authError ?? null,
+        // `error` is declared by the port and never set here, because no
+        // code path in this handler reads it: the 401 is `callerId` being null.
+        error: null,
       });
     },
     findTrip: (tripId) => {
@@ -196,14 +197,46 @@ Deno.test('an open pending payment is reused rather than a second one inserted',
   // `complete-trip` reads the **newest** payment for the trip, so a second row
   // would orphan the first forever: nothing reads it, nothing voids it, and it
   // sits in `payments` as a pending charge against a trip that was paid.
-  const open = payment({ id: 'pay-open' });
+  //
+  // The reused row's state is `succeeded`, not `pending`, and deliberately so: a
+  // fixture whose row carries the literal the code could have written cannot tell
+  // an echo from a hardcoded `state: 'pending'`, and that assertion is the whole
+  // of what the `state` key in the 200 body is worth.
+  const open = payment({ id: 'pay-open', state: 'succeeded' });
   const { promise, calls } = call({ open });
   const res = await promise;
   const payload = await body(res);
   assertEquals(res.status, 200);
   assertEquals(payload.payment, open);
-  assertEquals(payload.state, 'pending');
+  assertEquals(payload.state, 'succeeded');
   assertEquals(calls.created.length, 0);
+});
+
+Deno.test('the reused row is echoed, and its state is read off the row', async () => {
+  // The same contract, stated as an equality against the row rather than as an
+  // equality against a literal, so it holds for every state the port can answer
+  // with and fails for a hardcoded one.
+  for (const state of ['pending', 'succeeded']) {
+    const open = payment({ id: 'pay-open', state });
+    const { promise } = call({ open });
+    const res = await promise;
+    const payload = await body(res);
+    assertEquals(payload.state, state);
+    assertEquals(payload.state, (payload.payment as Record<string, unknown>).state);
+  }
+});
+
+Deno.test('the state reported on a new charge is the state of the row written', async () => {
+  // As above, on the create branch: a real provider's confirmation would arrive
+  // as a `succeeded` row, and a literal `pending` would report the opposite of
+  // what the database holds.
+  const written = payment({ id: 'pay-new', state: 'succeeded' });
+  const { promise } = call({ created: written });
+  const res = await promise;
+  const payload = await body(res);
+  assertEquals(res.status, 200);
+  assertEquals(payload.payment, written);
+  assertEquals(payload.state, 'succeeded');
 });
 
 Deno.test('a second call reuses the same row, so a double tap charges once', async () => {

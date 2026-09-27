@@ -1,6 +1,7 @@
 import { assertEquals } from 'https://deno.land/std@0.224.0/testing/asserts.ts';
 import {
   handleComplete,
+  ledgerEntriesFor,
   readCompleteBody,
   type CompleteDeps,
   type LedgerEntryInput,
@@ -8,6 +9,7 @@ import {
   type RatingInput,
   type TripRow,
 } from '../complete-trip/handler.ts';
+import { settleFare } from '../complete-trip/ledger.ts';
 
 // Every port is a recording fake, so a test can see what the handler *asked for*
 // and not only what it answered. Nothing here opens a socket or reads an
@@ -37,7 +39,6 @@ interface Options {
   row?: TripRow | null;
   tripError?: string | null;
   userId?: string | null;
-  authError?: string | null;
   payment?: PaymentRow | null;
   paymentError?: string | null;
   /** `false` is the zero-row match: a lost race, not a database error. */
@@ -89,7 +90,9 @@ const harness = (options: Options = {}) => {
       calls.authenticated.push(token);
       return Promise.resolve({
         userId: options.userId === undefined ? 'rider-1' : options.userId,
-        error: options.authError ?? null,
+        // `error` is declared by the port and never set here, because no
+        // code path in this handler reads it: the 401 is `callerId` being null.
+        error: null,
       });
     },
     findTrip: (tripId) => {
@@ -602,6 +605,35 @@ Deno.test('a completed trip with no driver reports the rating as failed, not ski
   // be saved and there is nobody to save it about.
   assertEquals(payload.ratingState, 'failed');
   assertEquals(calls.ratings.length, 0);
+});
+
+Deno.test('a ledger kind this build has no amount for is refused, not guessed', () => {
+  // `settleAgainstTripState` returns one of three kind lists, so the unknown-kind
+  // arm is unreachable through the handler. It is pinned directly, on the pure
+  // function, because the alternative -- a `default` arm that writes a zero row
+  // for a kind it does not know -- is a silent wrong answer, and
+  // `ledger_entries.kind`'s CHECK would refuse most such guesses anyway
+  // (`init.sql:126`), turning a programming slip into a 500 from the database
+  // with nothing in the body to say what it was.
+  const settlement = settleFare(20.4);
+  assertEquals(ledgerEntriesFor(['bonus'], settlement), null);
+  assertEquals(ledgerEntriesFor(['fare', 'bonus'], settlement), null);
+  // The three the decision can ask for, each with the amount it owes.
+  assertEquals(ledgerEntriesFor(['fare'], settlement), [
+    { kind: 'fare', amountGhs: 20.4, note: 'Trip fare' },
+  ]);
+  assertEquals(ledgerEntriesFor(['commission'], settlement), [{
+    kind: 'commission',
+    amountGhs: -(settlement.fareGhs - settlement.driverPayoutGhs),
+    note: 'Platform commission 15%',
+  }]);
+  // Zero, and not a negative: the voided charge never became a credit.
+  assertEquals(ledgerEntriesFor(['void'], settlement), [
+    { kind: 'void', amountGhs: 0, note: 'Trip was not completed, charge voided' },
+  ]);
+  // An empty list is not an error. It is what a `completed` trip with an
+  // already-`succeeded` payment asks for, and it writes nothing.
+  assertEquals(ledgerEntriesFor([], settlement), []);
 });
 
 Deno.test('a cancelled trip still takes the rating', async () => {

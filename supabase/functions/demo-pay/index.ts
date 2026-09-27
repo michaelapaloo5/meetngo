@@ -13,6 +13,9 @@
 import { serve } from 'https://deno.land/std@0.224.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.45.4';
 import { corsHeaders } from '../_shared/cors.ts';
+// As in `complete-trip/clients.ts`: shared, and apart from the builder so a test
+// can pin them without a supabase-js import. `_shared/rows.ts` gives the reason.
+import { first, ok } from '../_shared/rows.ts';
 import type { PaymentRow, TripRow } from '../complete-trip/handler.ts';
 import { handleDemoPay, type DemoPayDeps, type PaymentInput } from './handler.ts';
 
@@ -21,11 +24,6 @@ const json = (status: number, payload: Record<string, unknown>) =>
     status,
     headers: { ...corsHeaders, 'Content-Type': 'application/json' },
   });
-
-const first = <T>(rows: T[] | null): T | null =>
-  (Array.isArray(rows) ? rows[0] ?? null : null);
-
-const ok = (error: { message: string } | null) => error?.message ?? null;
 
 export function buildDemoPayDeps(
   supabaseUrl: string,
