@@ -86,6 +86,19 @@ export function buildDeps(clients: OfferClients): OfferDeps {
     // Measured with a stub fetch: on a client with no forwarded header,
     // `getUser('DRIVER-JWT')` puts `Authorization: Bearer DRIVER-JWT` on the
     // wire. Task 6 does the same at request-ride/index.ts:64.
+    //
+    // "The argumentless form ... fails" is true of a client with *no* forwarded
+    // header and was written as if it were true of any client, which it is not.
+    // Measured on the same stub, and the correction matters because `buildClients`
+    // usually does forward one: `auth.getUser()` on an anon client carrying
+    // `Authorization: Bearer RIDER-JWT` resolves the user and puts that bearer on
+    // the wire, and only a client with no header at all answers
+    // `Auth session missing!` — with zero requests issued, so nothing is
+    // validated either way. So the argumentless form is not broken so much as
+    // *header-dependent*, and it sends the literal string `null` as the
+    // `Authorization` value when a caller forwards a header that is not there.
+    // The explicit argument is the same on every client, which is the reason to
+    // keep it.
     authenticate: async (token) => {
       const { data, error } = await service.auth.getUser(token);
       return { userId: data.user?.id ?? null, error: error?.message ?? null };

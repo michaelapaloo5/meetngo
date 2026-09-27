@@ -6889,8 +6889,8 @@ are plain `test(`, which is why `test/data/data_layer_test.dart` reports 0.
 **Interfaces:**
 - Consumes: `Trip`, `TripStop`, `GeoPoint`, `DriverProfile` (Task 4), `TripState` (Task 3), `TripRepository` (Task 8)
 - Produces:
-  - `supabase/functions/cancel-trip/policy.ts` → `export const FREE_CANCEL_WINDOW_MS = 120_000`, `export const DRIVER_CANCELLATION_FEE_GHS = 5.0`, `export function cancellationCompensationGhs(input: { state: TripStateName; elapsedMs: number }): number` returning `0` for a free cancel, `5.0` when the driver must be compensated, and `-1` when the trip is not rider-cancellable. `TripStateName` is the string union `'requested' | 'matched' | 'arriving' | 'ongoing' | 'completed' | 'cancelled'`.
-  - POST `cancel-trip` `{tripId}` → `{cancelled: boolean, trip: Trip, compensatedGhs: number}`.
+  - `supabase/functions/cancel-trip/policy.ts` → `export const FREE_CANCEL_WINDOW_MS = 120_000`, `export const DRIVER_CANCELLATION_FEE_GHS = 5.0`, `export function cancellationCompensationGhs(input: { state: TripStateName; elapsedMs: number }): number` returning `0` for a free cancel, `5.0` when the driver must be compensated, and `-1` when the trip is not rider-cancellable. `TripStateName` is the string union `'requested' | 'matched' | 'arriving' | 'ongoing' | 'completed' | 'cancelled'`. Also `export function isTripStateName(value: unknown): value is TripStateName`, which the function uses instead of casting the `trips.state` value off a PostgREST read.
+  - POST `cancel-trip` `{tripId}` → `{cancelled: boolean, trip: Trip, compensatedGhs: number}`. Every non-200 answer carries the `{ error: <string> }` body that `describeFunctionFailure` reads, including the 409, so the function never reports `cancelled: true` for a write that failed or matched no row.
   - `TrackingController({required TripRepository trips, required Trip initialTrip, DriverProfile? initialDriver})` — `ChangeNotifier` with fields `Trip? trip`, `DriverProfile? driver`, `int? etaMinutes`, `bool sosRaised`, `String? error`; methods `Future<void> cancel()`, `Future<void> raiseSos()`, `Future<void> refresh()`.
   - `TrackingScreen()` reads `TrackingController` from `Provider`.
   - `FindingDriverScreen({required Trip trip, required VoidCallback onCancelSearch})` — key `cancelSearchButton`, copy `3 drivers found`, `Asking Standard drivers near you`.
@@ -6905,7 +6905,11 @@ are plain `test(`, which is why `test/data/data_layer_test.dart` reports 0.
 
 ```ts
 import { assertEquals } from 'https://deno.land/std@0.224.0/testing/asserts.ts';
-import { cancellationCompensationGhs } from '../cancel-trip/policy.ts';
+import {
+  cancellationCompensationGhs,
+  isTripStateName,
+  type TripStateName,
+} from '../cancel-trip/policy.ts';
 
 Deno.test('cancel while requested is free', () => {
   assertEquals(cancellationCompensationGhs({ state: 'requested', elapsedMs: 1_000 }), 0);
@@ -6954,6 +6958,46 @@ Deno.test('a millisecond past the boundary compensates', () => {
     5.0,
   );
 });
+
+// The policy function's own guard for a state the union does not name. The
+// `trip_state` enum has exactly six values (`init.sql:4-5`), so this is not
+// reachable from the database today; it is reachable from a caller that casts,
+// and the branch it pins is the difference between refusing a cancellation and
+// paying a driver for one nobody checked.
+Deno.test('a state the union does not name is refused, not compensated', () => {
+  assertEquals(
+    cancellationCompensationGhs({
+      state: 'expired' as TripStateName,
+      elapsedMs: 1_000,
+    }),
+    -1,
+  );
+  assertEquals(
+    cancellationCompensationGhs({
+      state: 'expired' as TripStateName,
+      elapsedMs: 10 * 60 * 1000,
+    }),
+    -1,
+  );
+});
+
+Deno.test('isTripStateName accepts the six enum values and nothing else', () => {
+  for (const name of [
+    'requested',
+    'matched',
+    'arriving',
+    'ongoing',
+    'completed',
+    'cancelled',
+  ]) {
+    assertEquals(isTripStateName(name), true, name);
+  }
+  assertEquals(isTripStateName('expired'), false);
+  assertEquals(isTripStateName(''), false);
+  assertEquals(isTripStateName(null), false);
+  assertEquals(isTripStateName(undefined), false);
+  assertEquals(isTripStateName(3), false);
+});
 ```
 
 - [ ] **Step 2: Run it and confirm it fails**
@@ -6980,6 +7024,28 @@ export type TripStateName =
 export const FREE_CANCEL_WINDOW_MS = 2 * 60 * 1000;
 export const DRIVER_CANCELLATION_FEE_GHS = 5.0;
 
+const TRIP_STATE_NAMES = [
+  'requested',
+  'matched',
+  'arriving',
+  'ongoing',
+  'completed',
+  'cancelled',
+] as const;
+
+/**
+ * Narrows the `trips.state` value off a PostgREST read, which arrives as `any`
+ * because this client carries no generated `Database` type. `state` is the one
+ * column the policy below branches on and the one column whose value decides
+ * whether a trip is cancelled and a driver is paid, so it is checked rather
+ * than cast: `cancellationCompensationGhs` takes the union, and `as never` at
+ * the call site would let any value through the type checker while telling it
+ * nothing.
+ */
+export function isTripStateName(value: unknown): value is TripStateName {
+  return TRIP_STATE_NAMES.some((name) => name === value);
+}
+
 /**
  * Returns 0 when the rider cancels for free, DRIVER_CANCELLATION_FEE_GHS when
  * the driver has already committed and must be compensated, and -1 when the
@@ -6989,13 +7055,31 @@ export function cancellationCompensationGhs(input: {
   state: TripStateName;
   elapsedMs: number;
 }): number {
-  if (input.state === 'completed' || input.state === 'cancelled') return -1;
-  if (input.state === 'ongoing') return -1;
-  if (input.state === 'requested') return 0;
-  // matched or arriving: free while no driver has been held up.
-  return input.elapsedMs <= FREE_CANCEL_WINDOW_MS
-    ? 0
-    : DRIVER_CANCELLATION_FEE_GHS;
+  switch (input.state) {
+    case 'requested':
+      // No driver is attached, so there is nobody to hold up.
+      return 0;
+    case 'matched':
+    case 'arriving':
+      // matched or arriving: free while no driver has been held up.
+      return input.elapsedMs <= FREE_CANCEL_WINDOW_MS
+        ? 0
+        : DRIVER_CANCELLATION_FEE_GHS;
+    case 'ongoing':
+    case 'completed':
+    case 'cancelled':
+      return -1;
+    default:
+      // A state this function does not know is not a state it may cancel, so
+      // it is refused rather than treated as `matched` or `arriving`. The
+      // brief's trailing `return` had no such arm, so an unrecognised value
+      // fell into the compensation branch: the trip was cancelled and the
+      // driver paid for a state nobody had checked. `trip_state` is a six-value
+      // enum today (`init.sql:4-5`) and the `isTripStateName` guard in
+      // `index.ts` refuses one before it reaches here, so this arm is the
+      // second of two refusals rather than the only one.
+      return -1;
+  }
 }
 ```
 
@@ -7005,7 +7089,8 @@ export function cancellationCompensationGhs(input: {
 cd ~/meet-n-go/supabase && deno test functions/_tests/cancel_policy.test.ts
 ```
 
-Expected: 8 tests pass.
+Expected: 10 tests pass. Two more than the eight the first draft listed: one for a
+state the union does not name, and one for `isTripStateName`.
 
 - [ ] **Step 5: Write `cancel-trip/index.ts`**
 
@@ -7013,93 +7098,181 @@ Expected: 8 tests pass.
 import { serve } from 'https://deno.land/std@0.224.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.45.4';
 import { corsHeaders } from '../_shared/cors.ts';
-import { cancellationCompensationGhs } from './policy.ts';
+import { cancellationCompensationGhs, isTripStateName } from './policy.ts';
+
+const json = (status: number, payload: Record<string, unknown>) =>
+  new Response(JSON.stringify(payload), {
+    status,
+    headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+  });
 
 serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
 
+  // One service-role client, and nothing on it that belongs to the caller. The
+  // trip read, the state write, the driver's availability, the offer release and
+  // the compensation all run on this client, because none of them has a
+  // client-side RLS path: `trips` carries no INSERT policy and `ledger_entries`
+  // carries no INSERT policy at all, and `revoke update on trips from anon,
+  // authenticated` with a grant of `(state, eta_minutes, started_at,
+  // completed_at)` leaves `cancelled_at` unwritable by a rider
+  // (`init.sql:614-615`). So the authorisation this function removes is replaced
+  // here instead: the rider is whatever `getUser` says the token is, and the
+  // trip's `rider_id` is compared against that, never read from the body.
   const service = createClient(
     Deno.env.get('SUPABASE_URL')!,
     Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
   );
-  const userClient = createClient(
-    Deno.env.get('SUPABASE_URL')!,
-    Deno.env.get('SUPABASE_ANON_KEY')!,
-    { global: { headers: { Authorization: req.headers.get('Authorization')! } } },
-  );
 
-  const { data: userData } = await userClient.auth.getUser();
-  if (!userData.user) {
-    return new Response(JSON.stringify({ error: 'unauthenticated' }), {
-      status: 401,
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-    });
+  const header = req.headers.get('Authorization') ?? '';
+  const token = header.replace(/^Bearer\s+/i, '');
+  if (!token) return json(401, { error: 'unauthenticated' });
+
+  const { data: userData, error: userError } = await service.auth.getUser(token);
+  if (userError || !userData.user) return json(401, { error: 'unauthenticated' });
+  const riderId = userData.user.id;
+
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return json(400, { error: 'body must be JSON' });
+  }
+  const tripId = (body as { tripId?: unknown } | null)?.tripId;
+  if (typeof tripId !== 'string' || tripId.length === 0) {
+    return json(400, { error: 'tripId is required' });
   }
 
-  const { tripId } = await req.json();
   const { data: trip, error } = await service
     .from('trips')
     .select('*')
     .eq('id', tripId)
-    .single();
+    .limit(1);
+  const row = Array.isArray(trip) ? trip[0] ?? null : null;
+  if (error) return json(500, { error: error.message });
+  if (!row) return json(404, { error: 'trip not found' });
+  if (row.rider_id !== riderId) return json(403, { error: 'not your trip' });
 
-  if (error || !trip) {
-    return new Response(JSON.stringify({ error: 'trip not found' }), {
-      status: 404,
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-    });
-  }
-  if (trip.rider_id !== userData.user.id) {
-    return new Response(JSON.stringify({ error: 'not your trip' }), {
-      status: 403,
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-    });
+  // Checked rather than cast, and this is the check `state as never` did not
+  // make: the policy function branches on this value, and an unrecognised one
+  // used to reach the compensation branch with nothing having verified it.
+  if (!isTripStateName(row.state)) {
+    return json(500, { error: 'trip row carries a state this build does not know' });
   }
 
-  const reference = new Date(trip.matched_at ?? trip.created_at).getTime();
-  const elapsedMs = Date.now() - reference;
+  // The free window runs from the moment the driver committed, not from the
+  // moment the trip was created, so `matched_at` is the reference once it
+  // exists and `created_at` is only the fallback for a `requested` trip — which
+  // is always free anyway, so the fallback never reaches the fee.
+  //
+  // The `Number.isFinite` guard is what keeps an unparseable reference out of
+  // the fee branch, and the comparison is why it is needed: `new Date('junk')
+  // .getTime()` is NaN, `Date.now() - NaN` is NaN, and `NaN <= FREE_CANCEL_
+  // WINDOW_MS` is **false**, so a bad timestamp does not read as "free" — it
+  // reads as "past the window" and pays the driver. Measured on Deno 2.9.7.
+  // `new Date(null).getTime()` is 0 rather than NaN, so a null would look like a
+  // trip open since 1970 and reach the same branch; `created_at` is `not null`
+  // (`init.sql:65`), so that is defence in depth rather than a reachable case.
+  const reference = new Date(row.matched_at ?? row.created_at).getTime();
+  const elapsedMs = Number.isFinite(reference) ? Date.now() - reference : 0;
   const compensatedGhs = cancellationCompensationGhs({
-    state: trip.state as never,
+    state: row.state,
     elapsedMs,
   });
 
-  if (compensatedGhs < 0) {
-    return new Response(
-      JSON.stringify({ cancelled: false, trip, compensatedGhs }),
-      { status: 409, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
-    );
+  // One refusal body for both ways a cancel can be too late, and it carries the
+  // `error` key that `describeFunctionFailure` reads
+  // (`apps/rider/lib/src/data/function_failure.dart:17-26`). The brief's 409 had
+  // no `error`, so a rider who cancelled after the trip went `ongoing` — a
+  // reachable path, since the driver's app moves the state under them — read
+  // `Something went wrong (409)`.
+  const refuse = (reason: number) =>
+    json(409, {
+      error: 'This trip can no longer be cancelled',
+      cancelled: false,
+      trip: row,
+      compensatedGhs: reason,
+    });
+
+  if (compensatedGhs < 0) return refuse(compensatedGhs);
+
+  // `.eq('state', row.state)` makes this the single-winner write, and
+  // `.select('id,state')` is what makes its outcome readable: measured, a
+  // postgrest update with no `select` answers `data = null` and `error = null`
+  // whether it wrote a row or matched none, which is the silent no-op
+  // `offers/clients.ts` measures and works around in `writeDecline`. Without
+  // the row count the brief answered `cancelled: true` for a write that failed
+  // and for a race it lost to a second cancel or to the driver's own advance,
+  // and `SupabaseTripRepository.cancelTrip` reads no field of the body, so the
+  // rider's controller believed it either way.
+  const { data: updated, error: updateError } = await service
+    .from('trips')
+    // `cancelled_at` is written here and nowhere else in the build. It exists
+    // on the table (`init.sql:69`) and the verification harness populates it
+    // for a cancelled trip (`supabase/tests/verify_migration.sql:244`), so a
+    // cancellation that leaves it null makes the column permanently
+    // unpopulated and any later "how long was this open" read wrong.
+    .update({ state: 'cancelled', cancelled_at: new Date().toISOString() })
+    .eq('id', row.id)
+    .eq('state', row.state)
+    .select('id,state');
+
+  if (updateError) return json(500, { error: updateError.message });
+  if (!Array.isArray(updated) || updated.length !== 1) {
+    return refuse(-1);
   }
 
-  await service
-    .from('trips')
-    .update({ state: 'cancelled' })
-    .eq('id', trip.id)
-    .eq('state', trip.state);
-
-  if (trip.driver_id) {
-    await service
+  if (row.driver_id) {
+    // Every write below is checked. The trip is already cancelled at this point,
+    // so a dropped error here cannot be undone by reporting failure: it leaves a
+    // driver stuck on `onTrip` and unable to accept an offer, or a driver owed
+    // GHS 5.00 with no row in `ledger_entries` to answer with. A 500 that names
+    // the step is the honest report. The rider's `cancelTrip` turns it into a
+    // `TripRequestFailure` carrying this string, which is why the message is
+    // written for them rather than for a log.
+    const { error: driverError } = await service
       .from('profiles')
       .update({ availability: 'online' })
-      .eq('id', trip.driver_id);
+      .eq('id', row.driver_id);
+    if (driverError) {
+      return json(500, { error: `the trip was cancelled but the driver was not released: ${driverError.message}` });
+    }
 
-    await service.from('offers').update({ state: 'released' }).eq('trip_id', trip.id).eq('state', 'pending');
+    const { error: offerError } = await service
+      .from('offers')
+      .update({ state: 'released' })
+      .eq('trip_id', row.id)
+      .eq('state', 'pending');
+    if (offerError) {
+      return json(500, { error: `the trip was cancelled but its pending offers were not released: ${offerError.message}` });
+    }
 
     if (compensatedGhs > 0) {
-      await service.from('ledger_entries').insert({
-        driver_id: trip.driver_id,
-        trip_id: trip.id,
+      const { error: ledgerError } = await service.from('ledger_entries').insert({
+        driver_id: row.driver_id,
+        trip_id: row.id,
         amount_ghs: compensatedGhs,
         kind: 'compensation',
         note: 'Rider cancelled after the free window',
         is_demo: true,
       });
+      if (ledgerError) {
+        return json(500, { error: `the trip was cancelled but the driver's compensation was not recorded: ${ledgerError.message}` });
+      }
     }
   }
 
-  return new Response(
-    JSON.stringify({ cancelled: true, trip: { ...trip, state: 'cancelled' }, compensatedGhs }),
-    { headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
-  );
+  return json(200, {
+    cancelled: true,
+    // `driver_id` is left as the row holds it. Releasing the driver and
+    // releasing the offers do not unassign them: `trips_driver_idx` is the
+    // driver's trip history and `ledger_entries.trip_id` points back here, and
+    // nulling the column would take the row out of the driver's reach under
+    // `driver reads assigned trips` (`init.sql:520-521`). The rider's own view
+    // is the controller's, which clears it locally.
+    trip: { ...row, state: 'cancelled' },
+    compensatedGhs,
+  });
 });
 ```
 
@@ -7148,14 +7321,43 @@ Trip tripInState(TripState state) => Trip(
       isDemo: true,
     );
 
+/// Stands in for the raw `http.ClientException` a direct PostgREST call lets
+/// through, so the controller's `on Exception` clause is exercised by
+/// something that behaves the way the real one does — `http` declares
+/// `class ClientException implements Exception`
+/// (`http-1.6.0/lib/src/exception.dart:6`) — without importing `package:http`,
+/// which this package does not depend on.
+class FakeTransportException implements Exception {
+  const FakeTransportException();
+}
+
 class FakeTripRepository implements TripRepository {
   bool cancelled = false;
   bool sosRaised = false;
   String? cancelledTripId;
   String? sosTripId;
+  int sosCalls = 0;
+  int cancelCalls = 0;
+
+  /// Thrown by the next `sosCalls` writes, then the repository behaves.
+  Object? sosFailure;
+
+  /// Thrown by `cancelTrip` when set.
+  Object? cancelFailure;
+
+  /// Thrown by `activeTrip` when set.
+  Object? refreshFailure;
+
+  /// The row `activeTrip` answers with. Null by default, so `refresh` takes its
+  /// early return and the trip on screen is not replaced.
+  Trip? active;
 
   @override
-  Future<Trip?> activeTrip() async => null;
+  Future<Trip?> activeTrip() async {
+    final failure = refreshFailure;
+    if (failure != null) throw failure;
+    return active;
+  }
 
   @override
   Stream<Trip> watchTrip(String tripId) => const Stream<Trip>.empty();
@@ -7174,19 +7376,33 @@ class FakeTripRepository implements TripRepository {
 
   @override
   Future<void> cancelTrip(String tripId) async {
+    final failure = cancelFailure;
+    if (failure != null) throw failure;
     cancelled = true;
     cancelledTripId = tripId;
   }
 
   @override
   Future<void> raiseSos(String tripId, String note) async {
+    sosCalls++;
+    final failure = sosFailure;
+    if (failure != null) {
+      if (sosFailureCount > 0) sosFailureCount--;
+      if (sosFailureCount == 0) sosFailure = null;
+      throw failure;
+    }
     sosRaised = true;
     sosTripId = tripId;
   }
+
+  /// How many more `raiseSos` calls fail. Zero means the next one succeeds,
+  /// which is what the retry test needs.
+  int sosFailureCount = 0;
 }
 
 class FakeTrackingController extends TrackingController {
-  FakeTrackingController(this.state) : super(trips: FakeTripRepository(), initialTrip: tripInState(state)) {
+  FakeTrackingController(this.state)
+      : super(trips: FakeTripRepository(), initialTrip: tripInState(state)) {
     driver = const DriverProfile(
       id: 'd1',
       fullName: 'Jane Cooper',
@@ -7200,10 +7416,12 @@ class FakeTrackingController extends TrackingController {
   }
 
   final TripState state;
-  final FakeTripRepository repo = FakeTripRepository();
 
-  @override
-  FakeTripRepository get trips => repo;
+  /// The one repository instance, read back off the base class rather than
+  /// declared as a second field. A second `FakeTripRepository()` here would be
+  /// the instance the assertions read while the controller wrote to the one
+  /// handed to `super`, so `cancelled` would never move.
+  FakeTripRepository get repo => trips as FakeTripRepository;
 }
 
 Widget wrapTracking(TrackingController c) => ScreenUtilInit(
@@ -7213,6 +7431,13 @@ Widget wrapTracking(TrackingController c) => ScreenUtilInit(
         child: MaterialApp(theme: MngTheme.light, home: const TrackingScreen()),
       ),
     );
+
+/// Presses the SOS button and settles the frame the press started.
+Future<void> tapSos(WidgetTester tester) async {
+  await tester.tap(find.byKey(const Key('sosButton')));
+  await tester.pump();
+  await tester.pump();
+}
 
 void main() {
   testWidgets('matched state shows the ride-confirmed headline', (tester) async {
@@ -7265,8 +7490,7 @@ void main() {
     useDesignSurface(tester);
     final c = FakeTrackingController(TripState.arriving);
     await tester.pumpWidget(wrapTracking(c));
-    await tester.tap(find.byKey(const Key('sosButton')));
-    await tester.pump();
+    await tapSos(tester);
     expect(c.repo.sosRaised, isTrue);
     expect(c.repo.sosTripId, 't1');
     expect(c.sosRaised, isTrue);
@@ -7280,11 +7504,11 @@ void main() {
     useDesignSurface(tester);
     final c = FakeTrackingController(TripState.arriving);
     await tester.pumpWidget(wrapTracking(c));
-    await tester.tap(find.byKey(const Key('sosButton')));
-    await tester.pump();
-    await tester.tap(find.byKey(const Key('sosButton')));
-    await tester.pump();
-    expect(c.repo.sosRaised, isTrue);
+    await tapSos(tester);
+    await tapSos(tester);
+    // The call count, not the flag. `sosRaised` is true after one write and after
+    // two, so asserting on it pins nothing.
+    expect(c.repo.sosCalls, 1);
   });
 
   testWidgets('driver car and plate render when a vehicle is attached', (tester) async {
@@ -7328,6 +7552,152 @@ void main() {
     await tester.pump();
     expect(cancelled, isTrue);
   });
+
+  testWidgets('cancelling takes the trip to cancelled and releases the driver',
+      (tester) async {
+    useDesignSurface(tester);
+    final c = FakeTrackingController(TripState.arriving);
+    await tester.pumpWidget(wrapTracking(c));
+    expect(c.trip!.hasDriver, isTrue);
+    await tester.tap(find.byKey(const Key('cancelButton')));
+    await tester.pump();
+    expect(c.trip!.state, TripState.cancelled);
+    // The other half of the release. A cancelled trip that still names its
+    // driver is a trip a driver-side screen would offer to act on, and the
+    // controller is the only place this trip is cleared.
+    expect(c.trip!.hasDriver, isFalse);
+    expect(c.trip!.driverId, isNull);
+    expect(find.text('Trip cancelled'), findsOneWidget);
+    expect(find.byKey(const Key('cancelButton')), findsNothing);
+  });
+
+  test('copyWith keeps the driver unless clearDriver is set', () {
+    // The distinction `cancel()` depends on. `copyWith` reads a null `driverId`
+    // as "unchanged", because null is also what clearing would mean, so
+    // `copyWith(state: ..., driverId: null)` silently keeps the driver and only
+    // `clearDriver: true` drops it.
+    final matched = tripInState(TripState.matched);
+    expect(matched.copyWith(state: TripState.cancelled).driverId, 'd1');
+    expect(matched.copyWith(state: TripState.cancelled).hasDriver, isTrue);
+    expect(matched.copyWith(driverId: null).driverId, 'd1');
+    expect(matched.copyWith(clearDriver: true).driverId, isNull);
+    expect(matched.copyWith(clearDriver: true).hasDriver, isFalse);
+  });
+
+  testWidgets('a refused SOS write takes the banner back down and shows why',
+      (tester) async {
+    useDesignSurface(tester);
+    final c = FakeTrackingController(TripState.arriving)
+      ..repo.sosFailure = const TripRequestFailure('Not signed in');
+    await tester.pumpWidget(wrapTracking(c));
+    await tapSos(tester);
+    // The brief set `sosRaised = true` and never unset it, so a refused write
+    // left the screen reading "Help is on the way" with no row in `sos_events`.
+    expect(c.sosRaised, isFalse);
+    expect(c.error, 'Not signed in');
+    expect(find.text('Help is on the way. Our team has your trip.'), findsNothing);
+    expect(find.text('Not signed in'), findsOneWidget);
+  });
+
+  testWidgets('a dropped connection on SOS says the server was unreachable',
+      (tester) async {
+    useDesignSurface(tester);
+    final c = FakeTrackingController(TripState.arriving)
+      ..repo.sosFailure = const FakeTransportException();
+    await tester.pumpWidget(wrapTracking(c));
+    await tapSos(tester);
+    expect(c.sosRaised, isFalse);
+    // Not `ClientException: ...`. The repository's own types carry a message
+    // written for a rider; a transport exception does not, and the transport
+    // one is the only case where the cause is the network rather than a refusal.
+    expect(c.error, 'Could not reach the server');
+    expect(find.text('Help is on the way. Our team has your trip.'), findsNothing);
+  });
+
+  testWidgets('a second SOS press after a failed write reaches the repository',
+      (tester) async {
+    useDesignSurface(tester);
+    final c = FakeTrackingController(TripState.arriving)
+      ..repo.sosFailure = const TripRequestFailure('Not signed in')
+      ..repo.sosFailureCount = 1;
+    await tester.pumpWidget(wrapTracking(c));
+    await tapSos(tester);
+    expect(c.sosRaised, isFalse);
+    await tapSos(tester);
+    expect(c.repo.sosCalls, 2);
+    expect(c.repo.sosRaised, isTrue);
+    expect(c.sosRaised, isTrue);
+    // The failed attempt's message does not outlive the retry.
+    expect(c.error, isNull);
+    expect(find.text('Help is on the way. Our team has your trip.'), findsOneWidget);
+  });
+
+  testWidgets('a failed cancel leaves the trip live and reports the reason',
+      (tester) async {
+    useDesignSurface(tester);
+    final c = FakeTrackingController(TripState.arriving)
+      ..repo.cancelFailure = const TripRequestFailure('This trip can no longer be cancelled');
+    await tester.pumpWidget(wrapTracking(c));
+    await tester.tap(find.byKey(const Key('cancelButton')));
+    await tester.pump();
+    // `cancelTrip` is a `functions.invoke`, so a 409 arrives as a
+    // `FunctionException` that Task 8's repository rethrows as a
+    // `TripRequestFailure`; the controller catches it here rather than letting
+    // it reach the framework as an unhandled async error.
+    expect(c.trip!.state, TripState.arriving);
+    expect(c.trip!.hasDriver, isTrue);
+    expect(c.error, 'This trip can no longer be cancelled');
+    expect(find.byKey(const Key('cancelButton')), findsOneWidget);
+  });
+
+  testWidgets('a failed refresh keeps the trip on screen and reports the reason',
+      (tester) async {
+    useDesignSurface(tester);
+    final c = FakeTrackingController(TripState.arriving);
+    await tester.pumpWidget(wrapTracking(c));
+    c.repo.refreshFailure = const FakeTransportException();
+    await c.refresh();
+    await tester.pump();
+    expect(c.trip!.state, TripState.arriving);
+    expect(c.error, 'Could not reach the server');
+    expect(find.text('Arriving soon'), findsOneWidget);
+  });
+
+  testWidgets('a successful refresh takes the trip forward and clears the error',
+      (tester) async {
+    useDesignSurface(tester);
+    final c = FakeTrackingController(TripState.matched)
+      ..error = 'Could not reach the server'
+      ..repo.active = tripInState(TripState.ongoing);
+    await tester.pumpWidget(wrapTracking(c));
+    await c.refresh();
+    await tester.pump();
+    expect(c.trip!.state, TripState.ongoing);
+    expect(c.error, isNull);
+    expect(find.text('On the way'), findsOneWidget);
+  });
+
+  testWidgets('the tracking screen has no overflow at 200% text scale',
+      (tester) async {
+    useDesignSurface(tester);
+    tester.platformDispatcher.textScaleFactorTestValue = 2.0;
+    addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
+    final c = FakeTrackingController(TripState.arriving)
+      ..etaMinutes = 4
+      ..driverVehicle = const Vehicle(
+        id: 'v1',
+        ownerId: 'd1',
+        category: VehicleCategory.sedan,
+        make: 'Toyota',
+        model: 'Corolla',
+        plate: 'GR-1234-22',
+        seats: 4,
+        photoUrl: '',
+        rideCategory: RideCategory.standard,
+      );
+    await tester.pumpWidget(wrapTracking(c));
+    expect(tester.takeException(), isNull);
+  });
 }
 ```
 
@@ -7348,6 +7718,13 @@ import 'package:flutter/foundation.dart';
 import 'package:mng_core/mng_core.dart';
 import '../data/trip_repository.dart';
 
+/// What the tracking screen reads and what every button on it calls.
+///
+/// The three methods are the screen's only outlets, so each one has to end in
+/// either the new state or a message: an exception escaping an `onPressed`
+/// reaches the framework as an unhandled async error, not as anything the
+/// rider can read. `refresh`, `cancel` and `raiseSos` therefore each catch, and
+/// `error` is what `TrackingScreen` paints in red.
 class TrackingController extends ChangeNotifier {
   TrackingController({
     required this.trips,
@@ -7367,26 +7744,63 @@ class TrackingController extends ChangeNotifier {
   bool sosRaised = false;
   String? error;
 
+  /// The message for a call that never reached the server. `raiseSos` and
+  /// `activeTrip` are direct PostgREST requests, so a dropped connection
+  /// surfaces as the raw exception postgrest does not convert, and naming that
+  /// type here would mean importing `package:http/http.dart` — `http` is
+  /// `dependency: transitive` in `pubspec.lock` and is not in `pubspec.yaml`, so
+  /// the import is a `depend_on_referenced_packages` info, which is fatal under
+  /// the `--fatal-infos` this repo's CI runs. `http`'s `ClientException` is
+  /// declared `implements Exception` (`http-1.6.0/lib/src/exception.dart:6`),
+  /// so `on Exception` is the clause that catches it. `TypeError` is an `Error`,
+  /// not an `Exception`, so a null-assertion fault still escapes rather than
+  /// being reported as a network problem.
+  static const _unreachable = 'Could not reach the server';
+
   Future<void> refresh() async {
-    final fresh = await trips.activeTrip();
-    if (fresh == null) return;
-    _trip = fresh;
-    if (fresh.state == TripState.arriving && etaMinutes == null) {
-      etaMinutes = 4;
+    error = null;
+    try {
+      final fresh = await trips.activeTrip();
+      if (fresh == null) return;
+      _trip = fresh;
+      if (fresh.state == TripState.arriving && etaMinutes == null) {
+        etaMinutes = 4;
+      }
+      if (fresh.state == TripState.matched) etaMinutes = 4;
+    } on Exception catch (e) {
+      // The trip on screen is left as it was: a failed read is not evidence
+      // about the trip, and replacing it with nothing would take the screen's
+      // whole reason to exist away.
+      _report(e);
     }
-    if (fresh.state == TripState.matched) etaMinutes = 4;
     notifyListeners();
   }
 
   Future<void> cancel() async {
     final current = _trip;
     if (current == null) return;
+    error = null;
     if (!canTransition(current.state, TripState.cancelled)) {
       error = 'This trip can no longer be cancelled';
       notifyListeners();
       return;
     }
-    await trips.cancelTrip(current.id);
+    try {
+      await trips.cancelTrip(current.id);
+    } on Exception catch (e) {
+      // State is not touched, so the cancel button stays live and the rider can
+      // try again. `cancel-trip` answers a trip it will not cancel with a 409,
+      // which reaches here as a `TripRequestFailure` carrying that function's
+      // own `error` string.
+      _report(e);
+      notifyListeners();
+      return;
+    }
+    // `clearDriver: true`, and not `driverId: null`: `copyWith` keeps the
+    // existing driver whenever `driverId` is null, because null is also the
+    // value that means "unchanged" (`mng_core/lib/src/models/trip.dart:77`). A
+    // cancelled trip that still names its driver is a trip a driver-side
+    // screen would offer to act on.
     _trip = current.copyWith(state: TripState.cancelled, clearDriver: true);
     notifyListeners();
   }
@@ -7395,9 +7809,26 @@ class TrackingController extends ChangeNotifier {
     if (sosRaised) return;
     final current = _trip;
     if (current == null) return;
+    error = null;
     sosRaised = true;
     notifyListeners();
-    await trips.raiseSos(current.id, 'Rider pressed the safety button');
+    try {
+      await trips.raiseSos(current.id, 'Rider pressed the safety button');
+    } on Exception catch (e) {
+      // Rolled back, not left standing. The banner is driven by the optimistic
+      // `notifyListeners()` above, so once this round trip is in flight the
+      // screen is reading "Help is on the way", and a rider told help is coming
+      // when no row reached `sos_events` is the outcome this whole path exists
+      // to prevent. Back to false, so the button is live again and the rider can
+      // press it a second time.
+      sosRaised = false;
+      _report(e);
+    }
+    notifyListeners();
+  }
+
+  void _report(Exception e) {
+    error = e is TripRequestFailure ? e.message : _unreachable;
   }
 }
 ```
@@ -7484,6 +7915,12 @@ class DriverSummary extends StatelessWidget {
                 Text(driver.fullName,
                     style: MngTheme.light.textTheme.titleMedium),
                 SizedBox(height: 2.h),
+                // A `Wrap` of `MainAxisSize.min` rows, not one Row. The rating,
+                // the car and the plate are three independent facts and a plate
+                // is as wide as the card allows; in a single Row they overflow
+                // the card at 390 logical pixels. The plate is outside the
+                // `Flexible`, because the name is the part that has to ellipsize
+                // and the plate is the part that has to stay whole.
                 Wrap(
                   spacing: 10.w,
                   runSpacing: 2.h,
@@ -7558,6 +7995,10 @@ class TrackingScreen extends StatelessWidget {
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
 
+    // The Dart `canTransition` table, not a copy of it. It is the same table the
+    // database trigger enforces (`init.sql:192-197`) and the one the controller
+    // checks before it calls the function, so the button is hidden by asking
+    // the authority rather than by a second list that could disagree.
     final canCancel = canTransition(trip.state, TripState.cancelled);
 
     return Scaffold(
@@ -7569,9 +8010,22 @@ class TrackingScreen extends StatelessWidget {
         title: const Text('Your ride'),
       ),
       body: SafeArea(
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
+        // Scrollable, because at 2.0 text scale the fixed content below — a
+        // 280.h map box, the address line, the driver card and four buttons —
+        // is 107px taller than an 844-high viewport and the last button falls
+        // off the bottom. `ConstrainedBox` at the viewport height is what keeps
+        // the `Spacer` meaningful: while the content is shorter than the screen
+        // the Column is stretched to fill it and the buttons sit at the bottom
+        // exactly as they do without the scroll view, and only a taller column
+        // overflows into scrolling.
+        child: LayoutBuilder(
+          builder: (context, constraints) => SingleChildScrollView(
+            child: ConstrainedBox(
+              constraints: BoxConstraints(minHeight: constraints.maxHeight),
+              child: IntrinsicHeight(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
             // Map placeholder: the Google Maps widget is dropped into this
             // Container in the integration pass. Keeping the box fixed means
             // the widget tests never need a platform view.
@@ -7589,6 +8043,9 @@ class TrackingScreen extends StatelessWidget {
               padding: EdgeInsets.symmetric(horizontal: 20.w),
               child: Row(
                 children: [
+                  // Expanded, so the headline ellipsizes beside the ETA pill
+                  // rather than overflowing the row by 3.5px at 390 logical
+                  // pixels.
                   Expanded(
                     child: Text(
                       _headlines[trip.state] ?? 'Your ride',
@@ -7637,6 +8094,10 @@ class TrackingScreen extends StatelessWidget {
                 ),
               ),
             ],
+            // Both failure messages, and they are different kinds of thing. The
+            // banner above is only reachable once `raiseSos` has written a row;
+            // this line is where every caught failure lands, which is why the
+            // SOS button stays enabled after a failed press.
             if (c.error != null) ...[
               SizedBox(height: 12.h),
               Padding(
@@ -7698,7 +8159,11 @@ class TrackingScreen extends StatelessWidget {
                 label: const Text('Safety'),
               ),
             ),
-          ],
+                  ],
+                ),
+              ),
+            ),
+          ),
         ),
       ),
     );
@@ -7737,6 +8202,9 @@ class FindingDriverScreen extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
+            // Map placeholder, for the same reason as the one on
+            // `TrackingScreen`: a fixed box, so a platform view is not needed
+            // to render this screen under test.
             Container(
               height: 300.h,
               margin: EdgeInsets.symmetric(horizontal: 20.w),
@@ -7834,15 +8302,28 @@ never replace it with a select-only policy on `sos_events`.
 
 That policy carries **no state clause**, on purpose, and it must stay that way.
 `activeTrip()` includes `requested`, and `TrackingController.raiseSos` fires
-whenever the trip is non-null while setting `sosRaised = true` *before* awaiting
-the insert. So a rider who presses the button while still waiting for a driver is
-in a `requested` trip, and a gate of `state in ('matched','arriving','ongoing')`
-would turn a working safety button into a 42501 on a screen already reading
-"Help is on the way", with no row in `sos_events`. The symmetry argument is the
-same one that makes the `chat_messages` INSERT policy ungated: the SOS SELECT
+whenever the trip is non-null. So a rider who presses the button while still
+waiting for a driver is in a `requested` trip, and a gate of `state in
+('matched','arriving','ongoing')` would turn a working safety button into a 42501
+for a whole class of rider — the ones who most need it. The symmetry argument is
+the same one that makes the `chat_messages` INSERT policy ungated: the SOS SELECT
 policy is ungated, so the write policy is too. Never narrow this button to fit a
 policy; if a state restriction is ever genuinely wanted, change `raiseSos`
 deliberately and write the test with it.
+
+**Corrected.** This paragraph used to end the argument on what the rider would
+*see*: `raiseSos` set `sosRaised = true` and notified *before* awaiting the
+insert, so a 42501 left the screen reading "Help is on the way" with no row in
+`sos_events`, and the rider had no way to tell and no way to retry.
+`TrackingController.raiseSos` now catches, puts `sosRaised` back to false and
+sets `error`, so a refused write reads as a red line and the button stays live.
+The conclusion is unchanged and the reason it is unchanged is now the stronger
+one: a gate does not merely misreport, it refuses the write for every rider in a
+`requested` trip. The same stale consequence is written into two places this task
+does not own and must not edit in place — the `sos_events` INSERT policy's comment
+at `init.sql:588-593` and the ruling in
+`.superpowers/sdd/2026-09-27-meet-n-go-rides/progress.md:129`. Both are ledgered
+against a later round rather than rewritten here.
 
 - [ ] **Step 14: Run the tracking and cancellation-policy tests and confirm they pass**
 
@@ -7854,9 +8335,9 @@ deno lint supabase/functions/cancel-trip/
 cd ~/meet-n-go/apps/rider && flutter test test/tracking/ && flutter analyze --fatal-infos
 ```
 
-Expected: 8 Deno tests pass, including `cancel_after_arriving_compensates_driver_test`,
+Expected: 10 Deno tests pass, including `cancel_after_arriving_compensates_driver_test`,
 which is one of the plan's seven Review Focus tests. `deno check` and `deno lint` are
-silent. 10 widget tests pass. `flutter analyze` reports `No issues found!`.
+silent. 19 widget tests pass. `flutter analyze` reports `No issues found!`.
 
 The repo has no `deno fmt` step in CI, so do not add one.
 
@@ -7868,16 +8349,27 @@ cd ~/meet-n-go && git add -A
 git -c user.email=opencode@local -c user.name=opencode commit -m "feat(rider): live tracking, SOS and cancellation compensation"
 ```
 
-Expected: 80 rider tests pass. Measured per file on this host, so the breakdown is
+Expected: 89 rider tests pass. Measured per file on this host, so the breakdown is
 `grep -c` output and not an addition you should trust blindly: 1 skeleton, 9 login,
 7 reset, 4 forgot-password, 15 home, 15 choose-car, 7 route-entry-sheet, 9 data-layer
-(plain `test(`), 3 trip-json (plain `test(`), 10 tracking. That is 70 pre-existing plus
-10 new. Read the runner's own total as the authority. Counting by hand matters:
+(plain `test(`), 3 trip-json (plain `test(`), 19 tracking (18 `testWidgets(` and one
+plain `test(`, the `copyWith` release test). That is 70 pre-existing plus 19 new. Read
+the runner's own total as the authority. Counting by hand matters:
 `grep -c 'testWidgets('` returns 0 for `data_layer_test.dart` and `trip_json_test.dart`
-because they use plain `test(`, and the 4-space indentation inside Task 9's `group()`
-bodies is **not** a cause of a zero count — a 4-space-indented `testWidgets(` counts
-and returns 1. The earlier explanation in this section blaming indentation was wrong and
-is corrected here.
+because they use plain `test(`, and it returns 18 rather than 19 for
+`tracking_screen_test.dart` for the same reason; the 4-space indentation inside
+Task 9's `group()` bodies is **not** a cause of a zero count — a 4-space-indented
+`testWidgets(` counts and returns 1. The earlier explanation in this section blaming
+indentation was wrong and is corrected here.
+
+Nineteen, not the ten the first draft listed, and not the fourteen guessed before the
+work started. The nine extra are the two the cancellation release needed — `cancel()`
+leaving `trip.hasDriver` false, and `copyWith(driverId: null)` keeping the driver where
+`clearDriver: true` drops it — and the seven that pin the failure paths: a refused SOS
+write, a dropped connection, a retry after a failed write, a failed cancel, a failed
+refresh, a successful refresh, and a 200% text-scale render. `mng_core`'s own
+`models_test.dart` still has no coverage for the `copyWith`/`clearDriver` distinction;
+that gap is ledgered against a later round, so it is pinned from this side instead.
 
 ---
 
