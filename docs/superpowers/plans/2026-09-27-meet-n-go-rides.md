@@ -5386,7 +5386,7 @@ class _ResetPasswordViewState extends State<_ResetPasswordView> {
 cd ~/meet-n-go/apps/rider && flutter test && flutter analyze --fatal-infos
 ```
 
-Expected: 1 skeleton + 9 login + 7 reset + 4 forgot-password + 3 trip-json + 9 data-layer tests pass (33), `flutter analyze --fatal-infos` clean. Use `--fatal-infos` and not bare `analyze`: CI runs that flag at `.github/workflows/ci.yml:25`, and `unnecessary_underscores` is an info-severity lint, so a bare `analyze` passes locally and turns the pipeline red.
+Expected: 1 skeleton + 9 login + 7 reset + 4 forgot-password + 3 trip-json + 9 data-layer tests pass (33), `flutter analyze --fatal-infos` clean. Use `--fatal-infos` so your local gate is the same gate CI runs at `.github/workflows/ci.yml:25`. Measured on this host, bare `flutter analyze` also exits 1 on an info-severity issue, so it is not a weaker check here — the flag is for parity, not because bare analyze would pass and CI would not.
 
 `LoginScreen` and `ForgotPasswordScreen` both reach for an ancestor
 `Provider<AuthRepository>`, so **when this task's screens are first mounted
@@ -5414,14 +5414,15 @@ git commit -m "feat(rider): auth screens, OTP reset flow, data layer interfaces"
 - Create: `apps/rider/lib/src/booking/vehicle_card.dart`
 - Test: `apps/rider/test/home/home_screen_test.dart`
 - Test: `apps/rider/test/booking/choose_car_screen_test.dart`
+- Test: `apps/rider/test/booking/route_entry_sheet_test.dart`
 
 **Interfaces:**
 - Consumes: `RideCategory` and `FareCalculator` (Task 2), `Vehicle`, `TripStop`, `GeoPoint` (Task 4), `MngColors`/`MngRadius`/`MngSpacing`/`MngTheme` (Task 1)
 - Produces:
   - `HomeScreen({required List<Vehicle> nearby, required String promoCode, void Function(BuildContext)? onSearchTap})`
-  - `CategoryChips({required RideCategory selected, required ValueChanged<RideCategory> onSelected})`
+  - `CategoryChips({required RideCategory selected, required ValueChanged<RideCategory> onSelected})` and, from the same file, `Color onCategoryColor(RideCategory category)` — the only correct foreground on a `RideCategory.color` surface. Import it wherever a chip or avatar is tinted by the category colour; do not inline `MngColors.onPrimary`.
   - `PromoBanner({required String code})`
-  - `RouteEntrySheet({required FareCalculator calc})` — a `showRouteEntrySheet(BuildContext, {required FareCalculator calc, required void Function(RouteDraft) onSubmit})` helper plus `RouteDraft({required TripStop pickup, required TripStop dropoff, required RideCategory category})`
+  - `RouteEntrySheet({required FareCalculator calc, required void Function(RouteDraft) onSubmit})` — a `showRouteEntrySheet(BuildContext, {required FareCalculator calc, required void Function(RouteDraft) onSubmit})` helper plus `RouteDraft({required TripStop pickup, required TripStop dropoff, required RideCategory category})` and the constants `kDefaultPickup` (Osu, `GeoPoint(5.6037, -0.1870)`) and `kDefaultDropoff` (Airport Residential, `GeoPoint(5.6052, -0.1660)`), which are 2.3299 km apart.
   - `ChooseCarScreen({required List<Vehicle> vehicles, required RideCategory selected, required ValueChanged<RideCategory> onCategory, required FareCalculator calc, required void Function(Vehicle) onConfirm, double distanceKm = 8.0})`
   - `VehicleCard({required Vehicle vehicle, required double fareGhs, required VoidCallback onTap, double rating = 4.9, bool selected = false})` — root key `Key('vehicleCard-${vehicle.id}')`
 - Widget keys this task owns: `emailField`-style keys `searchField`, `chip-standard`, `chip-premium`, `chip-van`, `vehicleCard-<id>`, `findDriverButton`, `confirmRouteButton`
@@ -5435,6 +5436,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:meetngo_rider/src/home/home_screen.dart';
+import 'package:meetngo_rider/src/home/widgets/category_chips.dart';
+import 'package:meetngo_rider/src/home/widgets/promo_banner.dart';
 import 'package:mng_core/mng_core.dart';
 
 Vehicle vehicle(String id, RideCategory category, int seats) => Vehicle(
@@ -5449,31 +5452,51 @@ Vehicle vehicle(String id, RideCategory category, int seats) => Vehicle(
       rideCategory: category,
     );
 
-Widget wrap({List<Vehicle> nearby = const []}) => ScreenUtilInit(
+Widget wrap({
+  List<Vehicle> nearby = const [],
+  void Function(BuildContext context)? onSearchTap,
+}) =>
+    ScreenUtilInit(
       designSize: const Size(390, 844),
-      builder: (_, __) => MaterialApp(
+      minTextAdapt: true,
+      splitScreenMode: true,
+      builder: (_, _) => MaterialApp(
         theme: MngTheme.light,
-        home: HomeScreen(nearby: nearby, promoCode: 'RIDE30'),
+        home: HomeScreen(
+          nearby: nearby,
+          promoCode: 'RIDE30',
+          onSearchTap: onSearchTap,
+        ),
       ),
     );
 
+void useDesignSurface(WidgetTester tester) {
+  tester.view.physicalSize = const Size(1170, 2532);
+  tester.view.devicePixelRatio = 3.0;
+  addTearDown(tester.view.reset);
+}
+
 void main() {
   testWidgets('greets the rider by time of day', (tester) async {
+    useDesignSurface(tester);
     await tester.pumpWidget(wrap());
     expect(find.textContaining('Good'), findsOneWidget);
   });
 
   testWidgets('shows the Accra locality line', (tester) async {
+    useDesignSurface(tester);
     await tester.pumpWidget(wrap());
     expect(find.text('Osu, Accra, Ghana'), findsOneWidget);
   });
 
   testWidgets('shows the where-would-you-go search field', (tester) async {
+    useDesignSurface(tester);
     await tester.pumpWidget(wrap());
     expect(find.byKey(const Key('searchField')), findsOneWidget);
   });
 
   testWidgets('renders the three launch categories and no moto', (tester) async {
+    useDesignSurface(tester);
     await tester.pumpWidget(wrap());
     expect(find.byKey(const Key('chip-standard')), findsOneWidget);
     expect(find.byKey(const Key('chip-premium')), findsOneWidget);
@@ -5482,6 +5505,7 @@ void main() {
   });
 
   testWidgets('tapping a category chip moves the selection', (tester) async {
+    useDesignSurface(tester);
     await tester.pumpWidget(wrap());
     await tester.tap(find.byKey(const Key('chip-van')));
     await tester.pump();
@@ -5490,17 +5514,20 @@ void main() {
   });
 
   testWidgets('promo banner shows the discount and code', (tester) async {
+    useDesignSurface(tester);
     await tester.pumpWidget(wrap());
     expect(find.text('30% off your first ride'), findsOneWidget);
     expect(find.text('Code RIDE30'), findsOneWidget);
   });
 
   testWidgets('empty nearby list shows a friendly empty state', (tester) async {
+    useDesignSurface(tester);
     await tester.pumpWidget(wrap());
     expect(find.text('No cars nearby right now'), findsOneWidget);
   });
 
   testWidgets('nearby cars are listed with category and seats', (tester) async {
+    useDesignSurface(tester);
     await tester.pumpWidget(
       wrap(nearby: [vehicle('v1', RideCategory.standard, 4)]),
     );
@@ -5508,10 +5535,43 @@ void main() {
     expect(find.text('Standard · 4 seats'), findsOneWidget);
   });
 
-  testWidgets('banner keeps a 20px radius and dark surface', (tester) async {
+  testWidgets('promo banner paints the 20px radius on the dark surface',
+      (tester) async {
+    useDesignSurface(tester);
     await tester.pumpWidget(wrap());
-    final banner = tester.widget<PromoBanner>(find.byType(PromoBanner));
-    expect(banner.code, 'RIDE30');
+    final banner = find.byType(PromoBanner);
+    expect(tester.widget<PromoBanner>(banner).code, 'RIDE30');
+    final box = tester.widget<Container>(
+      find.descendant(of: banner, matching: find.byType(Container)).first,
+    );
+    final decoration = box.decoration! as BoxDecoration;
+    expect(decoration.color, MngColors.textPrimary);
+    expect(decoration.borderRadius, BorderRadius.circular(MngRadius.large));
+  });
+
+  testWidgets('tapping the search field reports the tap', (tester) async {
+    useDesignSurface(tester);
+    var taps = 0;
+    await tester.pumpWidget(wrap(onSearchTap: (_) => taps++));
+    await tester.tap(find.byKey(const Key('searchField')));
+    expect(taps, 1);
+  });
+
+  testWidgets('a selected Premium chip is legible against its own colour',
+      (tester) async {
+    useDesignSurface(tester);
+    await tester.pumpWidget(wrap());
+    await tester.tap(find.byKey(const Key('chip-premium')));
+    await tester.pump();
+    final chip = find.byKey(const Key('chip-premium'));
+    final icon = tester.widget<Icon>(
+      find.descendant(of: chip, matching: find.byIcon(Icons.auto_awesome)),
+    );
+    final label = tester.widget<Text>(
+      find.descendant(of: chip, matching: find.text('Premium')),
+    );
+    expect(icon.color, MngColors.page);
+    expect(label.style!.color, MngColors.page);
   });
 }
 ```
@@ -5599,6 +5659,17 @@ import 'package:flutter/material.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
 import 'package:mng_core/mng_core.dart';
 
+/// Foreground for text or an icon drawn on top of [RideCategory.color].
+///
+/// `MngColors.premium` is `0xFF1A1A1A`, byte-identical to `MngColors.onPrimary`
+/// and `MngColors.textPrimary`, so a selected Premium chip rendered with
+/// `onPrimary` is dark-on-dark and reads as an empty box. Measured luminance on
+/// this host: `standard` 0.5165, `van` 0.3560, `premium` 0.0103, `onPrimary`
+/// 0.0103, `page` 1.0. The `0.5` threshold therefore leaves `standard` and
+/// `van` on `onPrimary` exactly as before and flips only `premium` to `page`.
+Color onCategoryColor(RideCategory category) =>
+    category.color.computeLuminance() > 0.5 ? MngColors.onPrimary : MngColors.page;
+
 class CategoryChips extends StatelessWidget {
   const CategoryChips({
     super.key,
@@ -5622,7 +5693,7 @@ class CategoryChips extends StatelessWidget {
       child: ListView.separated(
         scrollDirection: Axis.horizontal,
         itemCount: RideCategory.values.length,
-        separatorBuilder: (_, __) => SizedBox(width: 10.w),
+        separatorBuilder: (_, _) => SizedBox(width: 10.w),
         itemBuilder: (context, i) {
           final category = RideCategory.values[i];
           final isSelected = category == selected;
@@ -5642,14 +5713,18 @@ class CategoryChips extends StatelessWidget {
                   Icon(
                     _icons[category],
                     size: 20,
-                    color: isSelected ? MngColors.onPrimary : MngColors.textPrimary,
+                    color: isSelected
+                        ? onCategoryColor(category)
+                        : MngColors.textPrimary,
                   ),
                   SizedBox(height: 4.h),
                   Text(
                     category.label,
                     style: TextStyle(
-                      fontSize: 11,
-                      color: isSelected ? MngColors.onPrimary : MngColors.textSub,
+                      fontSize: 11.sp,
+                      color: isSelected
+                          ? onCategoryColor(category)
+                          : MngColors.textSub,
                     ),
                   ),
                 ],
@@ -5780,8 +5855,8 @@ class _HomeScreenState extends State<HomeScreen> {
                     contentPadding: EdgeInsets.zero,
                     leading: CircleAvatar(
                       backgroundColor: v.rideCategory.color,
-                      child: const Icon(Icons.directions_car,
-                          color: MngColors.onPrimary),
+                      child: Icon(Icons.directions_car,
+                          color: onCategoryColor(v.rideCategory)),
                     ),
                     title: Text(v.displayName),
                     subtitle: Text('${v.rideCategory.label} · ${v.seats} seats'),
@@ -5799,10 +5874,10 @@ class _HomeScreenState extends State<HomeScreen> {
 - [ ] **Step 6: Run the home tests and confirm they pass**
 
 ```bash
-cd ~/meet-n-go/apps/rider && flutter test test/home/ && flutter analyze
+cd ~/meet-n-go/apps/rider && flutter test test/home/ && flutter analyze --fatal-infos
 ```
 
-Expected: 9 tests pass, analyze clean.
+Expected: 11 tests pass, `flutter analyze --fatal-infos` clean.
 
 - [ ] **Step 7: Write the failing choose-car test**
 
@@ -5815,12 +5890,14 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:meetngo_rider/src/booking/choose_car_screen.dart';
 import 'package:mng_core/mng_core.dart';
 
-Vehicle vehicle(String id, RideCategory category, int seats) => Vehicle(
+Vehicle vehicle(String id, RideCategory category, int seats,
+        {String model = 'Civic'}) =>
+    Vehicle(
       id: id,
       ownerId: 'owner-$id',
       category: VehicleCategory.sedan,
       make: 'Honda',
-      model: 'Civic',
+      model: model,
       plate: 'GR-$id',
       seats: seats,
       photoUrl: '',
@@ -5835,7 +5912,9 @@ Widget wrap({
 }) =>
     ScreenUtilInit(
       designSize: const Size(390, 844),
-      builder: (_, __) => MaterialApp(
+      minTextAdapt: true,
+      splitScreenMode: true,
+      builder: (_, _) => MaterialApp(
         theme: MngTheme.light,
         home: ChooseCarScreen(
           vehicles: vehicles,
@@ -5847,18 +5926,27 @@ Widget wrap({
       ),
     );
 
+void useDesignSurface(WidgetTester tester) {
+  tester.view.physicalSize = const Size(1170, 2532);
+  tester.view.devicePixelRatio = 3.0;
+  addTearDown(tester.view.reset);
+}
+
 void main() {
   testWidgets('heading matches the reference copy', (tester) async {
+    useDesignSurface(tester);
     await tester.pumpWidget(wrap(vehicles: [vehicle('1', RideCategory.standard, 4)]));
     expect(find.text('Choose your car'), findsOneWidget);
   });
 
   testWidgets('shows the 8 km trip summary line', (tester) async {
+    useDesignSurface(tester);
     await tester.pumpWidget(wrap(vehicles: [vehicle('1', RideCategory.standard, 4)]));
     expect(find.text('8.0 km'), findsOneWidget);
   });
 
   testWidgets('card shows make, seats and GHS price', (tester) async {
+    useDesignSurface(tester);
     await tester.pumpWidget(wrap(vehicles: [vehicle('1', RideCategory.standard, 4)]));
     expect(find.text('Honda Civic'), findsOneWidget);
     expect(find.text('4 seats'), findsOneWidget);
@@ -5866,6 +5954,7 @@ void main() {
   });
 
   testWidgets('tapping a card selects it and reports the vehicle', (tester) async {
+    useDesignSurface(tester);
     Vehicle? chosen;
     await tester.pumpWidget(wrap(
       vehicles: [
@@ -5881,21 +5970,24 @@ void main() {
 
   testWidgets('switching category filters the list and notifies the parent',
       (tester) async {
+    useDesignSurface(tester);
     RideCategory? reported;
     await tester.pumpWidget(wrap(
       vehicles: [
         vehicle('1', RideCategory.standard, 4),
-        vehicle('2', RideCategory.van, 7),
+        vehicle('2', RideCategory.van, 7, model: 'Hiace'),
       ],
       onCategory: (c) => reported = c,
     ));
-    await tester.tap(find.text('Van'));
+    await tester.tap(find.byKey(const Key('tab-van')));
     await tester.pump();
     expect(reported, RideCategory.van);
     expect(find.text('Honda Civic'), findsNothing);
+    expect(find.text('Honda Hiace'), findsOneWidget);
   });
 
   testWidgets('van fare uses the van per-km rate', (tester) async {
+    useDesignSurface(tester);
     await tester.pumpWidget(wrap(
       vehicles: [vehicle('2', RideCategory.van, 7)],
       selected: RideCategory.van,
@@ -5905,6 +5997,7 @@ void main() {
   });
 
   testWidgets('empty vehicle list disables the find-driver button', (tester) async {
+    useDesignSurface(tester);
     await tester.pumpWidget(wrap(vehicles: const []));
     final button =
         tester.widget<FilledButton>(find.byKey(const Key('findDriverButton')));
@@ -5912,6 +6005,7 @@ void main() {
   });
 
   testWidgets('non-empty list enables find-driver', (tester) async {
+    useDesignSurface(tester);
     await tester.pumpWidget(wrap(vehicles: [vehicle('1', RideCategory.standard, 4)]));
     final button =
         tester.widget<FilledButton>(find.byKey(const Key('findDriverButton')));
@@ -5919,6 +6013,7 @@ void main() {
   });
 
   testWidgets('find-driver confirms the selected vehicle', (tester) async {
+    useDesignSurface(tester);
     Vehicle? confirmed;
     await tester.pumpWidget(wrap(
       vehicles: [vehicle('1', RideCategory.standard, 4)],
@@ -5927,6 +6022,29 @@ void main() {
     await tester.tap(find.byKey(const Key('findDriverButton')));
     await tester.pump();
     expect(confirmed?.id, '1');
+  });
+
+  testWidgets('a tapped card is marked as the selection', (tester) async {
+    useDesignSurface(tester);
+    await tester.pumpWidget(wrap(vehicles: [
+      vehicle('1', RideCategory.standard, 4),
+      vehicle('2', RideCategory.standard, 4),
+    ]));
+    await tester.tap(find.byKey(const Key('vehicleCard-2')));
+    await tester.pump();
+    Border borderColorOf(String id) => (tester
+            .widget<Container>(
+              find
+                  .descendant(
+                    of: find.byKey(Key('vehicleCard-$id')),
+                    matching: find.byType(Container),
+                  )
+                  .first,
+            )
+            .decoration! as BoxDecoration)
+        .border! as Border;
+    expect(borderColorOf('2').top.color, MngColors.primary);
+    expect(borderColorOf('1').top.color, MngColors.divider);
   });
 }
 ```
@@ -6005,26 +6123,44 @@ class VehicleCard extends StatelessWidget {
                   Text(vehicle.displayName,
                       style: MngTheme.light.textTheme.titleMedium),
                   SizedBox(height: 4.h),
-                  Row(
+                  Wrap(
+                    spacing: 10.w,
+                    runSpacing: 2.h,
+                    crossAxisAlignment: WrapCrossAlignment.center,
                     children: [
-                      const Icon(Icons.star,
-                          size: 14, color: MngColors.primary),
-                      SizedBox(width: 2.w),
-                      Text(rating.toStringAsFixed(1),
-                          style: MngTheme.light.textTheme.bodySmall),
-                      SizedBox(width: 10.w),
-                      const Icon(Icons.person,
-                          size: 14, color: MngColors.textSub),
-                      SizedBox(width: 2.w),
-                      Text('${vehicle.seats} seats',
-                          style: MngTheme.light.textTheme.bodySmall),
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(Icons.star,
+                              size: 14, color: MngColors.primary),
+                          SizedBox(width: 2.w),
+                          Text(rating.toStringAsFixed(1),
+                              style: MngTheme.light.textTheme.bodySmall),
+                        ],
+                      ),
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(Icons.person,
+                              size: 14, color: MngColors.textSub),
+                          SizedBox(width: 2.w),
+                          Text('${vehicle.seats} seats',
+                              style: MngTheme.light.textTheme.bodySmall),
+                        ],
+                      ),
                     ],
                   ),
                 ],
               ),
             ),
-            Text('GHS ${fareGhs.toStringAsFixed(2)}',
-                style: MngTheme.light.textTheme.titleMedium),
+            Flexible(
+              child: FittedBox(
+                fit: BoxFit.scaleDown,
+                alignment: Alignment.centerRight,
+                child: Text('GHS ${fareGhs.toStringAsFixed(2)}',
+                    style: MngTheme.light.textTheme.titleMedium),
+              ),
+            ),
           ],
         ),
       ),
@@ -6089,8 +6225,8 @@ class RouteEntrySheet extends StatefulWidget {
 }
 
 class _RouteEntrySheetState extends State<RouteEntrySheet> {
-  TripStop _pickup = kDefaultPickup;
-  TripStop _dropoff = kDefaultDropoff;
+  final TripStop _pickup = kDefaultPickup;
+  final TripStop _dropoff = kDefaultDropoff;
   RideCategory _category = RideCategory.standard;
 
   double get _distanceKm => _pickup.point.distanceKmTo(_dropoff.point);
@@ -6107,7 +6243,6 @@ class _RouteEntrySheetState extends State<RouteEntrySheet> {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           Container(
-            height: 72.h,
             padding: EdgeInsets.all(12.w),
             decoration: BoxDecoration(
               color: MngColors.muted,
@@ -6118,25 +6253,37 @@ class _RouteEntrySheetState extends State<RouteEntrySheet> {
               children: [
                 Row(
                   children: [
-                    const Icon(Icons.circle, size: 10, color: MngColors.success),
+                    const Icon(Icons.circle,
+                        size: 10, color: MngColors.success),
                     SizedBox(width: 8.w),
                     Expanded(
-                      child: Text('${_distanceKm.toStringAsFixed(1)} km',
-                          style: MngTheme.light.textTheme.titleMedium),
+                      child: Text(_pickup.address,
+                          style: MngTheme.light.textTheme.bodyMedium),
                     ),
-                    Text('~$driveMinutes min drive',
-                        style: MngTheme.light.textTheme.bodySmall),
                   ],
                 ),
-                SizedBox(height: 6.h),
+                SizedBox(height: 8.h),
                 Row(
                   children: [
                     const Icon(Icons.circle, size: 10, color: MngColors.error),
                     SizedBox(width: 8.w),
                     Expanded(
-                      child: Text('${_distanceKm.toStringAsFixed(1)} km',
-                          style: MngTheme.light.textTheme.bodySmall),
+                      child: Text(_dropoff.address,
+                          style: MngTheme.light.textTheme.bodyMedium),
                     ),
+                  ],
+                ),
+                SizedBox(height: 10.h),
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        '${_distanceKm.toStringAsFixed(1)} km  ·  ~$_driveMinutes min drive',
+                        overflow: TextOverflow.ellipsis,
+                        style: MngTheme.light.textTheme.titleMedium,
+                      ),
+                    ),
+                    SizedBox(width: 8.w),
                     Text('GHS ${quote.fareGhs.toStringAsFixed(2)}',
                         style: MngTheme.light.textTheme.titleMedium),
                   ],
@@ -6166,7 +6313,91 @@ class _RouteEntrySheetState extends State<RouteEntrySheet> {
 }
 ```
 
-- [ ] **Step 11: Write `choose_car_screen.dart`**
+- [ ] **Step 11: Write the failing route-entry-sheet test**
+
+`apps/rider/test/booking/route_entry_sheet_test.dart`:
+
+```dart
+import 'package:flutter/material.dart';
+import 'package:flutter_screenutil/flutter_screenutil.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:meetngo_rider/src/booking/route_entry_sheet.dart';
+import 'package:mng_core/mng_core.dart';
+
+Widget wrap({void Function(RouteDraft draft)? onSubmit}) => ScreenUtilInit(
+      designSize: const Size(390, 844),
+      minTextAdapt: true,
+      splitScreenMode: true,
+      builder: (_, _) => MaterialApp(
+        theme: MngTheme.light,
+        home: Scaffold(
+          body: RouteEntrySheet(calc: FareCalculator(), onSubmit: onSubmit ?? (_) {}),
+        ),
+      ),
+    );
+
+void useDesignSurface(WidgetTester tester) {
+  tester.view.physicalSize = const Size(1170, 2532);
+  tester.view.devicePixelRatio = 3.0;
+  addTearDown(tester.view.reset);
+}
+
+void main() {
+  testWidgets('shows the pickup and the dropoff, not the distance twice',
+      (tester) async {
+    useDesignSurface(tester);
+    await tester.pumpWidget(wrap());
+    expect(find.text('Osu, Accra'), findsOneWidget);
+    expect(find.text('Airport Residential, Accra'), findsOneWidget);
+  });
+
+  testWidgets('summarises the measured distance, drive time and fare',
+      (tester) async {
+    useDesignSurface(tester);
+    await tester.pumpWidget(wrap());
+    // Haversine over the two Accra constants, R = 6371.0088: 2.3299 km.
+    // (5.00 + 1.80 * 2.3299) * 1.0 + 1.00 = 10.1938 -> GHS 10.19.
+    expect(find.text('2.3 km  ·  ~6 min drive'), findsOneWidget);
+    expect(find.text('GHS 10.19'), findsOneWidget);
+  });
+
+  testWidgets('changing the category requotes the fare', (tester) async {
+    useDesignSurface(tester);
+    await tester.pumpWidget(wrap());
+    await tester.tap(find.byKey(const Key('chip-van')));
+    await tester.pump();
+    // (5.00 + 2.20 * 2.3299) * 1.0 + 1.00 = 11.1258 -> GHS 11.13.
+    expect(find.text('GHS 11.13'), findsOneWidget);
+  });
+
+  testWidgets('confirm submits the draft with the chosen stops', (tester) async {
+    useDesignSurface(tester);
+    RouteDraft? draft;
+    await tester.pumpWidget(wrap(onSubmit: (d) => draft = d));
+    await tester.tap(find.byKey(const Key('chip-van')));
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('confirmRouteButton')));
+    await tester.pump();
+    expect(draft, isNotNull);
+    expect(draft!.pickup.address, kDefaultPickup.address);
+    expect(draft!.pickup.point, kDefaultPickup.point);
+    expect(draft!.dropoff.address, kDefaultDropoff.address);
+    expect(draft!.category, RideCategory.van);
+  });
+}
+```
+
+- [ ] **Step 12: Run it and confirm it fails**
+
+```bash
+cd ~/meet-n-go/apps/rider && flutter test test/booking/route_entry_sheet_test.dart
+```
+
+Expected: FAIL. With the sheet as written before this step the first test
+fails, because the old body rendered the distance on both rows and neither
+address.
+
+- [ ] **Step 13: Write `choose_car_screen.dart`**
 
 `apps/rider/lib/src/booking/choose_car_screen.dart`:
 
@@ -6174,6 +6405,7 @@ class _RouteEntrySheetState extends State<RouteEntrySheet> {
 import 'package:flutter/material.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
 import 'package:mng_core/mng_core.dart';
+import '../home/widgets/category_chips.dart';
 import 'vehicle_card.dart';
 
 class ChooseCarScreen extends StatefulWidget {
@@ -6227,8 +6459,11 @@ class _ChooseCarScreenState extends State<ChooseCarScreen> {
                   Text('${widget.distanceKm.toStringAsFixed(1)} km',
                       style: MngTheme.light.textTheme.titleMedium),
                   SizedBox(width: 8.w),
-                  Text('Fares shown are estimates',
-                      style: MngTheme.light.textTheme.bodySmall),
+                  Expanded(
+                    child: Text('Fares shown are estimates',
+                        overflow: TextOverflow.ellipsis,
+                        style: MngTheme.light.textTheme.bodySmall),
+                  ),
                 ],
               ),
             ),
@@ -6242,6 +6477,7 @@ class _ChooseCarScreenState extends State<ChooseCarScreen> {
                       Padding(
                         padding: EdgeInsets.only(right: 8.w),
                         child: GestureDetector(
+                          key: Key('tab-${c.name}'),
                           onTap: () => setState(() {
                             _category = c;
                             _chosenId = null;
@@ -6260,9 +6496,9 @@ class _ChooseCarScreenState extends State<ChooseCarScreen> {
                             child: Text(
                               c.label,
                               style: TextStyle(
-                                fontSize: 13,
+                                fontSize: 13.sp,
                                 color: c == _category
-                                    ? MngColors.onPrimary
+                                    ? onCategoryColor(c)
                                     : MngColors.textSub,
                               ),
                             ),
@@ -6329,23 +6565,27 @@ class _ChooseCarScreenState extends State<ChooseCarScreen> {
 }
 ```
 
-- [ ] **Step 12: Run the choose-car tests and confirm they pass**
+- [ ] **Step 14: Run the choose-car tests and confirm they pass**
 
 ```bash
-cd ~/meet-n-go/apps/rider && flutter test test/booking/ && flutter analyze
+cd ~/meet-n-go/apps/rider && flutter test test/booking/ && flutter analyze --fatal-infos
 ```
 
-Expected: 9 tests pass.
+Expected: 10 tests pass.
 
-- [ ] **Step 13: Run the whole rider suite and commit**
+- [ ] **Step 15: Run the whole rider suite and commit**
 
 ```bash
-cd ~/meet-n-go/apps/rider && flutter test && flutter analyze
+cd ~/meet-n-go/apps/rider && flutter test && flutter analyze --fatal-infos
 cd ~/meet-n-go && git add -A
 git -c user.email=opencode@local -c user.name=opencode commit -m "feat(rider): home, route entry sheet and choose-car screens"
 ```
 
-Expected: 33 tests pass across the rider app (1 skeleton + 15 auth + 9 home + 9 booking minus 1 overlap; run the count from the output rather than asserting it).
+Expected: 58 tests pass across the rider app — 33 pre-existing (1 skeleton +
+9 login + 7 reset + 4 forgot-password + 3 trip-json + 9 data-layer) + 11 home +
+10 choose-car + 4 route-entry-sheet. Count the files, do not add the numbers:
+`grep -c "testWidgets("` returns 0 for a file whose tests sit inside a
+`group()` at 4-space indent, so count by hand and read the runner's own total.
 
 ---
 
