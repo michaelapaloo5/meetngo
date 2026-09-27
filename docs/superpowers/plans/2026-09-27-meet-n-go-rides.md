@@ -590,8 +590,8 @@ void main() {
     test('surge multiplies the distance component and is capped at 2x', () {
       final surged = calc.quote(category: RideCategory.standard, distanceKm: 5, surge: 1.5);
       final capped = calc.quote(category: RideCategory.standard, distanceKm: 5, surge: 9.0);
-      expect(surged.fareGhs, closeTo(13.5, 0.001));
-      expect(capped.fareGhs, closeTo(21.0, 0.001));
+      expect(surged.fareGhs, closeTo(22.0, 0.001));
+      expect(capped.fareGhs, closeTo(29.0, 0.001));
     });
 
     test('surge below 1 is lifted to 1 so fares never drop below base', () {
@@ -2159,9 +2159,13 @@ Deno.test('premium 10km beats standard 10km', () => {
   assertEquals(p.fareGhs > s.fareGhs, true);
 });
 
-Deno.test('surge is capped at 2x', () => {
-  const q = computeFare({ category: 'standard', distanceKm: 5, surge: 5, discountGhs: 0 });
-  assertEquals(q.fareGhs, 21.0);
+Deno.test('surge multiplies the whole base-plus-distance and is capped at 2x', () => {
+  // (5.00 + 1.80 * 5) * 1.5 + 1.00 = 22.00
+  const surged = computeFare({ category: 'standard', distanceKm: 5, surge: 1.5, discountGhs: 0 });
+  assertEquals(surged.fareGhs, 22.0);
+  // (5.00 + 1.80 * 5) * 2.0 + 1.00 = 29.00, surge 5 clamps to 2.0
+  const capped = computeFare({ category: 'standard', distanceKm: 5, surge: 5, discountGhs: 0 });
+  assertEquals(capped.fareGhs, 29.0);
 });
 
 Deno.test('surge below 1 is lifted to 1', () => {
