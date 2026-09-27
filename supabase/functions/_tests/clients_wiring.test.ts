@@ -105,9 +105,15 @@ Deno.test('the decline write is the service client, with all three filters and a
     has(body, /service\s*\.\s*from\s*\(/),
     'the decline write must use the service client: offers has no UPDATE policy, so as authenticated it matches zero rows (probes 6 and 7)',
   );
-  // Regex literals, not patterns built from strings: `"eq\('id'\"" ` is an
-  // identity escape in JavaScript, so a string-built pattern silently loses its
-  // backslashes and the parentheses become a capture group that does not match.
+  // These patterns are built from template strings, and that is a hazard rather
+  // than a style: a template string processes escapes the way a string literal
+  // does, so every backslash below has to be doubled. `\\.eq\\(` is the
+  // two-character sequence `\.` in the resulting RegExp source; written as `\.eq\(` it
+  // would be an identity escape, the backslash would vanish, and the parentheses
+  // would become a capture group that does not match the text it was written
+  // for -- a pattern that silently tests nothing. Round 1 shipped exactly that
+  // bug with `"eq\('id'\""` built from a plain string, and it failed as a test
+  // that could not see the thing it named. Do not "tidy" the doubling.
   const filters: [RegExp, string][] = [
     [new RegExp(`\\.eq\\(\\s*${Q}id${Q}\\s*,\\s*offerId\\s*\\)`), ".eq('id', offerId)"],
     [new RegExp(`\\.eq\\(\\s*${Q}driver_id${Q}\\s*,\\s*driverId\\s*\\)`), ".eq('driver_id', driverId)"],
