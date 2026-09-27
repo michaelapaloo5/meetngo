@@ -83,8 +83,22 @@ export interface AcceptResult {
   accepted: boolean;
   winnerDriverId: string | null;
   released: string[];
-  // Null only when the offer was not found, because then there is no trip to
-  // have a state.
+  // The trip state this outcome implies: 'matched' on a win, and otherwise the
+  // offer's own trip state, unchanged -- the mirror reports what the trip is,
+  // not what it would become, because only the RPC moves it.
+  //
+  // Null whenever the trip state is not known, which is two cases and not one:
+  // the offer was not found and there is no trip to name, *and* every refusal
+  // whose row carried no `tripState` because the caller did not read the trip.
+  // The handler is the second case -- it passes `tripState: null` -- so in the
+  // handler's own use this field is null on every refusal and 'matched' on a
+  // win.
+  //
+  // Nothing in production reads it. It is kept because it is part of the
+  // `AcceptResult` contract the brief pins, and because the mirror's own tests
+  // use it to assert that a win implies 'matched' and to carry that state into
+  // the losing accept's view of the same trip. `resolveAccept` models the whole
+  // outcome of the RPC rather than only the slice the handler happens to read.
   nextTripState: TripStateName | null;
   reason: string;
   // The status to answer a refusal with; null when the offer is acceptable.

@@ -16,7 +16,9 @@ import { assert } from 'https://deno.land/std@0.224.0/testing/asserts.ts';
 // fetch. That was rejected: it makes the Deno test job depend on a cold remote
 // fetch, and this tree has no lockfile, so it trades a known coverage gap for a
 // CI failure mode. Asserting the file's text costs no network, no environment
-// and no supabase-js, and it fails on exactly the four mutations that matter.
+// and no supabase-js, and it fails on eight mutations of `clients.ts`: the four
+// that a behavioural suite could not see at all, and four more that guard the
+// decline write's filters and the absence of a trip read.
 //
 // The cost is honest and worth naming: these assertions match source text, so
 // they are brittle to reformatting and they cannot see a semantic change that
@@ -39,6 +41,13 @@ const source = raw.replace(/^\s*\/\/.*$/gm, '');
 // the call chains in this file are wrapped across lines and `user.from(` does
 // not appear literally in any of them.
 const has = (body: string, pattern: RegExp): boolean => pattern.test(body.replace(/\s+/g, ' '));
+
+// A quote class for matching a string literal without depending on which quote
+// the file happens to use. A single-quote-only pattern is a test that goes dead
+// the moment the file is reformatted to double quotes, which is a silent loss of
+// coverage rather than a failure -- and that is exactly how the `trips` pattern
+// was caught surviving `service.from("trips")`.
+const Q = "['\"`]";
 
 // The body of one `name: async (...) => { ... }` member of the returned object,
 // brace-matched so an assertion covers the member and not the whole file.
@@ -100,9 +109,9 @@ Deno.test('the decline write is the service client, with all three filters and a
   // identity escape in JavaScript, so a string-built pattern silently loses its
   // backslashes and the parentheses become a capture group that does not match.
   const filters: [RegExp, string][] = [
-    [/\.eq\('id', offerId\)/, ".eq('id', offerId)"],
-    [/\.eq\('driver_id', driverId\)/, ".eq('driver_id', driverId)"],
-    [/\.eq\('state', 'pending'\)/, ".eq('state', 'pending')"],
+    [new RegExp(`\\.eq\\(\\s*${Q}id${Q}\\s*,\\s*offerId\\s*\\)`), ".eq('id', offerId)"],
+    [new RegExp(`\\.eq\\(\\s*${Q}driver_id${Q}\\s*,\\s*driverId\\s*\\)`), ".eq('driver_id', driverId)"],
+    [new RegExp(`\\.eq\\(\\s*${Q}state${Q}\\s*,\\s*${Q}pending${Q}\\s*\\)`), ".eq('state', 'pending')"],
   ];
   for (const [pattern, label] of filters) {
     assert(
@@ -140,8 +149,12 @@ Deno.test('there is no privileged read of a trip', () => {
   // `driver reads assigned trips` is `using (driver_id = auth.uid())` and a
   // trip's driver_id is NULL until accept_offer matches it (probe 11). It is
   // gone, and the trip is not something this function has any use for.
+  // Quote-agnostic. This pattern was single-quote-only and a reviewer verified
+  // that reintroducing the privileged read as `service.from("trips")` passed it
+  // -- so the one assertion guarding the removal F1 made was a quote style from
+  // dead, on the exact read whose return N1's stale comment would invite.
   assert(
-    !/from\('trips'\)/.test(source),
+    !new RegExp(`from\\(\\s*${Q}trips${Q}\\s*\\)`).test(source),
     "clients.ts reads the trips table; the offer row carries no trip state this function acts on, and a privileged read of a trip is a read of the rider's pickup, dropoff and fare that nothing here needs",
   );
 });

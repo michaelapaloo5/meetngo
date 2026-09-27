@@ -66,10 +66,12 @@ export async function handleOfferRequest(req: Request, deps: OfferDeps): Promise
   // request's own bearer and the token is passed to `getUser` explicitly.
   //
   // The `Bearer ` scheme is **required**, not stripped. PostgREST resolves the
-  // role from that scheme word and not from the header's mere presence: wai's
-  // `extractBearerAuth` returns the token only when the scheme compares equal to
-  // `bearer` after lowercasing, and PostgREST substitutes `""` otherwise, so a
-  // bare token authenticates nowhere. Stripping the prefix leniently would be
+  // role from that scheme word and not from the header's mere presence:
+  // wai-extra's `extractBearerAuth` returns the token only when the scheme
+  // compares equal to `bearer` after lowercasing
+  // (`Network/Wai/Middleware/HttpAuth.hs:144-149` in wai-extra; the symbol is
+  // absent from wai 3.2.4 and 3.2.5), and PostgREST substitutes `""` otherwise,
+  // so a bare token authenticates nowhere. Stripping the prefix leniently would be
   // worse than refusing it, because `authenticate` is the one port that
   // tolerates a bare token -- supabase-js's `getUser(token)` adds the scheme
   // itself -- while `readOffer` and `acceptOffer` forward the raw header. The
@@ -77,7 +79,7 @@ export async function handleOfferRequest(req: Request, deps: OfferDeps): Promise
   // port, with an outcome that is a 500 or a misleading 404. Refusing here
   // makes that unreachable.
   //
-  // The scheme is matched case-insensitively, which is what wai's comparison
+  // The scheme is matched case-insensitively, which is what wai-extra's
   // does, so `bearer <token>` is accepted the same as `Bearer <token>`.
   const match = /^Bearer\s+(\S+)\s*$/i.exec(req.headers.get('Authorization') ?? '');
   if (!match) return json(401, { error: 'unauthenticated' });
@@ -89,12 +91,16 @@ export async function handleOfferRequest(req: Request, deps: OfferDeps): Promise
 
   // `req.json()` throws on a truncated or non-JSON body. Unguarded, that escapes
   // to `serve`'s default onError, which is
-  // `new Response("Internal Server Error", { status: 500 })` with no headers at
-  // all (std 0.224.0 `http/server.ts:102-106`). The body is the smaller problem:
-  // that response carries no `Access-Control-Allow-Origin`, so a browser or
-  // Flutter-web client cannot read it, and every other response this handler
-  // returns goes out through `corsHeaders`. Catching it here is what keeps a
-  // malformed body a readable 400.
+  // `new Response("Internal Server Error", { status: 500 })` and passes no
+  // headers of its own (std 0.224.0 `http/server.ts:102-106`), so the response
+  // Deno sends carries only the `content-type` it adds for a string body.
+  //
+  // Which header is missing is the whole problem: there is no
+  // `Access-Control-Allow-Origin`, so a browser or Flutter-web client cannot
+  // read the failure at all -- it surfaces as an opaque network error rather
+  // than as a 500 -- while every other response this handler returns goes out
+  // through `corsHeaders`. Catching it here is what keeps a malformed body a
+  // readable 400.
   let body: unknown;
   try {
     body = await req.json();
@@ -115,8 +121,22 @@ async function accept(
   offerId: string,
   driverId: string,
 ): Promise<Response> {
-  // Two reads, on two clients, and the split is forced by the policies rather
-  // than chosen.
+  // One read, on the caller's own bearer. The accept path has no service-role
+  // read and must not grow one: the only reason this function has two clients at
+  // all is the decline write, which needs the service key because `offers` has
+  // no UPDATE policy and so matches zero rows as `authenticated` (migration:530
+  // and :532 are its only two policies; probes 6 and 7 measure the consequence).
+  //
+  // An earlier version also read the trip's state here, from the service client,
+  // to feed a classifier verdict that the handler does not act on -- and a
+  // privileged read of the trip is not available on the caller's bearer at all,
+  // because `driver reads assigned trips` (migration:520) is
+  // `using (driver_id = auth.uid())` and the trip's driver_id is NULL until
+  // `accept_offer` matches it (probe 11 measures 0 rows for the very driver
+  // holding the offer). Removing it dropped a round trip from the accept path,
+  // and `clients_wiring.test.ts` asserts that no `trips` read comes back, in
+  // either quote style. Do not restore it: there is no verdict left that would
+  // use it.
   //
   // The offer comes from the caller's own bearer, where `driver reads own
   // offers` (migration:530) is what makes the row evidence about *this* driver.

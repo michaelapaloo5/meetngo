@@ -522,17 +522,21 @@ Deno.test('an error on the ownership read is a 500', async () => {
 });
 
 // ---------------------------------------------------------------------------
-// The accept classifier: refusals skip the RPC, a pass defers to it
+// The accept classifier: two refusals skip the RPC, the rest defer to it
 // ---------------------------------------------------------------------------
+//
+// The classifier produces four refusals and the handler acts on two of them. It
+// acts on an offer that is not there and on an offer already in a terminal
+// state, because `migration:376`'s
+// `update offers set state = 'expired' where id = p_offer and state = 'pending'`
+// is itself guarded by `state = 'pending'`, so for those two it matches nothing
+// and there is no write to skip. It defers on `offer expired` and `trip is no
+// longer awaiting a driver`, because for those the RPC *does* write, and that
+// write is the only one of its kind in the tree. The two tests below pin both
+// directions: the RPC not being called, and the RPC being called.
 
-// Each of the classifier's three refusals on an offer that is otherwise the
-// caller's. The RPC is never called, and each answer carries the reason that
-// applies rather than the blanket 404 the offer read used to produce.
-// The two refusals the handler answers itself. `migration:376`'s
-// `update offers set state = 'expired'` is itself guarded by
-// `state = 'pending'`, so for an offer already in a terminal state it matches
-// nothing and there is no write to skip. Asserting the RPC is *not* called is
-// the property; the reason string and the status are the visible part of it.
+// The handler's own refusal. Asserting the RPC is *not* called is the property;
+// the reason string and the status are the visible part of it.
 Deno.test('a terminal-offer refusal answers its own reason and never reaches the RPC', async () => {
   for (const state of ['declined', 'accepted', 'expired', 'released'] as const) {
     const { res, calls, body } = await call(
@@ -887,9 +891,10 @@ Deno.test('a bare token with no Bearer scheme is a 401 before any port is called
   }
 });
 
-// The scheme is compared case-insensitively, which is what wai's
-// `S.map toLower x == "bearer"` does, so a client that sends lowercase is not
-// refused for its punctuation.
+// The scheme is compared case-insensitively, which is what wai-extra's
+// `extractBearerAuth` does (`S.map toLower x == "bearer"`, in
+// Network/Wai/Middleware/HttpAuth.hs, not in wai itself), so a client that sends
+// lowercase is not refused for its punctuation.
 Deno.test('the Bearer scheme is matched case-insensitively', async () => {
   for (const header of ['Bearer DRIVER-JWT', 'bearer DRIVER-JWT', 'BEARER DRIVER-JWT', 'Bearer   DRIVER-JWT']) {
     const h = harness();
