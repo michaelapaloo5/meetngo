@@ -68,6 +68,15 @@ void main() {
     expect(find.byKey(const Key('chip-premium')), findsOneWidget);
     expect(find.byKey(const Key('chip-van')), findsOneWidget);
     expect(find.text('Moto'), findsNothing);
+    final unselected = tester.widget<Text>(
+      find.descendant(
+        of: find.byKey(const Key('chip-van')),
+        matching: find.text('Van'),
+      ),
+    );
+    // `textSub` on `muted` measures 3.16:1, under the 4.5:1 WCAG AA minimum
+    // for text this size. The tokens are Task 1's, so this pins the value.
+    expect(unselected.style!.color, MngColors.textSub);
   });
 
   testWidgets('tapping a category chip moves the selection', (tester) async {
@@ -99,6 +108,13 @@ void main() {
     );
     expect(find.text('Toyota Corolla'), findsOneWidget);
     expect(find.text('Standard · 4 seats'), findsOneWidget);
+    final avatar = tester.widget<Icon>(
+      find.descendant(
+        of: find.byType(CircleAvatar),
+        matching: find.byIcon(Icons.directions_car),
+      ),
+    );
+    expect(avatar.color, MngColors.onPrimary);
   });
 
   testWidgets('promo banner paints the 20px radius on the dark surface',
@@ -138,5 +154,61 @@ void main() {
     );
     expect(icon.color, MngColors.page);
     expect(label.style!.color, MngColors.page);
+  });
+
+  testWidgets('a selected Van chip is legible against its own colour',
+      (tester) async {
+    useDesignSurface(tester);
+    await tester.pumpWidget(wrap());
+    await tester.tap(find.byKey(const Key('chip-van')));
+    await tester.pump();
+    final chip = find.byKey(const Key('chip-van'));
+    final icon = tester.widget<Icon>(
+      find.descendant(of: chip, matching: find.byIcon(Icons.airport_shuttle)),
+    );
+    final label = tester.widget<Text>(
+      find.descendant(of: chip, matching: find.text('Van')),
+    );
+    expect(icon.color, MngColors.onPrimary);
+    expect(label.style!.color, MngColors.onPrimary);
+  });
+
+  testWidgets('a Van nearby avatar is legible against its own colour',
+      (tester) async {
+    useDesignSurface(tester);
+    await tester.pumpWidget(wrap(nearby: [vehicle('v1', RideCategory.van, 7)]));
+    final icon = tester.widget<Icon>(
+      find.descendant(
+        of: find.byType(CircleAvatar),
+        matching: find.byIcon(Icons.directions_car),
+      ),
+    );
+    expect(icon.color, MngColors.onPrimary);
+  });
+
+  testWidgets('a Premium nearby avatar is legible against its own colour',
+      (tester) async {
+    useDesignSurface(tester);
+    await tester.pumpWidget(
+      wrap(nearby: [vehicle('v1', RideCategory.premium, 4)]),
+    );
+    final icon = tester.widget<Icon>(
+      find.descendant(
+        of: find.byType(CircleAvatar),
+        matching: find.byIcon(Icons.directions_car),
+      ),
+    );
+    expect(icon.color, MngColors.page);
+  });
+
+  testWidgets('the home screen has no overflow at 200% text scale',
+      (tester) async {
+    useDesignSurface(tester);
+    tester.platformDispatcher.textScaleFactorTestValue = 2.0;
+    addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
+    await tester.pumpWidget(wrap(
+      nearby: [vehicle('v1', RideCategory.van, 7)],
+    ));
+    expect(tester.takeException(), isNull);
   });
 }

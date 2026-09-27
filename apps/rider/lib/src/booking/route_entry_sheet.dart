@@ -30,6 +30,7 @@ Future<void> showRouteEntrySheet(
   return showModalBottomSheet<void>(
     context: context,
     isScrollControlled: true,
+    useSafeArea: true,
     builder: (_) => RouteEntrySheet(calc: calc, onSubmit: onSubmit),
   );
 }
@@ -60,77 +61,82 @@ class _RouteEntrySheetState extends State<RouteEntrySheet> {
   @override
   Widget build(BuildContext context) {
     final quote = widget.calc.quote(category: _category, distanceKm: _distanceKm);
-    return Padding(
-      padding: EdgeInsets.fromLTRB(20.w, 8.h, 20.w, 20.h),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Container(
-            padding: EdgeInsets.all(12.w),
-            decoration: BoxDecoration(
-              color: MngColors.muted,
-              borderRadius: BorderRadius.circular(MngRadius.small),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    const Icon(Icons.circle,
-                        size: 10, color: MngColors.success),
-                    SizedBox(width: 8.w),
-                    Expanded(
-                      child: Text(_pickup.address,
-                          style: MngTheme.light.textTheme.bodyMedium),
-                    ),
-                  ],
-                ),
-                SizedBox(height: 8.h),
-                Row(
-                  children: [
-                    const Icon(Icons.circle, size: 10, color: MngColors.error),
-                    SizedBox(width: 8.w),
-                    Expanded(
-                      child: Text(_dropoff.address,
-                          style: MngTheme.light.textTheme.bodyMedium),
-                    ),
-                  ],
-                ),
-                SizedBox(height: 10.h),
-                Row(
-                  children: [
-                    Expanded(
-                      child: Text(
-                        '${_distanceKm.toStringAsFixed(1)} km  ·  ~$_driveMinutes min drive',
-                        overflow: TextOverflow.ellipsis,
-                        style: MngTheme.light.textTheme.titleMedium,
+    // `useSafeArea` on the modal covers the top only: it wraps the sheet in
+    // `SafeArea(bottom: false)`, so the bottom inset is this widget's job.
+    return SafeArea(
+      top: false,
+      child: Padding(
+        padding: EdgeInsets.fromLTRB(20.w, 8.h, 20.w, 20.h),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Container(
+              padding: EdgeInsets.all(12.w),
+              decoration: BoxDecoration(
+                color: MngColors.muted,
+                borderRadius: BorderRadius.circular(MngRadius.small),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      const Icon(Icons.circle,
+                          size: 10, color: MngColors.success),
+                      SizedBox(width: 8.w),
+                      Expanded(
+                        child: Text(_pickup.address,
+                            style: MngTheme.light.textTheme.bodyMedium),
                       ),
-                    ),
-                    SizedBox(width: 8.w),
-                    Text('GHS ${quote.fareGhs.toStringAsFixed(2)}',
-                        style: MngTheme.light.textTheme.titleMedium),
-                  ],
-                ),
-              ],
+                    ],
+                  ),
+                  SizedBox(height: 8.h),
+                  Row(
+                    children: [
+                      const Icon(Icons.circle, size: 10, color: MngColors.error),
+                      SizedBox(width: 8.w),
+                      Expanded(
+                        child: Text(_dropoff.address,
+                            style: MngTheme.light.textTheme.bodyMedium),
+                      ),
+                    ],
+                  ),
+                  SizedBox(height: 10.h),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          '${_distanceKm.toStringAsFixed(1)} km  ·  ~$_driveMinutes min drive',
+                          overflow: TextOverflow.ellipsis,
+                          style: MngTheme.light.textTheme.titleMedium,
+                        ),
+                      ),
+                      SizedBox(width: 8.w),
+                      Text('GHS ${quote.fareGhs.toStringAsFixed(2)}',
+                          style: MngTheme.light.textTheme.titleMedium),
+                    ],
+                  ),
+                ],
+              ),
             ),
-          ),
-          SizedBox(height: 16.h),
-          CategoryChips(
-            selected: _category,
-            onSelected: (c) => setState(() => _category = c),
-          ),
-          SizedBox(height: 20.h),
-          FilledButton(
-            key: const Key('confirmRouteButton'),
-            onPressed: () => widget.onSubmit(RouteDraft(
-              pickup: _pickup,
-              dropoff: _dropoff,
-              category: _category,
-            )),
-            child: const Text('Search for a ride'),
-          ),
-        ],
+            SizedBox(height: 16.h),
+            CategoryChips(
+              selected: _category,
+              onSelected: (c) => setState(() => _category = c),
+            ),
+            SizedBox(height: 20.h),
+            FilledButton(
+              key: const Key('confirmRouteButton'),
+              onPressed: () => widget.onSubmit(RouteDraft(
+                pickup: _pickup,
+                dropoff: _dropoff,
+                category: _category,
+              )),
+              child: const Text('Search for a ride'),
+            ),
+          ],
+        ),
       ),
     );
   }

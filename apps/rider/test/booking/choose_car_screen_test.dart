@@ -18,10 +18,25 @@ Vehicle vehicle(String id, RideCategory category, int seats,
       rideCategory: category,
     );
 
+Vehicle vehicleWithPhoto(
+        String id, RideCategory category, int seats, String photoUrl) =>
+    Vehicle(
+      id: id,
+      ownerId: 'owner-$id',
+      category: VehicleCategory.sedan,
+      make: 'Honda',
+      model: 'Civic',
+      plate: 'GR-$id',
+      seats: seats,
+      photoUrl: photoUrl,
+      rideCategory: category,
+    );
+
 Widget wrap({
   required List<Vehicle> vehicles,
   RideCategory selected = RideCategory.standard,
   void Function(Vehicle)? onConfirm,
+  void Function(Vehicle)? onSelect,
   void Function(RideCategory)? onCategory,
 }) =>
     ScreenUtilInit(
@@ -34,6 +49,7 @@ Widget wrap({
           vehicles: vehicles,
           selected: selected,
           onCategory: onCategory ?? (_) {},
+          onSelect: onSelect ?? (_) {},
           calc: FareCalculator(),
           onConfirm: onConfirm ?? (_) {},
         ),
@@ -67,19 +83,22 @@ void main() {
     expect(find.text('GHS 20.40'), findsOneWidget);
   });
 
-  testWidgets('tapping a card selects it and reports the vehicle', (tester) async {
+  testWidgets('tapping a card selects it and does not confirm', (tester) async {
     useDesignSurface(tester);
-    Vehicle? chosen;
+    Vehicle? selected;
+    Vehicle? confirmed;
     await tester.pumpWidget(wrap(
       vehicles: [
         vehicle('1', RideCategory.standard, 4),
         vehicle('2', RideCategory.standard, 4),
       ],
-      onConfirm: (v) => chosen = v,
+      onSelect: (v) => selected = v,
+      onConfirm: (v) => confirmed = v,
     ));
     await tester.tap(find.byKey(const Key('vehicleCard-2')));
     await tester.pump();
-    expect(chosen?.id, '2');
+    expect(selected?.id, '2');
+    expect(confirmed, isNull);
   });
 
   testWidgets('switching category filters the list and notifies the parent',
@@ -114,6 +133,15 @@ void main() {
         matching: find.text('Van'),
       ),
     );
+    final pill = tester.widget<Container>(
+      find
+          .descendant(
+            of: find.byKey(const Key('tab-van')),
+            matching: find.byType(Container),
+          )
+          .first,
+    );
+    expect((pill.decoration! as BoxDecoration).color, MngColors.primary);
     expect(label.style!.color, MngColors.onPrimary);
   });
 
@@ -176,5 +204,65 @@ void main() {
         .border! as Border;
     expect(borderColorOf('2').top.color, MngColors.primary);
     expect(borderColorOf('1').top.color, MngColors.divider);
+  });
+
+  testWidgets('find-driver confirms the card that was tapped', (tester) async {
+    useDesignSurface(tester);
+    Vehicle? confirmed;
+    await tester.pumpWidget(wrap(
+      vehicles: [
+        vehicle('1', RideCategory.standard, 4),
+        vehicle('2', RideCategory.standard, 4),
+      ],
+      onConfirm: (v) => confirmed = v,
+    ));
+    await tester.tap(find.byKey(const Key('vehicleCard-2')));
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('findDriverButton')));
+    await tester.pump();
+    expect(confirmed?.id, '2');
+  });
+
+  testWidgets('a parent change to the selected category moves the tab',
+      (tester) async {
+    useDesignSurface(tester);
+    final vehicles = [
+      vehicle('1', RideCategory.standard, 4),
+      vehicle('2', RideCategory.van, 7, model: 'Hiace'),
+    ];
+    await tester.pumpWidget(wrap(vehicles: vehicles));
+    expect(find.text('Honda Civic'), findsOneWidget);
+    await tester.pumpWidget(wrap(vehicles: vehicles, selected: RideCategory.van));
+    await tester.pump();
+    expect(find.text('Honda Civic'), findsNothing);
+    expect(find.text('Honda Hiace'), findsOneWidget);
+  });
+
+  testWidgets('a photo that fails to load falls back to the car icon',
+      (tester) async {
+    useDesignSurface(tester);
+    await tester.pumpWidget(wrap(vehicles: [
+      vehicleWithPhoto('1', RideCategory.standard, 4, 'https://example.test/no.png'),
+    ]));
+    await tester.pump();
+    expect(
+      find.descendant(
+        of: find.byKey(const Key('vehicleCard-1')),
+        matching: find.byIcon(Icons.directions_car),
+      ),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('the choose-car screen has no overflow at 200% text scale',
+      (tester) async {
+    useDesignSurface(tester);
+    tester.platformDispatcher.textScaleFactorTestValue = 2.0;
+    addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
+    await tester.pumpWidget(wrap(vehicles: [
+      vehicle('1', RideCategory.standard, 4),
+      vehicle('2', RideCategory.van, 7, model: 'Hiace'),
+    ]));
+    expect(tester.takeException(), isNull);
   });
 }

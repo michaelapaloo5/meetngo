@@ -46,7 +46,14 @@ class VehicleCard extends StatelessWidget {
               child: vehicle.photoUrl.isEmpty
                   ? Icon(Icons.directions_car,
                       color: vehicle.rideCategory.color, size: 28)
-                  : Image.network(vehicle.photoUrl),
+                  : Image.network(
+                      vehicle.photoUrl,
+                      errorBuilder: (_, _, _) => Icon(
+                        Icons.directions_car,
+                        color: vehicle.rideCategory.color,
+                        size: 28,
+                      ),
+                    ),
             ),
             SizedBox(width: 12.w),
             Expanded(
@@ -74,12 +81,12 @@ class VehicleCard extends StatelessWidget {
                               style: MngTheme.light.textTheme.bodySmall),
                         ],
                       ),
-                      Row(
-                        mainAxisSize: MainAxisSize.min,
+                      Wrap(
+                        spacing: 2.w,
+                        crossAxisAlignment: WrapCrossAlignment.center,
                         children: [
                           const Icon(Icons.person,
                               size: 14, color: MngColors.textSub),
-                          SizedBox(width: 2.w),
                           Text('${vehicle.seats} seats',
                               style: MngTheme.light.textTheme.bodySmall),
                         ],

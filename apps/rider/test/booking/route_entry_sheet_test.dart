@@ -16,6 +16,29 @@ Widget wrap({void Function(RouteDraft draft)? onSubmit}) => ScreenUtilInit(
       ),
     );
 
+Widget openHarness({void Function(RouteDraft draft)? onSubmit}) => ScreenUtilInit(
+      designSize: const Size(390, 844),
+      minTextAdapt: true,
+      splitScreenMode: true,
+      builder: (_, _) => MaterialApp(
+        theme: MngTheme.light,
+        home: Scaffold(
+          body: Builder(
+            builder: (context) => Center(
+              child: ElevatedButton(
+                onPressed: () => showRouteEntrySheet(
+                  context,
+                  calc: FareCalculator(),
+                  onSubmit: onSubmit ?? (_) {},
+                ),
+                child: const Text('open'),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+
 void useDesignSurface(WidgetTester tester) {
   tester.view.physicalSize = const Size(1170, 2532);
   tester.view.devicePixelRatio = 3.0;
@@ -63,5 +86,41 @@ void main() {
     expect(draft!.pickup.point, kDefaultPickup.point);
     expect(draft!.dropoff.address, kDefaultDropoff.address);
     expect(draft!.category, RideCategory.van);
+  });
+
+  testWidgets('the sheet keeps its button clear of the bottom inset',
+      (tester) async {
+    useDesignSurface(tester);
+    tester.view.padding = const FakeViewPadding(bottom: 102);
+    await tester.pumpWidget(openHarness());
+    await tester.tap(find.text('open'));
+    await tester.pumpAndSettle();
+    final button =
+        tester.getBottomRight(find.byKey(const Key('confirmRouteButton')));
+    expect(button.dy, lessThanOrEqualTo(844 - 34));
+  });
+
+  testWidgets('showRouteEntrySheet opens the sheet and submits its draft',
+      (tester) async {
+    useDesignSurface(tester);
+    RouteDraft? draft;
+    await tester.pumpWidget(openHarness(onSubmit: (d) => draft = d));
+    await tester.tap(find.text('open'));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('confirmRouteButton')), findsOneWidget);
+    await tester.tap(find.byKey(const Key('confirmRouteButton')));
+    await tester.pumpAndSettle();
+    expect(draft, isNotNull);
+    expect(draft!.pickup.address, kDefaultPickup.address);
+    expect(draft!.dropoff.address, kDefaultDropoff.address);
+  });
+
+  testWidgets('the route sheet has no overflow at 200% text scale',
+      (tester) async {
+    useDesignSurface(tester);
+    tester.platformDispatcher.textScaleFactorTestValue = 2.0;
+    addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
+    await tester.pumpWidget(wrap());
+    expect(tester.takeException(), isNull);
   });
 }

@@ -9,6 +9,7 @@ class ChooseCarScreen extends StatefulWidget {
     required this.vehicles,
     required this.selected,
     required this.onCategory,
+    required this.onSelect,
     required this.calc,
     required this.onConfirm,
     this.distanceKm = 8.0,
@@ -17,7 +18,12 @@ class ChooseCarScreen extends StatefulWidget {
   final List<Vehicle> vehicles;
   final RideCategory selected;
   final ValueChanged<RideCategory> onCategory;
+
+  /// A card was tapped. Selection only; it commits nothing.
+  final void Function(Vehicle vehicle) onSelect;
   final FareCalculator calc;
+
+  /// `Find driver` was pressed. The only path that creates a trip.
   final void Function(Vehicle vehicle) onConfirm;
   final double distanceKm;
 
@@ -28,6 +34,17 @@ class ChooseCarScreen extends StatefulWidget {
 class _ChooseCarScreenState extends State<ChooseCarScreen> {
   late RideCategory _category = widget.selected;
   String? _chosenId;
+
+  @override
+  void didUpdateWidget(covariant ChooseCarScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.selected != oldWidget.selected) {
+      setState(() {
+        _category = widget.selected;
+        _chosenId = null;
+      });
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -64,9 +81,10 @@ class _ChooseCarScreenState extends State<ChooseCarScreen> {
             ),
             Padding(
               padding: EdgeInsets.symmetric(horizontal: 20.w),
-              child: SizedBox(
-                height: 40.h,
+              child: SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
                 child: Row(
+                  mainAxisSize: MainAxisSize.min,
                   children: [
                     for (final c in RideCategory.values)
                       Padding(
@@ -79,6 +97,8 @@ class _ChooseCarScreenState extends State<ChooseCarScreen> {
                             widget.onCategory(c);
                           }),
                           child: Container(
+                            constraints: BoxConstraints(minHeight: 40.h),
+                            alignment: Alignment.center,
                             padding: EdgeInsets.symmetric(
                                 horizontal: 14.w, vertical: 8.h),
                             decoration: BoxDecoration(
@@ -120,7 +140,7 @@ class _ChooseCarScreenState extends State<ChooseCarScreen> {
                       selected: _chosenId == v.id,
                       onTap: () {
                         setState(() => _chosenId = v.id);
-                        widget.onConfirm(v);
+                        widget.onSelect(v);
                       },
                     ),
                   if (matching.isEmpty)

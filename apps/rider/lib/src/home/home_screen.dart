@@ -61,8 +61,9 @@ class _HomeScreenState extends State<HomeScreen> {
                 key: const Key('searchField'),
                 onTap: () => widget.onSearchTap?.call(context),
                 child: Container(
-                  height: 52.h,
-                  padding: EdgeInsets.symmetric(horizontal: 16.w),
+                  constraints: BoxConstraints(minHeight: 52.h),
+                  padding: EdgeInsets.symmetric(
+                      horizontal: 16.w, vertical: 14.h),
                   decoration: BoxDecoration(
                     color: MngColors.muted,
                     borderRadius: BorderRadius.circular(26),
@@ -71,10 +72,13 @@ class _HomeScreenState extends State<HomeScreen> {
                     children: [
                       const Icon(Icons.search, color: MngColors.textSub),
                       SizedBox(width: 10.w),
-                      Text(
-                        'Where would you go?',
-                        style: MngTheme.light.textTheme.bodyMedium
-                            ?.copyWith(color: MngColors.textSub),
+                      Expanded(
+                        child: Text(
+                          'Where would you go?',
+                          overflow: TextOverflow.ellipsis,
+                          style: MngTheme.light.textTheme.bodyMedium
+                              ?.copyWith(color: MngColors.textSub),
+                        ),
                       ),
                     ],
                   ),
@@ -89,9 +93,13 @@ class _HomeScreenState extends State<HomeScreen> {
               PromoBanner(code: widget.promoCode),
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text('Available cars',
-                      style: MngTheme.light.textTheme.titleMedium),
+                  Flexible(
+                    child: Text('Available cars',
+                        style: MngTheme.light.textTheme.titleMedium),
+                  ),
+                  SizedBox(width: 8.w),
                   Text('See all', style: MngTheme.light.textTheme.bodySmall),
                 ],
               ),
@@ -115,7 +123,6 @@ class _HomeScreenState extends State<HomeScreen> {
                     ),
                     title: Text(v.displayName),
                     subtitle: Text('${v.rideCategory.label} · ${v.seats} seats'),
-                    trailing: const Icon(Icons.chevron_right),
                   ),
             ],
           ),
