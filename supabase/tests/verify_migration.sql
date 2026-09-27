@@ -46,12 +46,17 @@
 \set trip_a    a0000000-0000-4000-8000-000000000001
 \set trip_b    a0000000-0000-4000-8000-000000000002
 \set trip_geo  a0000000-0000-4000-8000-000000000003
+\set trip_live a0000000-0000-4000-8000-000000000004
 \set offer_c   c0000000-0000-4000-8000-000000000001
 \set offer_d   c0000000-0000-4000-8000-000000000002
 \set offer_b   c0000000-0000-4000-8000-000000000003
+\set offer_e   c0000000-0000-4000-8000-000000000004
 \set payment_a d0000000-0000-4000-8000-000000000001
 \set payout_a  e0000000-0000-4000-8000-000000000001
 \set ledger_a  f0000000-0000-4000-8000-000000000001
+\set signup_x  77777777-7777-4777-8777-777777777777
+\set signup_d  88888888-8888-4888-8888-888888888888
+\set signup_k  55555555-5555-4555-8555-555555555555
 
 \echo ''
 \echo '== Meet N Go: migration verification =='
@@ -102,10 +107,11 @@ create temporary table t_geo (
   passed      boolean
 ) on commit drop;
 
--- Section 5 covers accept_offer and match_offers_for_trip, which sit outside
--- the four areas above. They are here because accept_offer was uncallable as
--- written (see the comment in the migration) and a fix with no regression guard
--- is a fix that comes back.
+-- Beyond the four required areas, kept because accept_offer did not compile
+-- into a callable function until its WHERE clause was column-qualified. Run
+-- with request.jwt.claim.sub set to the calling driver, which is how the offers
+-- Edge Function calls it, and not as service_role: the ownership check the RPC
+-- now performs is the thing under test.
 create temporary table t_rpc (
   seq         int primary key,
   probe       text not null,
@@ -114,10 +120,21 @@ create temporary table t_rpc (
   passed      boolean
 ) on commit drop;
 
--- The RLS probes run as `authenticated` and `anon`, and the RPC probes run as
--- `service_role`, which is what the Edge Functions hold. All three need to
--- write their measurement into a result table. The temp schema is
--- session-private, so its real name has to be resolved before the role switch.
+-- Section 6 covers the client write paths the migration gates with policies,
+-- column grants and triggers: trip state advance, SOS, chat, profile edits and
+-- vehicle approval.
+create temporary table t_write (
+  seq         int primary key,
+  probe       text not null,
+  expectation text not null,
+  observed    text not null,
+  passed      boolean
+) on commit drop;
+
+-- The RLS probes run as `authenticated` and `anon`, and the RPC probes as the
+-- calling driver, so all three need to write their measurement into a result
+-- table. The temp schema is session-private, so its real name has to be
+-- resolved before the role switch.
 do $$
 declare
   v_schema text;
@@ -126,28 +143,59 @@ begin
     from pg_namespace
    where oid = pg_my_temp_schema();
   execute format('grant usage on schema %I to anon, authenticated, service_role', v_schema);
-  execute format('grant insert on pg_temp.t_rls, pg_temp.t_rpc to anon, authenticated, service_role');
+  execute format('grant insert on pg_temp.t_rls, pg_temp.t_rpc, pg_temp.t_write'
+                 ' to anon, authenticated, service_role');
 end
 $$;
 
 -- ---------------------------------------------------------------------------
 -- Fixtures
 -- ---------------------------------------------------------------------------
-insert into auth.users (id, email) values
-  (:'rider_a',  'rider.a@example.com'),
-  (:'rider_b',  'rider.b@example.com'),
-  (:'machine',  'machine@example.com'),
-  (:'driver_c', 'driver.c@example.com'),
-  (:'driver_d', 'driver.d@example.com'),
-  (:'driver_x', 'driver.nolocation@example.com');
+insert into auth.users (id, email, raw_user_meta_data) values
+  (:'rider_a',  'rider.a@example.com',  '{"role":"rider"}'),
+  (:'rider_b',  'rider.b@example.com',  '{"role":"rider"}'),
+  (:'machine',  'machine@example.com',  '{"role":"rider"}'),
+  (:'driver_c', 'driver.c@example.com', '{"role":"driver"}'),
+  (:'driver_d', 'driver.d@example.com', '{"role":"driver"}'),
+  (:'driver_x', 'driver.nolocation@example.com', '{"role":"driver"}'),
+  -- signup_x asks for role admin in its metadata; handle_new_user must clamp
+  -- it to rider. signup_d asks for driver, which is allowed.
+  (:'signup_x', 'signup.x@example.com', '{"role":"admin"}'),
+  (:'signup_d', 'signup.d@example.com', '{"role":"driver"}'),
+  -- signup_k is the pristine driver the KYC probes mutate, so the probe that
+  -- reports what signup created still sees untouched defaults.
+  (:'signup_k', 'signup.k@example.com', '{"role":"driver"}');
 
-insert into profiles (id, role, full_name, phone, kyc_status, availability) values
-  (:'rider_a',  'rider',  'Ama Rider',    '+233200000001', 'notStarted', 'offline'),
-  (:'rider_b',  'rider',  'Kofi Rider',   '+233200000002', 'notStarted', 'offline'),
-  (:'machine',  'rider',  'Machine Rider','+233200000009', 'notStarted', 'offline'),
-  (:'driver_c', 'driver', 'Yaa Driver',   '+233200000003', 'approved',   'online'),
-  (:'driver_d', 'driver', 'Kofi Driver',  '+233200000004', 'approved',   'online'),
-  (:'driver_x', 'driver', 'No Location',  '+233200000006', 'approved',   'online');
+-- handle_new_user has already created a profiles row for every one of those
+-- auth.users rows. Assert that happened, then bring the ones the other sections
+-- need up to the state they expect.
+\echo '-- handle_new_user: signup creates the profile row --'
+select 'profiles created by handle_new_user' as probe,
+       count(*)::text as observed,
+       (count(*) = 9)::text as expectation
+  from profiles;
+
+update profiles set full_name = 'Ama Rider', phone = '+233200000001'
+ where id = :'rider_a';
+update profiles set full_name = 'Kofi Rider', phone = '+233200000002'
+ where id = :'rider_b';
+update profiles set full_name = 'Machine Rider', phone = '+233200000009'
+ where id = :'machine';
+update profiles set kyc_status = 'approved', availability = 'online',
+                   full_name = 'Yaa Driver', phone = '+233200000003'
+ where id = :'driver_c';
+update profiles set kyc_status = 'approved', availability = 'online',
+                   full_name = 'Kofi Driver', phone = '+233200000004'
+ where id = :'driver_d';
+update profiles set kyc_status = 'approved', availability = 'online',
+                   full_name = 'No Location', phone = '+233200000006'
+ where id = :'driver_x';
+
+-- The auth.users inserts above fired on_auth_user_created, so every profile
+-- already exists with role taken from metadata. The rows below only bring the
+-- named fields up to the state the rest of this file assumes; note that
+-- kyc_status = 'approved' and availability = 'online' are set as postgres,
+-- which is the service_role path guard_profile_update has to keep open.
 
 insert into vehicles (id, owner_id, vehicle_category, ride_category, make, model, plate, seats, approved) values
   ('10000000-0000-4000-8000-000000000001', :'driver_c', 'sedan', 'standard', 'Toyota', 'Corolla', 'GH-1001-21', 4, true),
@@ -183,10 +231,24 @@ insert into trips (id, rider_id, category, state, pickup, dropoff, pickup_point,
    st_setsrid(st_makepoint(-0.1870, 5.6037), 4326)::geography,
    2.33, 1.00, 12.00, 9);
 
+-- An in-flight trip assigned to driver_c. Section 6 needs a trip that the
+-- driver client is allowed to touch, and a trip that is neither requested nor
+-- terminal so the SOS state gate passes.
+insert into trips (id, rider_id, driver_id, category, state, pickup, dropoff,
+                   pickup_point, dropoff_point, distance_km, surge, fare_ghs,
+                   eta_minutes, matched_at, pickup_otp)
+values (:'trip_live', :'rider_a', :'driver_c', 'standard', 'matched',
+   '{"label":"Osu","point":{"lat":5.6037,"lng":-0.1870},"address":"Osu, Accra"}',
+   '{"label":"Airport Residential","point":{"lat":5.6052,"lng":-0.1660},"address":"Airport Residential, Accra"}',
+   st_setsrid(st_makepoint(-0.1870, 5.6037), 4326)::geography,
+   st_setsrid(st_makepoint(-0.1660, 5.6052), 4326)::geography,
+   2.33, 1.00, 12.00, 9, now() - interval '3 minutes', '4417');
+
 insert into offers (id, trip_id, driver_id, fare_ghs, pickup_distance_km, state, expires_at) values
   (:'offer_c', :'trip_a', :'driver_c', 12.00, 0.40, 'pending',  now() + interval '20 seconds'),
   (:'offer_d', :'trip_a', :'driver_d', 12.00, 0.90, 'pending',  now() + interval '20 seconds'),
-  (:'offer_b', :'trip_b', :'driver_c', 12.00, 1.10, 'pending',  now() + interval '20 seconds');
+  (:'offer_b', :'trip_b', :'driver_c', 12.00, 1.10, 'pending',  now() + interval '20 seconds'),
+  (:'offer_e', :'trip_b', :'driver_d', 12.00, 1.20, 'pending',  now() + interval '20 seconds');
 
 insert into payments (id, trip_id, payer_id, amount_ghs, method) values
   (:'payment_a', :'trip_a', :'rider_a', 12.00, 'momo');
@@ -435,7 +497,7 @@ set local role authenticated;
 set local request.jwt.claim.sub = :'rider_a';
 insert into t_rls (seq, probe, actor, expectation, observed) values
   (3, 'rider A lists trips', 'authenticated ' || :'rider_a',
-   :'trip_a' || ',' || :'trip_geo',
+   :'trip_a' || ',' || :'trip_geo' || ',' || :'trip_live',
    (select coalesce(string_agg(id::text, ',' order by id::text), '<none>') from trips)),
   (4, 'rider A reads rider B trip by id', 'authenticated ' || :'rider_a',
    '<none>',
@@ -486,7 +548,7 @@ set local role authenticated;
 set local request.jwt.claim.sub = :'driver_d';
 insert into t_rls (seq, probe, actor, expectation, observed) values
   (13, 'driver D lists own offers only', 'authenticated ' || :'driver_d',
-   :'offer_d',
+   :'offer_d' || ',' || :'offer_e',
    (select coalesce(string_agg(id::text, ',' order by id::text), '<none>') from offers));
 reset role;
 
@@ -615,58 +677,96 @@ select count(*) as probes,
 -- 5. Matching and offer acceptance
 --
 -- Beyond the four required areas, kept because accept_offer did not compile
--- into a callable function until its WHERE clause was column-qualified. Run
--- as service_role, the key the offers Edge Function uses.
+-- into a callable function until its WHERE clause was column-qualified, and
+-- because its ownership check is the control for a security finding.
+--
+-- Every probe sets request.jwt.claim.sub to the calling driver, which is how
+-- the offers Edge Function calls it: the client sends the rider's or driver's
+-- own JWT, so auth.uid() is that user and the SECURITY DEFINER function has a
+-- real identity to check. Running these as service_role with no sub proves the
+-- RPC works for a superuser, which no client ever is.
 -- ---------------------------------------------------------------------------
 \echo ''
 \echo '-- 5. match_offers_for_trip and the single-winner accept_offer --'
 
-set local role service_role;
+-- Probe 2 must run before probe 3: it proves a non-owner is refused while the
+-- offer is still pending, not after it has already been accepted.
+set local role authenticated;
+set local request.jwt.claim.sub = :'rider_a';
 insert into t_rpc (seq, probe, expectation, observed) values
   (1, 'match_offers_for_trip keeps only online, approved, located drivers within 5 km',
    :'driver_c',
    (select coalesce(string_agg(driver_id::text, ',' order by driver_id::text), '<none>')
-      from match_offers_for_trip(:'trip_a')));
+      from match_offers_for_trip(:'trip_a'))),
+  (2, 'the trip owner cannot accept a driver offer on their own trip', 'false',
+   (select coalesce(accepted::text, '<no row>') from accept_offer(:'offer_c')));
+reset role;
 
+set local role authenticated;
+set local request.jwt.claim.sub = :'driver_c';
 insert into t_rpc (seq, probe, expectation, observed) values
-  (2, 'accept_offer elects the winner', 'true|' || :'trip_a' || '|' || :'driver_c',
+  (3, 'accept_offer elects the winner', 'true|' || :'trip_a' || '|' || :'driver_c',
    (select coalesce(string_agg(
              accepted::text || '|' || coalesce(trip_id::text, '-') || '|' || coalesce(driver_id::text, '-'),
              ';'), '<no row>')
-      from accept_offer(:'offer_c')));
-
-insert into t_rpc (seq, probe, expectation, observed) values
-  (3, 're-accepting the already accepted offer loses', 'false',
-   (select coalesce(accepted::text, '<no row>') from accept_offer(:'offer_c')));
-
-insert into t_rpc (seq, probe, expectation, observed) values
-  (4, 'the trip is now matched to the winning driver with a vehicle attached',
-   'matched|' || :'driver_c' || '|10000000-0000-4000-8000-000000000001',
-   (select state::text || '|' || coalesce(driver_id::text, '-') || '|' || coalesce(vehicle_id::text, '-')
-      from trips where id = :'trip_a')),
-  (5, 'the losing sibling offer is released', 'released',
-   (select state::text from offers where id = :'offer_d'));
-
-insert into t_rpc (seq, probe, expectation, observed) values
-  (6, 'the losing driver retrying the released offer loses', 'false',
-   (select coalesce(accepted::text, '<no row>') from accept_offer(:'offer_d')));
-
-insert into t_rpc (seq, probe, expectation, observed) values
+      from accept_offer(:'offer_c'))),
+  (4, 're-accepting the already accepted offer loses', 'false',
+   (select coalesce(accepted::text, '<no row>') from accept_offer(:'offer_c'))),
   (7, 'accept_offer on an unknown id returns false instead of raising', 'false',
    (select coalesce(accepted::text, '<no row>')
       from accept_offer('c0000000-0000-4000-8000-0000000000ff')));
 reset role;
 
+-- Probes 5 and 6 read state the probes above just wrote, so they need their own
+-- statements. Every VALUES expression in one INSERT is evaluated against the
+-- snapshot that statement started with, which is a lesson worth writing down.
+insert into t_rpc (seq, probe, expectation, observed) values
+  (5, 'the trip is now matched to the winning driver with a vehicle attached',
+   'matched|' || :'driver_c' || '|10000000-0000-4000-8000-000000000001',
+   (select state::text || '|' || coalesce(driver_id::text, '-') || '|' || coalesce(vehicle_id::text, '-')
+      from trips where id = :'trip_a')),
+  (6, 'the losing sibling offer is released', 'released',
+   (select state::text from offers where id = :'offer_d'));
+
+set local role authenticated;
+set local request.jwt.claim.sub = :'driver_d';
+insert into t_rpc (seq, probe, expectation, observed) values
+  (8, 'the losing driver retrying the released offer loses', 'false',
+   (select coalesce(accepted::text, '<no row>') from accept_offer(:'offer_d')));
+reset role;
+
 -- An offer past its 20 second TTL must lose and must be flipped to `expired`.
 update offers set expires_at = now() - interval '1 minute' where id = :'offer_b';
-set local role service_role;
+set local role authenticated;
+set local request.jwt.claim.sub = :'driver_c';
 insert into t_rpc (seq, probe, expectation, observed) values
-  (8, 'an offer past its 20s TTL loses', 'false',
+  (9, 'an offer past its 20s TTL loses', 'false',
    (select coalesce(accepted::text, '<no row>') from accept_offer(:'offer_b')));
 reset role;
 insert into t_rpc (seq, probe, expectation, observed) values
-  (9, 'the expired offer is flipped to state expired', 'expired',
+  (10, 'the expired offer is flipped to state expired', 'expired',
    (select state::text from offers where id = :'offer_b'));
+
+-- A second driver reaching for an offer that is not his.
+set local role authenticated;
+set local request.jwt.claim.sub = :'driver_c';
+insert into t_rpc (seq, probe, expectation, observed) values
+  (11, 'one driver cannot accept another driver offer', 'false',
+   (select coalesce(accepted::text, '<no row>') from accept_offer(:'offer_e')));
+reset role;
+
+-- No caller identity at all. auth.uid() is null, `is distinct from` is true,
+-- and a request with no subject is refused rather than accepted.
+set local role authenticated;
+set local request.jwt.claim.sub = '';
+insert into t_rpc (seq, probe, expectation, observed) values
+  (12, 'accept_offer with no caller identity loses', 'false',
+   (select coalesce(accepted::text, '<no row>') from accept_offer(:'offer_e')));
+reset role;
+insert into t_rpc (seq, probe, expectation, observed) values
+  (13, 'the refused offer is still pending, so nobody was force-matched', 'requested|pending',
+   (select (select state::text from trips where id = :'trip_b') || '|' || state::text
+      from offers where id = :'offer_e'));
 
 update t_rpc set passed = (observed = expectation);
 
@@ -681,6 +781,302 @@ select count(*) as probes,
        count(*) filter (where passed) as passed,
        count(*) filter (where not passed) as failed
   from t_rpc;
+
+-- ---------------------------------------------------------------------------
+-- 6. Client write paths
+--
+-- Beyond the four required areas. These are the statements the Flutter
+-- repositories actually issue with the signed-in user's own client, run here
+-- with the same GUC pair a real request populates. The controls under test are
+-- a policy predicate, a column grant and a trigger, often in combination, so
+-- each probe states which one is expected to fire.
+--
+-- Outcomes are recorded as one of:
+--   allowed          the statement wrote rows
+--   no rows          the statement was permitted but matched nothing, which is
+--                    what PostgREST reports as 200 with an empty body and a null
+--                    error, the failure mode a driver app reports as success
+--   blocked 42501    permission denied, or new row violates row-level policy
+--   blocked P0001    raised by guard_profile_update
+--   blocked 23514    raised by a CHECK constraint
+-- ---------------------------------------------------------------------------
+\echo ''
+\echo '-- 6. client write paths: trip advance, SOS, chat, profile, vehicle --'
+
+-- The probes are data, not code, so the role each one runs as travels with it.
+-- widen_grant means "grant the whole table to authenticated before running this
+-- row", which is how probes 22-26 show guard_profile_update holding even when
+-- the column grant is not in the way. The grant is inside the transaction the
+-- final rollback undoes.
+create temporary table write_probe (
+  ord         int primary key,
+  seq         int not null,
+  as_role     text not null,
+  as_sub      text not null,
+  widen_grant boolean not null default false,
+  probe       text not null,
+  expectation text not null,
+  stmt        text not null
+) on commit drop;
+
+insert into write_probe (ord, seq, as_role, as_sub, widen_grant, probe, expectation, stmt) values
+  -- 1-6: the driver's trip state advance, the path that silently did nothing
+  -- before trips had an UPDATE policy.
+  (1, 1, 'authenticated', '33333333-3333-4333-8333-333333333333', false,
+   'driver advances their own matched trip to arriving', 'allowed 1 row',
+   $$update trips set state = 'arriving' where id = 'a0000000-0000-4000-8000-000000000004'$$),
+  (2, 2, 'authenticated', '33333333-3333-4333-8333-333333333333', false,
+   'driver skipping arriving to completed hits the transition guard', 'blocked P0001',
+   $$update trips set state = 'completed' where id = 'a0000000-0000-4000-8000-000000000004'$$),
+  (3, 3, 'authenticated', '33333333-3333-4333-8333-333333333333', false,
+   'driver advances a trip assigned to somebody else', 'no rows',
+   $$update trips set state = 'arriving' where id = 'a0000000-0000-4000-8000-000000000002'$$),
+  (4, 4, 'authenticated', '33333333-3333-4333-8333-333333333333', false,
+   'driver rewrites fare_ghs on their own trip', 'blocked 42501',
+   $$update trips set fare_ghs = 1.00 where id = 'a0000000-0000-4000-8000-000000000004'$$),
+  (5, 5, 'authenticated', '33333333-3333-4333-8333-333333333333', false,
+   'driver reassigns rider_id on their own trip', 'blocked 42501',
+   $$update trips set rider_id = '22222222-2222-4222-8222-222222222222'
+      where id = 'a0000000-0000-4000-8000-000000000004'$$),
+  (6, 6, 'authenticated', '33333333-3333-4333-8333-333333333333', false,
+   'driver reads and rewrites eta_minutes on their own trip', 'allowed 1 row',
+   $$update trips set eta_minutes = eta_minutes
+      where id = 'a0000000-0000-4000-8000-000000000004' and pickup_otp = '4417'$$),
+
+  -- 7-10: SOS, as the rider who is party to the live trip.
+  (7, 7, 'authenticated', '11111111-1111-4111-8111-111111111111', false,
+   'rider raises SOS on their own in-flight trip', 'allowed 1 row',
+   $$insert into sos_events (trip_id, raised_by, point, note)
+      values ('a0000000-0000-4000-8000-000000000004',
+              '11111111-1111-4111-8111-111111111111',
+              'SRID=4326;POINT(-0.187 5.6037)'::geography, 'rider pressed SOS')$$),
+  (8, 8, 'authenticated', '11111111-1111-4111-8111-111111111111', false,
+   'rider raises SOS on a trip they are not party to', 'blocked 42501',
+   $$insert into sos_events (trip_id, raised_by, note)
+      values ('a0000000-0000-4000-8000-000000000002',
+              '11111111-1111-4111-8111-111111111111', 'not my trip')$$),
+  (9, 9, 'authenticated', '11111111-1111-4111-8111-111111111111', false,
+   'rider raises SOS on a completed trip', 'blocked 42501',
+   $$insert into sos_events (trip_id, raised_by, note)
+      values ('a0000000-0000-4000-8000-000000000003',
+              '11111111-1111-4111-8111-111111111111', 'that trip is over')$$),
+  (10, 10, 'authenticated', '11111111-1111-4111-8111-111111111111', false,
+   'rider raises SOS in somebody elses name', 'blocked 42501',
+   $$insert into sos_events (trip_id, raised_by, note)
+      values ('a0000000-0000-4000-8000-000000000004',
+              '22222222-2222-4222-8222-222222222222', 'framed')$$),
+
+  -- 11-12: chat. The INSERT policy used to bind sender_id only.
+  (11, 11, 'authenticated', '11111111-1111-4111-8111-111111111111', false,
+   'rider posts chat on their own in-flight trip', 'allowed 1 row',
+   $$insert into chat_messages (trip_id, sender_id, body)
+      values ('a0000000-0000-4000-8000-000000000004',
+              '11111111-1111-4111-8111-111111111111', 'I am at the black gate')$$),
+  (12, 12, 'authenticated', '22222222-2222-4222-8222-222222222222', false,
+   'non-party posts chat into a trip they are not on', 'blocked 42501',
+   $$insert into chat_messages (trip_id, sender_id, body)
+      values ('a0000000-0000-4000-8000-000000000004',
+              '22222222-2222-4222-8222-222222222222', 'hello from nowhere')$$),
+
+  -- 13-14: a rider has no trip UPDATE policy, and cannot edit another profile.
+  (13, 13, 'authenticated', '11111111-1111-4111-8111-111111111111', false,
+   'rider advances the state of their own trip', 'no rows',
+   $$update trips set state = 'cancelled' where id = 'a0000000-0000-4000-8000-000000000001'$$),
+  (14, 14, 'authenticated', '11111111-1111-4111-8111-111111111111', false,
+   'rider edits another profile row', 'no rows',
+   $$update profiles set full_name = 'hijacked'
+      where id = '22222222-2222-4222-8222-222222222222'$$),
+
+  -- 15-16: exactly the columns the driver repository is allowed to write.
+  (15, 15, 'authenticated', '33333333-3333-4333-8333-333333333333', false,
+   'driver updates the columns submitGhanaCard and setAvailability write', 'allowed 1 row',
+   $$update profiles
+        set full_name = 'Yaa Asantewaa', phone = '+233200000003',
+            ghana_card_last4 = '1234', ghana_card_expiry = '09/29',
+            selfie_url = 'https://example.test/selfie.jpg', availability = 'online'
+      where id = '33333333-3333-4333-8333-333333333333'$$),
+  (16, 16, 'authenticated', '55555555-5555-4555-8555-555555555555', false,
+   'driver moves their own kyc_status to pending', 'allowed 1 row',
+   $$update profiles set kyc_status = 'pending'
+      where id = '55555555-5555-4555-8555-555555555555'$$),
+
+  -- 17-19: the escalation chain as a client can attempt it today. The column
+  -- grant is the control that fires.
+  (17, 17, 'authenticated', '33333333-3333-4333-8333-333333333333', false,
+   'self-escalation: set role = admin', 'blocked 42501',
+   $$update profiles set role = 'admin'
+      where id = '33333333-3333-4333-8333-333333333333'$$),
+  -- kyc_status is a granted column, so guard_profile_update is the control that
+  -- fires here, not the grant. signup_d starts at notStarted, so this is a real
+  -- transition and not a no-op.
+  (18, 18, 'authenticated', '88888888-8888-4888-8888-888888888888', false,
+   'self-escalation: set kyc_status = approved', 'blocked P0001',
+   $$update profiles set kyc_status = 'approved'
+      where id = '88888888-8888-4888-8888-888888888888'$$),
+  (19, 19, 'authenticated', '33333333-3333-4333-8333-333333333333', false,
+   'self-escalation: set rating and trip_count', 'blocked 42501',
+   $$update profiles set rating = 5.0, trip_count = 9999
+      where id = '33333333-3333-4333-8333-333333333333'$$),
+
+  -- 20-24: the same four columns again, with the column grant removed from the
+  -- picture, to show guard_profile_update is a real second control.
+  (20, 20, 'authenticated', '55555555-5555-4555-8555-555555555555', true,
+   'with a table-level grant, kyc_status = rejected is still blocked', 'blocked P0001',
+   $$update profiles set kyc_status = 'rejected'
+      where id = '55555555-5555-4555-8555-555555555555'$$),
+  (21, 21, 'authenticated', '33333333-3333-4333-8333-333333333333', false,
+   'with a table-level grant, role = admin is still blocked', 'blocked P0001',
+   $$update profiles set role = 'admin'
+      where id = '33333333-3333-4333-8333-333333333333'$$),
+  (22, 22, 'authenticated', '33333333-3333-4333-8333-333333333333', false,
+   'with a table-level grant, rating is still blocked', 'blocked P0001',
+   $$update profiles set rating = 1.0
+      where id = '33333333-3333-4333-8333-333333333333'$$),
+  (23, 23, 'authenticated', '33333333-3333-4333-8333-333333333333', false,
+   'with a table-level grant, trip_count is still blocked', 'blocked P0001',
+   $$update profiles set trip_count = 9999
+      where id = '33333333-3333-4333-8333-333333333333'$$),
+  (24, 24, 'authenticated', '33333333-3333-4333-8333-333333333333', false,
+   'with a table-level grant the allowed columns still write', 'allowed 1 row',
+   $$update profiles set full_name = 'Yaa Asantewaa II'
+      where id = '33333333-3333-4333-8333-333333333333'$$),
+
+  -- 25: service_role keeps the admin KYC path open, so the trigger is an
+  -- escalation guard and not a blanket refusal.
+  (25, 25, 'service_role', '', false,
+   'service_role approves KYC and flips availability', 'allowed 1 row',
+   $$update profiles set kyc_status = 'approved', availability = 'online'
+      where id = '33333333-3333-4333-8333-333333333333'$$),
+
+  -- 26-30: vehicles and locations. approved is pinned false by the policy, so a
+  -- driver cannot create or promote the row match_offers_for_trip joins on.
+  (26, 26, 'authenticated', '66666666-6666-4666-8666-666666666666', false,
+   'driver inserts their own vehicle, honestly unapproved', 'allowed 1 row',
+   $$insert into vehicles (id, owner_id, vehicle_category, ride_category, make, model, plate, seats, approved)
+      values ('10000000-0000-4000-8000-0000000000c1',
+              '66666666-6666-4666-8666-666666666666', 'sedan', 'standard',
+              'Toyota', 'Corolla', 'GH-9999-23', 4, false)$$),
+  (27, 27, 'authenticated', '66666666-6666-4666-8666-666666666666', false,
+   'driver can read the vehicle they just saved, as saveVehicle does', 'allowed 1 row',
+   $$update vehicles set seats = 4
+      where owner_id = '66666666-6666-4666-8666-666666666666'$$),
+  (28, 28, 'authenticated', '33333333-3333-4333-8333-333333333333', false,
+   'driver inserts a vehicle pre-approved by themself', 'blocked 42501',
+   $$insert into vehicles (id, owner_id, vehicle_category, ride_category, make, model, plate, seats, approved)
+      values ('10000000-0000-4000-8000-0000000000c2',
+              '33333333-3333-4333-8333-333333333333', 'sedan', 'standard',
+              'Toyota', 'Corolla', 'GH-9998-23', 4, true)$$),
+  (29, 29, 'authenticated', '33333333-3333-4333-8333-333333333333', false,
+   'driver flips their own existing vehicle to approved', 'blocked 42501',
+   $$update vehicles set approved = true
+      where id = '10000000-0000-4000-8000-000000000001'$$),
+  (30, 30, 'authenticated', '33333333-3333-4333-8333-333333333333', false,
+   'saveVehicle honest payload re-saves the vehicle unapproved', 'allowed 1 row',
+   $$update vehicles set make = 'Toyota', model = 'Corolla', approved = false
+      where id = '10000000-0000-4000-8000-000000000001'$$),
+  (31, 31, 'authenticated', '44444444-4444-4444-8444-444444444444', false,
+   'driver edits a vehicle owned by somebody else', 'no rows',
+   $$update vehicles set make = 'stolen' where id = '10000000-0000-4000-8000-0000000000c1'$$),
+  -- The vehicle in 0002 is admin-approved, so its owner is visible to the USING
+  -- clause but the WITH CHECK refuses any write. That is the review-mandated
+  -- predicate, and it means an approved vehicle is read-only from a client.
+  (32, 32, 'authenticated', '44444444-4444-4444-8444-444444444444', false,
+   'an admin-approved vehicle is immutable from the client', 'blocked 42501',
+   $$update vehicles set make = 'Toyota RAV4' where id = '10000000-0000-4000-8000-000000000002'$$),
+
+  -- 31-32: locations.
+  (33, 33, 'authenticated', '88888888-8888-4888-8888-888888888888', false,
+   'driver writes a location row for themselves', 'allowed 1 row',
+   $$insert into driver_locations (driver_id, point, heading)
+      values ('88888888-8888-4888-8888-888888888888',
+              'SRID=4326;POINT(-1.6 6.6)'::geography, 90.00)$$),
+  (34, 34, 'authenticated', '33333333-3333-4333-8333-333333333333', false,
+   'driver writes a location row for somebody else', 'blocked 42501',
+   $$insert into driver_locations (driver_id, point)
+      values ('22222222-2222-4222-8222-222222222222',
+              'SRID=4326;POINT(-0.187 5.6037)'::geography)$$),
+
+  -- 33: the anon key that ships in the APK has no UPDATE on trips at all.
+  (35, 35, 'anon', '', false,
+   'anon key updates a trip', 'blocked 42501',
+   $$update trips set state = 'completed' where id = 'a0000000-0000-4000-8000-000000000004'$$);
+
+do $$
+declare
+  r         record;
+  v_rows    int;
+  v_out     text;
+  v_widened boolean := false;
+begin
+  for r in select * from write_probe order by ord loop
+    if r.widen_grant and not v_widened then
+      perform set_config('role', 'postgres', true);
+      grant update on profiles to authenticated;
+      v_widened := true;
+    end if;
+
+    perform set_config('role', r.as_role, true);
+    perform set_config('request.jwt.claim.sub', r.as_sub, true);
+
+    v_rows := 0;
+    v_out  := 'no statement ran';
+    begin
+      execute r.stmt;
+      get diagnostics v_rows = row_count;
+      v_out := case when v_rows = 0 then 'no rows'
+                    else 'allowed ' || v_rows || ' row' end;
+    exception when others then
+      v_out := 'blocked ' || sqlstate;
+    end;
+
+    insert into t_write (seq, probe, expectation, observed) values
+      (r.seq, r.probe, r.expectation, v_out);
+  end loop;
+
+  perform set_config('role', 'postgres', true);
+end
+$$;
+
+-- 36-38: reads the removed driver directory policy used to expose. With no
+-- role = 'driver' SELECT policy, a signed-in rider sees exactly one profiles
+-- row, their own, and the anon key that ships in the APK sees none.
+set local role authenticated;
+set local request.jwt.claim.sub = :'rider_a';
+insert into t_write (seq, probe, expectation, observed) values
+  (36, 'a rider sees no driver rows through the profiles table', '0',
+   (select count(*)::text from profiles where role = 'driver')),
+  (37, 'a rider sees only their own profiles row', '1',
+   (select count(*)::text from profiles));
+reset role;
+set local role anon;
+set local request.jwt.claim.sub = '';
+insert into t_write (seq, probe, expectation, observed) values
+  (38, 'the anon key reads no profiles row at all, so no KYC PII leaks', '0',
+   (select count(*)::text from profiles));
+reset role;
+
+-- 39-40: the signup path. handle_new_user ran when the fixture inserted these
+-- two auth.users rows, and every other column took its default.
+insert into t_write (seq, probe, expectation, observed) values
+  (39, 'a signup asking for role admin gets a rider', 'rider',
+   (select role::text from profiles where id = :'signup_x')),
+  (40, 'a signup asking for role driver gets a driver with default KYC', 'driver|notStarted|5.0|0',
+   (select role::text || '|' || kyc_status::text || '|' || rating::text || '|' || trip_count::text
+      from profiles where id = :'signup_d'));
+
+update t_write set passed = (observed = expectation);
+
+select seq, probe, expectation, observed,
+       case when passed then 'PASS' else 'FAIL' end as verdict
+  from t_write
+ order by seq;
+
+\echo ''
+\echo '-- 6b. write-path tallies --'
+select count(*) as probes,
+       count(*) filter (where passed) as passed,
+       count(*) filter (where not passed) as failed
+  from t_write;
 
 -- ---------------------------------------------------------------------------
 -- Summary
@@ -702,6 +1098,9 @@ select 'geometry helpers', count(*), count(*) filter (where passed),
 union all
 select 'match and accept RPCs', count(*), count(*) filter (where passed),
        count(*) filter (where not passed) from t_rpc
+union all
+select 'client write paths', count(*), count(*) filter (where passed),
+       count(*) filter (where not passed) from t_write
 order by 1;
 
 do $$
@@ -719,6 +1118,8 @@ begin
     select passed from t_geo where not passed
     union all
     select passed from t_rpc where not passed
+    union all
+    select passed from t_write where not passed
   ) failures;
 
   select (select count(*) from t_transition)
@@ -726,6 +1127,7 @@ begin
        + (select count(*) from t_rls)
        + (select count(*) from t_geo)
        + (select count(*) from t_rpc)
+       + (select count(*) from t_write)
     into v_total;
 
   if v_failed > 0 then

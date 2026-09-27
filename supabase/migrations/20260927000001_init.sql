@@ -21,6 +21,7 @@ create table profiles (
   kyc_status kyc_status not null default 'notStarted',
   availability driver_availability not null default 'offline',
   ghana_card_last4 text,
+  ghana_card_expiry text,
   selfie_url text,
   vehicle_id uuid,
   created_at timestamptz not null default now()
@@ -252,8 +253,18 @@ as $$
   limit 5;
 $$;
 
--- Single-winner offer acceptance. Row locks make a simultaneous double-accept
--- resolve to exactly one winner; the loser sees `false` and no trip.
+-- Single-winner offer acceptance.
+--
+-- Lock order is trip first, then offer, and it has to stay that way. Each caller
+-- used to lock its own offer row first and only then the trip, and the winner's
+-- sibling-release UPDATE also needed every losing offer row, so two accepts on
+-- two different offers of the same trip took locks in opposite orders and
+-- Postgres aborted one of them with SQLSTATE 40P01. The loser then saw a
+-- PostgREST 500 instead of `false`. Serialising on the trip row first means
+-- acceptors for one trip queue up instead of deadlocking: the first one to get
+-- the trip lock wins, the rest find the trip already `matched` and return
+-- `false` with the trip id, which is the contract the offers Edge Function
+-- expects.
 create or replace function accept_offer(p_offer uuid)
 returns table (accepted boolean, trip_id uuid, driver_id uuid)
 language plpgsql
@@ -264,13 +275,41 @@ declare
   v_offer offers%rowtype;
   v_trip trips%rowtype;
 begin
-  select * into v_offer from offers where id = p_offer for update;
+  -- 1. Unlocked read, to fail fast on an unknown id or an offer that is not
+  --    the caller's, without taking any lock a stranger could hold.
+  select * into v_offer from offers where id = p_offer;
   if not found then
     return query select false, null::uuid, null::uuid;
     return;
   end if;
 
+  -- This function is SECURITY DEFINER and hosted Supabase grants EXECUTE on
+  -- every public function to anon and authenticated, so the RLS policy on
+  -- offers does not apply to the caller here. Without this check any signed-in
+  -- rider could read the offer ids on their own trip through the "rider reads
+  -- offers on own trip" policy and accept on a driver's behalf, force-matching
+  -- the trip, releasing every other offer and locking the remaining drivers
+  -- out. The offers Edge Function performs the same ownership check in
+  -- TypeScript before calling; this is the database-side copy of it.
+  if v_offer.driver_id is distinct from auth.uid() then
+    return query select false, null::uuid, null::uuid;
+    return;
+  end if;
+
+  -- 2. Lock the trip first: one row every acceptor for this trip contends on.
   select * into v_trip from trips where id = v_offer.trip_id for update;
+  if not found then
+    return query select false, null::uuid, null::uuid;
+    return;
+  end if;
+
+  -- 3. Now the offer. The unlocked read above may be stale by the time the
+  --    trip lock is granted, so re-read and re-check ownership under the lock.
+  select * into v_offer from offers where id = p_offer for update;
+  if v_offer.driver_id is distinct from auth.uid() then
+    return query select false, null::uuid, null::uuid;
+    return;
+  end if;
 
   if v_trip.state <> 'requested'
      or v_offer.state <> 'pending'
@@ -319,20 +358,115 @@ alter table promos enable row level security;
 alter table chat_messages enable row level security;
 alter table sos_events enable row level security;
 
+-- Signup creates the profile. Without this a self-registered rider has no
+-- profiles row, every trips.rider_id insert fails on the foreign key, and the
+-- rider app cannot request a ride at all. Supabase's own shape for this is a
+-- trigger on auth.users, so the migration does not depend on an Edge Function
+-- that someone might forget to deploy.
+--
+-- The role is derived from signup metadata, so it is clamped to the two roles a
+-- person can legitimately sign up as. Left unclamped, a signup payload of
+-- {"role":"admin"} would mint an admin, because raw_user_meta_data is supplied
+-- by the client. Every other column takes its column default, so metadata
+-- cannot seed kyc_status, rating, trip_count or availability.
+create or replace function handle_new_user()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  insert into public.profiles (id, role)
+  values (
+    new.id,
+    case when new.raw_user_meta_data ->> 'role' = 'driver'
+         then 'driver' else 'rider' end
+  )
+  on conflict (id) do nothing;
+  return new;
+end;
+$$;
+
+create trigger on_auth_user_created
+  after insert on auth.users
+  for each row execute function handle_new_user();
+
+-- RLS is row-level, so a column-scoped grant below cannot stop a user from
+-- writing their own role, kyc_status, rating or trip_count. This trigger is the
+-- real control. The grant allows the exact set of columns the driver
+-- repository writes (submitGhanaCard, submitSelfie, saveVehicle's
+-- profiles.vehicle_id link, setAvailability); everything else is server-owned.
+--
+-- kyc_status is writable to `pending` only, which is what submitGhanaCard
+-- sends. Approving or rejecting KYC has to stay a service_role action, or Ghana
+-- Card OCR and selfie verification are bypassed by writing the column directly.
+create or replace function guard_profile_update()
+returns trigger
+language plpgsql
+as $$
+begin
+  -- service_role holds BYPASSRLS, so privileged writes to these columns are
+  -- already possible; admin KYC approval goes through it.
+  if current_user in ('service_role', 'postgres', 'supabase_auth_admin') then
+    return new;
+  end if;
+
+  if new.role is distinct from old.role then
+    raise exception 'role is not user-writable';
+  end if;
+  if new.rating is distinct from old.rating then
+    raise exception 'rating is not user-writable';
+  end if;
+  if new.trip_count is distinct from old.trip_count then
+    raise exception 'trip_count is not user-writable';
+  end if;
+  if new.kyc_status is distinct from old.kyc_status and new.kyc_status <> 'pending' then
+    raise exception 'kyc_status may only move to pending from a client; % needs service_role', new.kyc_status;
+  end if;
+
+  return new;
+end;
+$$;
+
+create trigger profiles_update_guard
+  before update on profiles
+  for each row execute function guard_profile_update();
+
 create policy "own profile" on profiles
   for select using (id = auth.uid());
 create policy "update own profile" on profiles
   for update using (id = auth.uid());
-create policy "driver directory is public" on profiles
-  for select using (role = 'driver');
+-- There is deliberately no "driver directory is public" policy. A
+-- role = 'driver' SELECT policy exposes the whole row, which means
+-- ghana_card_last4, ghana_card_expiry, phone and selfie_url, and with no
+-- auth.uid() guard the anon key that ships inside the APK reads every driver's
+-- KYC data. No task in the plan reads the directory: the only client-side
+-- profiles select is `.eq('id', _uid)` in SupabaseDriverRepository.me(), and
+-- DriverSummary is fed from an `initialDriver` the caller supplies. A rider who
+-- needs the assigned driver's name gets it through their own trip row, which
+-- carries driver_id.
 
-create policy "own vehicle" on vehicles
-  for all using (owner_id = auth.uid());
+create policy "owner reads own vehicle" on vehicles
+  for select using (owner_id = auth.uid());
+create policy "insert own vehicle unapproved" on vehicles
+  for insert with check (owner_id = auth.uid() and approved = false);
+-- `approved` stays false on the way in and on the way through, so a driver
+-- cannot self-approve the row that match_offers_for_trip joins on. Admin
+-- approval is a service_role write, which bypasses RLS.
+create policy "update own vehicle unapproved" on vehicles
+  for update using (owner_id = auth.uid()) with check (owner_id = auth.uid() and approved = false);
 
 create policy "rider reads own trips" on trips
   for select using (rider_id = auth.uid());
 create policy "driver reads assigned trips" on trips
   for select using (driver_id = auth.uid());
+-- The driver app advances the trip with
+-- `_client.from('trips').update({'state': to.name}).eq('id', tripId)`. Without
+-- this policy that UPDATE matches zero rows, PostgREST returns 200 with an
+-- empty body, res.error is null, and the app reports a state advance that never
+-- happened while enforce_trip_transition is never reached from the client.
+create policy "driver advances own trip" on trips
+  for update using (driver_id = auth.uid()) with check (driver_id = auth.uid());
 
 create policy "driver reads own offers" on offers
   for select using (driver_id = auth.uid());
@@ -371,9 +505,60 @@ create policy "trip chat read" on chat_messages
         and (t.rider_id = auth.uid() or t.driver_id = auth.uid())
     )
   );
+-- The INSERT policy mirrors the SELECT policy above, which already requires
+-- party membership. Binding only sender_id let any user who learned a trip_id
+-- from a deep link, a log or a support export post into that trip's thread.
 create policy "trip chat insert" on chat_messages
-  for insert with check (sender_id = auth.uid());
+  for insert with check (
+    sender_id = auth.uid()
+    and exists (
+      select 1 from trips t
+      where t.id = chat_messages.trip_id
+        and (t.rider_id = auth.uid() or t.driver_id = auth.uid())
+    )
+  );
 create policy "own sos events" on sos_events
   for select using (raised_by = auth.uid());
+-- SOS is dead in the field without this. The plan has
+-- SupabaseTripRepository.raiseSos inserting with the rider's own client, and
+-- RLS default-denied the INSERT, so every SOS returned 42501. The state gate
+-- keeps it to a trip that is actually under way, so a caller cannot farm SOS
+-- rows against a stale or unassigned trip.
+create policy "raise sos on a trip you are party to" on sos_events
+  for insert with check (
+    raised_by = auth.uid()
+    and exists (
+      select 1 from trips t
+      where t.id = sos_events.trip_id
+        and (t.rider_id = auth.uid() or t.driver_id = auth.uid())
+        and t.state in ('matched','arriving','ongoing')
+    )
+  );
+
+-- Column-scoped UPDATE. The policies above decide which rows a caller may
+-- write; these decide which columns, so a driver advancing their own trip
+-- cannot also rewrite fare_ghs, rider_id or pickup_otp, and a driver editing
+-- their profile cannot also set role, kyc_status, rating or trip_count.
+-- Column privileges are necessary but not sufficient: a crafted request naming
+-- a granted column still reaches the row, which is why "driver advances own
+-- trip" pins driver_id, the vehicles policies pin approved, and
+-- guard_profile_update pins role, rating, trip_count and kyc_status.
+revoke update on trips from anon, authenticated;
+grant update (state, eta_minutes, started_at, completed_at) on trips to authenticated;
+
+revoke update on profiles from anon, authenticated;
+-- kyc_status is in the list because the plan's submitGhanaCard sends
+-- kyc_status: 'pending' alongside ghana_card_last4 and ghana_card_expiry in one
+-- update. Leaving it out would make PostgREST reject the whole call with
+-- PGRST204 and Ghana Card submission impossible, which is the same class of
+-- break as the missing ghana_card_expiry column. guard_profile_update, not the
+-- grant, is what stops the value moving to approved or rejected.
+grant update (full_name, phone, photo_url, ghana_card_last4, ghana_card_expiry,
+              selfie_url, vehicle_id, availability, kyc_status)
+  on profiles to authenticated;
+
+-- Profiles are created by handle_new_user, which is SECURITY DEFINER, so no
+-- client needs to insert one.
+revoke insert on profiles from anon, authenticated;
 
 alter publication supabase_realtime add table trips, offers, driver_locations, chat_messages;

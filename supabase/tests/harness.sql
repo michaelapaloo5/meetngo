@@ -38,6 +38,12 @@ create table if not exists auth.users (
   email text
 );
 
+-- `raw_user_meta_data` is where a signup puts the requested role, and
+-- handle_new_user() reads it. Hosted Supabase's auth.users has it;
+-- `create table if not exists` will not add a column to a table that already
+-- exists, hence the explicit alter.
+alter table auth.users add column if not exists raw_user_meta_data jsonb;
+
 create or replace function auth.uid() returns uuid
 language sql stable
 as $$
@@ -60,6 +66,21 @@ begin
   create schema public;
 end
 $$;
+
+-- Clear auth.users now that the public schema (and with it profiles) is gone.
+-- auth.users is test stand-in data this harness owns, not migration output.
+-- handle_new_user() populated profiles for the previous run's users and those
+-- rows just went with the drop; leaving the users behind would make the next
+-- verify run collide on auth_users_pkey.
+truncate table auth.users;
+
+-- dblink backs the two-session concurrency probe in
+-- supabase/tests/verify_concurrency.sql, which needs two real backends holding
+-- row locks at the same time. It has to come after the drop above, because
+-- dblink installs into public and the reset would take it with it. It is here
+-- rather than in the migration because hosted Supabase already has dblink
+-- available and no application query needs it.
+create extension if not exists dblink;
 
 grant usage on schema public to anon, authenticated, service_role;
 
