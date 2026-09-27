@@ -11,7 +11,12 @@ abstract final class MngTheme {
         color: MngColors.onPrimary,
       );
 
-  static ThemeData get light {
+  static final ThemeData _light = _buildLight();
+
+  /// Built once and cached, so reading it inside build() does not reallocate.
+  static ThemeData get light => _light;
+
+  static ThemeData _buildLight() {
     final scheme = ColorScheme.fromSeed(
       seedColor: MngColors.primary,
       surface: MngColors.page,
@@ -66,6 +71,10 @@ abstract final class MngTheme {
         enabledBorder: _inputBorder(BorderSide.none),
         focusedBorder:
             _inputBorder(const BorderSide(color: MngColors.primary, width: 1.5)),
+        errorBorder:
+            _inputBorder(const BorderSide(color: MngColors.error, width: 1.5)),
+        focusedErrorBorder:
+            _inputBorder(const BorderSide(color: MngColors.error, width: 1.5)),
       ),
       bottomSheetTheme: const BottomSheetThemeData(
         backgroundColor: MngColors.surface,
