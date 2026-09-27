@@ -32,16 +32,27 @@ Deno.test('a valid request yields the category, both pins and the surge', () => 
   assertEquals(result.value.promoCode, null);
 });
 
-Deno.test('a promo code is uppercased and anything that is not one is dropped', () => {
+Deno.test('a promo code is uppercased, and an absent or empty one is no code', () => {
   const upper = parseRideRequest(body({ promoCode: 'ride30' }));
   assert(upper.ok, JSON.stringify(upper));
   assertEquals(upper.value.promoCode, 'RIDE30');
-  const empty = parseRideRequest(body({ promoCode: '' }));
-  assert(empty.ok, JSON.stringify(empty));
-  assertEquals(empty.value.promoCode, null);
-  const numeric = parseRideRequest(body({ promoCode: 30 }));
-  assert(numeric.ok, JSON.stringify(numeric));
-  assertEquals(numeric.value.promoCode, null);
+  for (const absent of [undefined, null, '']) {
+    const result = parseRideRequest(body({ promoCode: absent }));
+    assert(result.ok, JSON.stringify(result));
+    assertEquals(result.value.promoCode, null);
+  }
+});
+
+// A wrong-typed field is a 400 everywhere else in this function, and a promo
+// code is the one a rider is promised money off. Silently dropping a
+// present-but-non-string one returns 200 at full price, which is the same
+// rider-visible outcome as the promo-read failure the 500 on a promo read
+// exists to prevent.
+Deno.test('a promoCode that is present but not a string is refused', () => {
+  assertEquals(refuse(body({ promoCode: 30 })), 'promoCode must be a string');
+  assertEquals(refuse(body({ promoCode: true })), 'promoCode must be a string');
+  assertEquals(refuse(body({ promoCode: ['RIDE30'] })), 'promoCode must be a string');
+  assertEquals(refuse(body({ promoCode: { code: 'RIDE30' } })), 'promoCode must be a string');
 });
 
 Deno.test('an absent surge defaults to 1 and label and address are coerced to strings', () => {

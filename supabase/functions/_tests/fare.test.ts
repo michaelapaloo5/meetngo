@@ -79,3 +79,28 @@ Deno.test('the same promo takes more off a premium ride than a standard one', ()
   assertEquals(discountFor('premium'), 12.18);
   assertEquals(discountFor('premium') > discountFor('standard'), true);
 });
+
+// `promos.max_discount_ghs` has no CHECK constraint, and a negative value there
+// makes `min(gross * percent_off / 100, cap)` negative, which the second
+// `computeFare` call then *adds* to the total: a premium ride quoted at 40.60
+// is stored at 80.60 while `quote.discountGhs` reports 0. Measured on this
+// host: `insert into promos (code, percent_off, max_discount_ghs) values
+// ('NEG1', 30, -40.00, true)` is accepted. A percent outside 0..100 is refused
+// by the `percent_off` check constraint, so the sign hole is on the cap, but
+// this is the pure function and it is total for every finite input.
+Deno.test('a negative promo cap cannot raise the fare above the gross quote', () => {
+  const trip = { category: 'premium' as const, distanceKm: 10, surge: 1.2 };
+  const gross = computeFare({ ...trip, discountGhs: 0 });
+
+  const discount = promoDiscountGhs(gross.fareGhs, 30, -40);
+  const quote = computeFare({ ...trip, discountGhs: discount });
+
+  assertEquals(discount, 0);
+  assertEquals(quote.fareGhs, gross.fareGhs);
+});
+
+Deno.test('a promo percent outside 0 to 100 is clamped rather than applied', () => {
+  const gross = computeFare({ category: 'premium', distanceKm: 10, surge: 1.2, discountGhs: 0 });
+  assertEquals(promoDiscountGhs(gross.fareGhs, 250, 1000), 40.6);
+  assertEquals(promoDiscountGhs(gross.fareGhs, -30, 1000), 0);
+});

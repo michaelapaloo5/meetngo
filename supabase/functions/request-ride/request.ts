@@ -87,12 +87,15 @@ export function parseRideRequest(body: unknown): RideRequestResult {
   const surge = body.surge ?? 1;
   if (!isFiniteNumber(surge)) return refuse('surge must be a finite number');
 
-  // Only a non-empty string is a code. The plan's clients send `String?`, and
-  // stringifying anything else here would turn a client bug into a lookup for a
-  // code nobody typed.
-  const promoCode = typeof body.promoCode === 'string' && body.promoCode !== ''
-    ? body.promoCode.toUpperCase()
-    : null;
+  // A present-but-non-string code is a client bug and is refused like every
+  // other wrong-typed field here, rather than dropped: dropping it returns 200
+  // at full price to a rider who was promised a discount, with nothing in the
+  // response saying the code was discarded. An absent code, `null` and an empty
+  // string are all "no code", which is not a discard and needs no signal.
+  const promoCode = body.promoCode;
+  if (promoCode !== undefined && promoCode !== null && typeof promoCode !== 'string') {
+    return refuse('promoCode must be a string');
+  }
 
   return {
     ok: true,
@@ -101,7 +104,7 @@ export function parseRideRequest(body: unknown): RideRequestResult {
       pickup: pickup.value,
       dropoff: dropoff.value,
       surge,
-      promoCode,
+      promoCode: promoCode ? promoCode.toUpperCase() : null,
     },
   };
 }

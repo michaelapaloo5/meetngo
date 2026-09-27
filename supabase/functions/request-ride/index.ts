@@ -1,7 +1,7 @@
 import { serve } from 'https://deno.land/std@0.224.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.45.4';
 import { corsHeaders } from '../_shared/cors.ts';
-import { deleteTripAndFail } from './compensate.ts';
+import { compensating } from './compensate.ts';
 import { computeFare, promoDiscountGhs } from './fare.ts';
 import { MAX_OFFERS, pickDrivers } from './match.ts';
 import { isFiniteNumber, parseRideRequest, type Pin } from './request.ts';
@@ -83,7 +83,13 @@ serve(async (req) => {
     b: wkt(dropoff),
   });
   if (distanceError) return json(500, { error: distanceError.message });
-  const distanceKm = Number(distanceRow ?? 0);
+  // A null result is not a zero-kilometre ride. The RPC cannot return null
+  // today, so `?? 0` here would only be dead code that hides a future break as
+  // a base-fare quote: a 6.00 GHS ride on a route nobody priced.
+  if (distanceRow === null || distanceRow === undefined) {
+    return json(500, { error: 'trip_distance_km returned no distance' });
+  }
+  const distanceKm = Number(distanceRow);
   if (!Number.isFinite(distanceKm)) return json(500, { error: 'trip_distance_km was not finite' });
 
   // Price the ride gross first, then take the promo off that gross. Discounting
@@ -94,16 +100,26 @@ serve(async (req) => {
 
   let discountGhs = 0;
   if (promoCode) {
-    const { data: promo, error: promoError } = await service
+    const { data: promoRows, error: promoError } = await service
       .from('promos')
       .select('percent_off,max_discount_ghs,expires_at')
       .eq('code', promoCode)
       .eq('active', true)
-      .maybeSingle();
+      .limit(1);
     // A dropped error here would leave discountGhs at 0 and quote the rider
     // full price for a code they supplied, which is a worse outcome than
     // failing: nothing in the response says the promo was not applied.
     if (promoError) return json(500, { error: promoError.message });
+    // `promoRows?.[0]` rather than `maybeSingle()`. `maybeSingle` sets
+    // `Accept: application/vnd.pgrst.object+json`, so a 0-row read comes back as
+    // a 406, and the shipped client clears that only by comparing the server's
+    // `details` against the substring `0 rows`
+    // (`@supabase/postgrest-js@1.16.1/src/PostgrestBuilder.ts:162`, the
+    // version supabase-js 2.45.4 resolves). So whether a typo'd promo code is a
+    // full-price quote or a 500 depends on an English string in someone else's
+    // API. `limit(1)` never asks for the single-object media type, so a 0-row
+    // read is a 200 with `[]` and we index it ourselves.
+    const promo = promoRows?.[0] ?? null;
     // `expires_at` is filtered here rather than in the query because a
     // PostgREST filter value is a literal, not SQL: `expires_at.gt.now()` is
     // not something the API can evaluate, and its own documentation answers a
@@ -114,10 +130,17 @@ serve(async (req) => {
     if (live) {
       const percentOff = Number(promo.percent_off);
       const maxDiscountGhs = Number(promo.max_discount_ghs);
-      // `percent_off` and `max_discount_ghs` are `numeric`, so a row written
-      // with NaN would pass the `percent_off > 0` check constraint and turn
-      // every fare that used the code into NaN. The rows are only writable by
-      // a privileged role, so this is a backstop, not an input check.
+      // This is a backstop on `max_discount_ghs`, and only that column.
+      // `promos.percent_off` carries `check (percent_off > 0 and percent_off
+      // <= 100)`, and because that is a conjunction it does reject NaN: on this
+      // host `'NaN'::numeric > 0` is true but `'NaN'::numeric <= 100` is false,
+      // so an insert of a NaN percent is refused (measured). `max_discount_ghs`
+      // has no CHECK at all, and PostgREST serialises a numeric NaN as the JSON
+      // string `"NaN"`, so `Number("NaN")` is NaN and that is the one column
+      // that can arrive non-finite. `promoDiscountGhs` does not clamp a
+      // non-finite argument, deliberately: `Math.max(0, NaN)` is NaN, and
+      // turning a corrupt row into a silent no-discount is the failure this
+      // check exists to prevent.
       if (!isFiniteNumber(percentOff) || !isFiniteNumber(maxDiscountGhs)) {
         return json(500, { error: 'promo row carries non-finite discount data' });
       }
@@ -154,48 +177,57 @@ serve(async (req) => {
     return { error };
   };
 
-  // Service-role only: the migration revokes EXECUTE on this function from
-  // `public`, `anon` and `authenticated`, so a user client returns 42501 here
-  // and a Flutter app cannot call it at all. The error is checked rather than
-  // dropped, because a dropped one turns a failed match into an empty offer
-  // list that looks identical to "no drivers are online right now". If the
-  // candidates are empty on a live project, check the key before anything else.
-  const { data: candidates, error: matchError } = await service.rpc('match_offers_for_trip', {
-    target_trip: trip.id,
-  });
-  if (matchError) {
-    return json(500, await deleteTripAndFail(deleteTrip, trip.id, matchError.message));
-  }
+  // The whole post-insert region runs inside `compensating`, so an *unchecked*
+  // failure takes the same compensating delete as a checked one. That route is
+  // the one that needed guarding: it used to escape to `serve`'s default
+  // onError, which returns a bare 500 and leaves the trip row behind, which is
+  // the same orphan the delete exists to prevent.
+  const outcome = await compensating(deleteTrip, trip.id, async () => {
+    // Service-role only: the migration revokes EXECUTE on this function from
+    // `public`, `anon` and `authenticated`, so a user client returns 42501 here
+    // and a Flutter app cannot call it at all. The error is checked rather than
+    // dropped, because a dropped one turns a failed match into an empty offer
+    // list that looks identical to "no drivers are online right now". If the
+    // candidates are empty on a live project, check the key before anything else.
+    const { data: candidates, error: matchError } = await service.rpc('match_offers_for_trip', {
+      target_trip: trip.id,
+    });
+    if (matchError) throw new Error(matchError.message);
 
-  const rows = (candidates ?? []) as { driver_id: string; pickup_distance_km: number }[];
-  const driverIds = pickDrivers(
-    rows.map((r) => ({ id: r.driver_id, pickupDistanceKm: Number(r.pickup_distance_km) })),
-    MAX_OFFERS,
-  );
-  const distanceById = new Map(
-    rows.map((r) => [r.driver_id, Number(r.pickup_distance_km)] as const),
-  );
-
-  if (driverIds.length > 0) {
-    const expiresAt = new Date(Date.now() + OFFER_TTL_SECONDS * 1000).toISOString();
-    const { error: offerError } = await service.from('offers').insert(
-      driverIds.map((driverId) => ({
-        trip_id: trip.id,
-        driver_id: driverId,
-        fare_ghs: quote.fareGhs,
-        pickup_distance_km: distanceById.get(driverId) ?? 0,
-        state: 'pending',
-        expires_at: expiresAt,
-      })),
+    const rows = (candidates ?? []) as { driver_id: string; pickup_distance_km: number }[];
+    const driverIds = pickDrivers(
+      rows.map((r) => ({ id: r.driver_id, pickupDistanceKm: Number(r.pickup_distance_km) })),
+      MAX_OFFERS,
     );
-    // Checked, and this is the check the brief left out: reporting
-    // `offerDriverIds` for offers that were never written tells the rider the
-    // fan-out happened while no driver was ever told about the trip. The trip
-    // goes with them, since the offers cascade from it.
-    if (offerError) {
-      return json(500, await deleteTripAndFail(deleteTrip, trip.id, offerError.message));
+    const distanceById = new Map(
+      rows.map((r) => [r.driver_id, Number(r.pickup_distance_km)] as const),
+    );
+
+    if (driverIds.length > 0) {
+      const expiresAt = new Date(Date.now() + OFFER_TTL_SECONDS * 1000).toISOString();
+      const { error: offerError } = await service.from('offers').insert(
+        driverIds.map((driverId) => ({
+          trip_id: trip.id,
+          driver_id: driverId,
+          fare_ghs: quote.fareGhs,
+          pickup_distance_km: distanceById.get(driverId) ?? 0,
+          state: 'pending',
+          expires_at: expiresAt,
+        })),
+      );
+      // Checked, and this is the check the brief left out: reporting
+      // `offerDriverIds` for offers that were never written tells the rider the
+      // fan-out happened while no driver was ever told about the trip. The trip
+      // goes with them, since the offers cascade from it.
+      if (offerError) throw new Error(offerError.message);
     }
+
+    return driverIds;
+  });
+
+  if (!outcome.ok) {
+    return json(500, { error: outcome.error, cleanupError: outcome.cleanupError });
   }
 
-  return json(200, { trip, quote, offerDriverIds: driverIds });
+  return json(200, { trip, quote, offerDriverIds: outcome.value });
 });

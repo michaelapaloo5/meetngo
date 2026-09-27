@@ -60,10 +60,30 @@ export function computeFare(input: FareInput): FareQuote {
 // `discountGhs: 0`, and feed the result back into a second `computeFare` call.
 // Both calls are pure, which is what makes the two-step pricing testable
 // without a database.
+//
+// All three arguments are clamped to their valid range rather than trusted, so
+// the function is total for every finite input and no caller can be talked into
+// a discount that is really a surcharge. The sign hole that made this necessary
+// is real: `promos.max_discount_ghs` has no CHECK constraint, and a negative
+// cap makes `min(gross * percent / 100, cap)` negative, which the second
+// `computeFare` call then *adds* to the total — a premium ride quoted at 40.60
+// stored at 80.60 while `quote.discountGhs` reports 0. `percent_off` is
+// constrained to (0, 100] by the schema, so the cap is the only column that can
+// arrive wrong; the percent is clamped anyway so the pure function does not
+// depend on a constraint in another file.
+//
+// A non-finite argument is not clamped here: `Math.max(0, NaN)` is NaN, and
+// quietly turning a corrupt row into "no discount" would be the silent-money
+// defect this whole function exists to avoid. `index.ts` refuses a non-finite
+// promo row with a 500 before it gets here.
 export function promoDiscountGhs(
   grossFareGhs: number,
   percentOff: number,
   maxDiscountGhs: number,
 ): number {
-  return round2(Math.min((grossFareGhs * percentOff) / 100, maxDiscountGhs));
+  const gross = Math.max(0, grossFareGhs);
+  const percent = Math.min(100, Math.max(0, percentOff));
+  const cap = Math.max(0, maxDiscountGhs);
+  return round2(Math.min((gross * percent) / 100, cap));
 }
+

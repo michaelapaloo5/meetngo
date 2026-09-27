@@ -17,6 +17,8 @@ export type CompensatedFailure = {
   cleanupError?: string;
 };
 
+export type Outcome<T> = { ok: true; value: T } | ({ ok: false } & CompensatedFailure);
+
 export async function deleteTripAndFail(
   deleteTrip: DeleteTrip,
   tripId: string,
@@ -27,3 +29,24 @@ export async function deleteTripAndFail(
   // rather than reporting a clean 500 and hiding a row nothing will clean up.
   return error ? { error: message, cleanupError: error.message } : { error: message };
 }
+
+// Runs the offer fan-out, and compensates the trip insert if it does not
+// finish. A *checked* failure — a 42501 from the match RPC, a rejected offers
+// insert — is reported the same way as an *unchecked* one, because both mean the
+// same thing: a `requested` trip that no driver was ever offered and that Task
+// 8's `activeTrip()` will keep handing back. The unchecked route is the one
+// that needed guarding: it used to escape to `serve`'s default onError, which
+// returns a bare 500 and leaves the row behind.
+export async function compensating<T>(
+  deleteTrip: DeleteTrip,
+  tripId: string,
+  work: () => Promise<T>,
+): Promise<Outcome<T>> {
+  try {
+    return { ok: true, value: await work() };
+  } catch (thrown) {
+    const message = thrown instanceof Error ? thrown.message : String(thrown);
+    return { ok: false, ...(await deleteTripAndFail(deleteTrip, tripId, message)) };
+  }
+}
+
