@@ -5420,7 +5420,7 @@ git commit -m "feat(rider): auth screens, OTP reset flow, data layer interfaces"
 - Consumes: `RideCategory` and `FareCalculator` (Task 2), `Vehicle`, `TripStop`, `GeoPoint` (Task 4), `MngColors`/`MngRadius`/`MngSpacing`/`MngTheme` (Task 1)
 - Produces:
   - `HomeScreen({required List<Vehicle> nearby, required String promoCode, void Function(BuildContext)? onSearchTap})`
-  - `CategoryChips({required RideCategory selected, required ValueChanged<RideCategory> onSelected})` and, from the same file, `Color onCategoryColor(RideCategory category)` — the only correct foreground on a `RideCategory.color` surface. Import it wherever a chip or avatar is tinted by the category colour; do not inline `MngColors.onPrimary`.
+  - `CategoryChips({required RideCategory selected, required ValueChanged<RideCategory> onSelected})` and, from the same file, `Color onCategoryColor(RideCategory category)` — the only correct foreground on a `RideCategory.color` surface. Import it wherever a chip or avatar is tinted by the category colour. The counter-example is the choose-car tab pill: it paints its selected background `MngColors.primary` for *every* category, so its label takes `MngColors.onPrimary` unconditionally — the same pair `app_theme.dart` uses for the amber button. Inlining `MngColors.onPrimary` is therefore scoped, not banned: it is the bug on a category-coloured surface and the fix everywhere else.
   - `PromoBanner({required String code})`
   - `RouteEntrySheet({required FareCalculator calc, required void Function(RouteDraft) onSubmit})` — a `showRouteEntrySheet(BuildContext, {required FareCalculator calc, required void Function(RouteDraft) onSubmit})` helper plus `RouteDraft({required TripStop pickup, required TripStop dropoff, required RideCategory category})` and the constants `kDefaultPickup` (Osu, `GeoPoint(5.6037, -0.1870)`) and `kDefaultDropoff` (Airport Residential, `GeoPoint(5.6052, -0.1660)`), which are 2.3299 km apart.
   - `ChooseCarScreen({required List<Vehicle> vehicles, required RideCategory selected, required ValueChanged<RideCategory> onCategory, required FareCalculator calc, required void Function(Vehicle) onConfirm, double distanceKm = 8.0})`
@@ -5665,8 +5665,8 @@ import 'package:mng_core/mng_core.dart';
 /// and `MngColors.textPrimary`, so a selected Premium chip rendered with
 /// `onPrimary` is dark-on-dark and reads as an empty box. Measured luminance on
 /// this host: `standard` 0.5165, `van` 0.3560, `premium` 0.0103, `onPrimary`
-/// 0.0103, `page` 1.0. The `0.5` threshold therefore leaves `standard` and
-/// `van` on `onPrimary` exactly as before and flips only `premium` to `page`.
+/// 0.0103, `page` 1.0. The `0.5` threshold therefore leaves `standard` on
+/// `onPrimary` and maps both `van` and `premium` to `page`.
 Color onCategoryColor(RideCategory category) =>
     category.color.computeLuminance() > 0.5 ? MngColors.onPrimary : MngColors.page;
 
@@ -5984,6 +5984,23 @@ void main() {
     expect(reported, RideCategory.van);
     expect(find.text('Honda Civic'), findsNothing);
     expect(find.text('Honda Hiace'), findsOneWidget);
+  });
+
+  testWidgets('a selected tab label is legible on the amber pill',
+      (tester) async {
+    useDesignSurface(tester);
+    await tester.pumpWidget(wrap(
+      vehicles: [vehicle('1', RideCategory.standard, 4)],
+    ));
+    await tester.tap(find.byKey(const Key('tab-van')));
+    await tester.pump();
+    final label = tester.widget<Text>(
+      find.descendant(
+        of: find.byKey(const Key('tab-van')),
+        matching: find.text('Van'),
+      ),
+    );
+    expect(label.style!.color, MngColors.onPrimary);
   });
 
   testWidgets('van fare uses the van per-km rate', (tester) async {
@@ -6405,7 +6422,6 @@ address.
 import 'package:flutter/material.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
 import 'package:mng_core/mng_core.dart';
-import '../home/widgets/category_chips.dart';
 import 'vehicle_card.dart';
 
 class ChooseCarScreen extends StatefulWidget {
@@ -6498,7 +6514,7 @@ class _ChooseCarScreenState extends State<ChooseCarScreen> {
                               style: TextStyle(
                                 fontSize: 13.sp,
                                 color: c == _category
-                                    ? onCategoryColor(c)
+                                    ? MngColors.onPrimary
                                     : MngColors.textSub,
                               ),
                             ),
@@ -6571,7 +6587,8 @@ class _ChooseCarScreenState extends State<ChooseCarScreen> {
 cd ~/meet-n-go/apps/rider && flutter test test/booking/ && flutter analyze --fatal-infos
 ```
 
-Expected: 10 tests pass.
+Expected: 15 tests pass — 11 choose-car + 4 route-entry-sheet, because step 11
+already added the route sheet's four to this directory.
 
 - [ ] **Step 15: Run the whole rider suite and commit**
 
@@ -6581,11 +6598,13 @@ cd ~/meet-n-go && git add -A
 git -c user.email=opencode@local -c user.name=opencode commit -m "feat(rider): home, route entry sheet and choose-car screens"
 ```
 
-Expected: 58 tests pass across the rider app — 33 pre-existing (1 skeleton +
+Expected: 59 tests pass across the rider app — 33 pre-existing (1 skeleton +
 9 login + 7 reset + 4 forgot-password + 3 trip-json + 9 data-layer) + 11 home +
-10 choose-car + 4 route-entry-sheet. Count the files, do not add the numbers:
-`grep -c "testWidgets("` returns 0 for a file whose tests sit inside a
-`group()` at 4-space indent, so count by hand and read the runner's own total.
+11 choose-car + 4 route-entry-sheet. Read the runner's own total instead of
+adding these up: `grep -c "testWidgets("` is not a test count. It matches the
+literal string at any indentation, so a `testWidgets(` sitting 4 spaces deep
+inside a `group()` is counted and returns 1; it returns 0 on a file whose tests
+are plain `test(`, which is why `test/data/data_layer_test.dart` reports 0.
 
 ---
 
