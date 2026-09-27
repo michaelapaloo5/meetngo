@@ -921,7 +921,10 @@ const Map<TripState, Set<TripState>> _legal = {
   TripState.cancelled: {},
 };
 
-bool canTransition(TripState from, TripState to) => _legal[from]!.contains(to);
+// `?? false`, not `!`: a state added later without a map entry must report
+// "illegal" rather than throw a null-check TypeError, so that nextState still
+// throws IllegalTripTransition as documented.
+bool canTransition(TripState from, TripState to) => _legal[from]?.contains(to) ?? false;
 
 TripState nextState(TripState from, TripState to) {
   if (!canTransition(from, to)) {
@@ -1900,10 +1903,11 @@ returns trigger
 language plpgsql
 as $$
 begin
-  -- No self-transition short circuit: a no-op update falls through to the
-  -- legality predicate below, so `new.state = old.state` raises like any other
-  -- illegal move. Do not reintroduce an early `return new` here; the Dart
-  -- `canTransition` table and the Task 17 fake both reject all self-transitions.
+  -- No self-transition short circuit: a no-op update that names `state` in its
+  -- SET clause falls through to the legality predicate below, so
+  -- `new.state = old.state` raises like any other illegal move. Do not
+  -- reintroduce an early `return new` here. The Dart `canTransition` table is
+  -- the single authority; the Task 17 fake calls it rather than keeping a copy.
   if not (
     (old.state = 'requested' and new.state in ('matched','cancelled')) or
     (old.state = 'matched'    and new.state in ('arriving','cancelled')) or
