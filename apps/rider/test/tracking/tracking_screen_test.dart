@@ -14,11 +14,16 @@ void useDesignSurface(WidgetTester tester) {
   addTearDown(tester.view.reset);
 }
 
-Trip tripInState(TripState state) => Trip(
+/// `etaMinutes` is a parameter and not a fixed 4 because a fixture that pins
+/// every ETA to the same number cannot tell a mirrored `eta_minutes` from a
+/// hardcoded one. `TripStop` has no `operator ==`, so nothing here asserts on a
+/// `TripStop` — only on `.address` and `.point`.
+Trip tripInState(TripState state, {int? etaMinutes, RideCategory? category}) =>
+    Trip(
       id: 't1',
       riderId: 'r1',
       driverId: 'd1',
-      category: RideCategory.standard,
+      category: category ?? RideCategory.standard,
       state: state,
       pickup: const TripStop('P', GeoPoint(5.6037, -0.1870), 'Osu, Accra'),
       dropoff:
@@ -26,6 +31,7 @@ Trip tripInState(TripState state) => Trip(
       distanceKm: 2.4,
       fareGhs: 12.50,
       isDemo: true,
+      etaMinutes: etaMinutes,
     );
 
 /// Stands in for the raw `http.ClientException` a direct PostgREST call lets
@@ -108,8 +114,14 @@ class FakeTripRepository implements TripRepository {
 }
 
 class FakeTrackingController extends TrackingController {
-  FakeTrackingController(this.state)
-      : super(trips: FakeTripRepository(), initialTrip: tripInState(state)) {
+  /// `initialTrip` is a parameter because the controller seeds `etaMinutes` from
+  /// it, and a test that cannot hand the constructor a trip carrying a
+  /// particular `eta_minutes` cannot pin the seeding at all.
+  FakeTrackingController(this.state, [Trip? initialTrip])
+      : super(
+          trips: FakeTripRepository(),
+          initialTrip: initialTrip ?? tripInState(state),
+        ) {
     driver = const DriverProfile(
       id: 'd1',
       fullName: 'Jane Cooper',
@@ -153,13 +165,24 @@ void main() {
     expect(find.text('Ride confirmed'), findsOneWidget);
   });
 
-  testWidgets('arriving state shows the ETA badge with minutes', (tester) async {
+  testWidgets('arriving state shows the ride-confirmed headline with the ETA badge',
+      (tester) async {
     useDesignSurface(tester);
-    final c = FakeTrackingController(TripState.arriving)..etaMinutes = 4;
+    // 7, not the 4 the previous implementation hardcoded and not the 4 this test
+    // used to set by hand, so both the constructor seeding and the refresh mirror
+    // are distinguishable from a literal. Driving the badge through the
+    // constructor is also the only way to reach the seeding at all: nothing in
+    // `apps/rider/lib/` constructs this controller yet, so there is no
+    // production path that would set the field for it.
+    final c = FakeTrackingController(
+      TripState.arriving,
+      tripInState(TripState.arriving, etaMinutes: 7),
+    );
+    expect(c.etaMinutes, 7);
     await tester.pumpWidget(wrapTracking(c));
     expect(find.text('Arriving soon'), findsOneWidget);
     expect(find.byKey(const Key('etaBadge')), findsOneWidget);
-    expect(find.text('4 min'), findsOneWidget);
+    expect(find.text('7 min'), findsOneWidget);
   });
 
   testWidgets('driver name, rating and car are summarised', (tester) async {
@@ -404,5 +427,133 @@ void main() {
       );
     await tester.pumpWidget(wrapTracking(c));
     expect(tester.takeException(), isNull);
+  });
+
+  // --- the ETA is the row's number, never a constant ------------------------
+
+  testWidgets('refresh takes the ETA from the row it just read', (tester) async {
+    useDesignSurface(tester);
+    final c = FakeTrackingController(
+      TripState.arriving,
+      tripInState(TripState.arriving, etaMinutes: 9),
+    )..repo.active = tripInState(TripState.arriving, etaMinutes: 1);
+    await tester.pumpWidget(wrapTracking(c));
+    await c.refresh();
+    await tester.pump();
+    // The old code only assigned for `arriving` when `etaMinutes` was still null,
+    // so a seeded 9 survived every refresh and the pill never moved.
+    expect(c.etaMinutes, 1);
+    expect(find.text('1 min'), findsOneWidget);
+  });
+
+  testWidgets('a row that stops carrying an ETA takes the badge away',
+      (tester) async {
+    useDesignSurface(tester);
+    final c = FakeTrackingController(
+      TripState.arriving,
+      tripInState(TripState.arriving, etaMinutes: 9),
+    )..repo.active = tripInState(TripState.arriving);
+    await tester.pumpWidget(wrapTracking(c));
+    expect(find.byKey(const Key('etaBadge')), findsOneWidget);
+    await c.refresh();
+    await tester.pump();
+    expect(c.etaMinutes, isNull);
+    expect(find.byKey(const Key('etaBadge')), findsNothing);
+  });
+
+  // --- the controller's own copy of the cancel guard ------------------------
+
+  testWidgets('cancel refuses a trip it may not cancel without calling the function',
+      (tester) async {
+    useDesignSurface(tester);
+    // Called directly rather than through the button, because `TrackingScreen`
+    // hides the button for this state, so the screen test can never reach the
+    // controller's own `canTransition` check. It is a second copy of the same
+    // rule, and a second copy is only defence in depth while both are pinned.
+    final c = FakeTrackingController(TripState.ongoing);
+    await c.cancel();
+    expect(c.error, 'This trip can no longer be cancelled');
+    expect(c.repo.cancelCalls, 0);
+    expect(c.repo.cancelled, isFalse);
+    expect(c.trip!.state, TripState.ongoing);
+    expect(c.trip!.hasDriver, isTrue);
+  });
+
+  // --- headlines and the route line ----------------------------------------
+
+  testWidgets('requested state shows the finding-a-driver headline', (tester) async {
+    useDesignSurface(tester);
+    await tester.pumpWidget(wrapTracking(FakeTrackingController(TripState.requested)));
+    expect(find.text('Finding your driver'), findsOneWidget);
+  });
+
+  testWidgets('completed state shows the trip-complete headline', (tester) async {
+    useDesignSurface(tester);
+    await tester.pumpWidget(wrapTracking(FakeTrackingController(TripState.completed)));
+    expect(find.text('Trip complete'), findsOneWidget);
+  });
+
+  testWidgets('the route line reads both addresses', (tester) async {
+    useDesignSurface(tester);
+    // Built from the fixture's own `.address` values rather than a literal, so
+    // this tracks the fixture and not a copy of it, and never asserts on a
+    // `TripStop` -- the model has no `operator ==` and compares by identity.
+    final trip = tripInState(TripState.arriving);
+    await tester.pumpWidget(wrapTracking(
+      FakeTrackingController(TripState.arriving, trip),
+    ));
+    expect(
+      find.text('${trip.pickup.address} to ${trip.dropoff.address}'),
+      findsOneWidget,
+    );
+  });
+
+  // --- the null active trip still repaints ---------------------------------
+
+  testWidgets('a refresh with no active trip clears a stale error and repaints',
+      (tester) async {
+    useDesignSurface(tester);
+    final c = FakeTrackingController(TripState.arriving)
+      ..error = 'Could not reach the server';
+    await tester.pumpWidget(wrapTracking(c));
+    expect(find.text('Could not reach the server'), findsOneWidget);
+    // `activeTrip()` answers null, which is the path that used to `return`
+    // before `notifyListeners`.
+    await c.refresh();
+    await tester.pump();
+    expect(c.error, isNull);
+    expect(c.trip!.state, TripState.arriving);
+    expect(find.text('Could not reach the server'), findsNothing);
+    expect(find.text('Arriving soon'), findsOneWidget);
+  });
+
+  // --- the category label in the search copy -------------------------------
+
+  testWidgets('the finding-driver copy names the category the trip was booked as',
+      (tester) async {
+    useDesignSurface(tester);
+    // `RideCategory.van`'s label is `Van`, capitalised
+    // (`mng_core/lib/src/models/category.dart:8`) — read off the enum, not
+    // assumed. A standard-trip-only assertion cannot tell this line from a
+    // hardcoded string, because the hardcoded string was Standard's.
+    for (final category in RideCategory.values) {
+      await tester.pumpWidget(ScreenUtilInit(
+        designSize: const Size(390, 844),
+        builder: (_, _) => MaterialApp(
+          theme: MngTheme.light,
+          home: FindingDriverScreen(
+            trip: tripInState(TripState.requested, category: category),
+            onCancelSearch: () {},
+          ),
+        ),
+      ));
+      expect(
+        find.text('Asking ${category.label} drivers near you'),
+        findsOneWidget,
+        reason: category.name,
+      );
+    }
+    expect(find.text('Asking Van drivers near you'), findsOneWidget);
+    expect(find.text('Asking Standard drivers near you'), findsNothing);
   });
 }

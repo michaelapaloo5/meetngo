@@ -945,7 +945,8 @@ insert into write_probe (ord, seq, as_role, as_sub, widen_grant, probe, expectat
       values ('a0000000-0000-4000-8000-000000000002',
               '11111111-1111-4111-8111-111111111111', 'not my trip')$$),
   -- The rider is still waiting for a driver here: trip_b is `requested`, and
-  -- TrackingController.activeTrip() includes `requested` while raiseSos fires
+  -- TripRepository.activeTrip() (not TrackingController's -- it has no such
+  -- method) includes `requested` while raiseSos fires
   -- whenever the trip is non-null. This probe used to demand `blocked 42501`,
   -- and that state gate recreated the very defect the SOS policy exists to
   -- remove. A party must be able to raise SOS in this state.

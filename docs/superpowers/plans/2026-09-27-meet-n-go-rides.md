@@ -6882,20 +6882,36 @@ are plain `test(`, which is why `test/data/data_layer_test.dart` reports 0.
 - Create: `apps/rider/lib/src/tracking/widgets/eta_badge.dart`
 - Create: `apps/rider/lib/src/tracking/widgets/driver_summary.dart`
 - Create: `supabase/functions/cancel-trip/policy.ts`
-- Create: `supabase/functions/cancel-trip/index.ts`
+- Create: `supabase/functions/cancel-trip/handler.ts` — added in fix round 1. `serve()` at
+  module scope in `index.ts` made the function unimportable, so no test could reach it and
+  six mutations of it survived review round 1. The routing, the status codes and the
+  response bodies moved here behind a `CancelDeps` port set, which is `offers/handler.ts`'s
+  shape and the reason this file is not in the brief at all.
+- Create: `supabase/functions/cancel-trip/clients.ts` — added in fix round 1, for the same
+  reason. Builds the six ports out of one service-role client.
+- Create: `supabase/functions/cancel-trip/index.ts` — three lines of wiring after round 1.
 - Test: `apps/rider/test/tracking/tracking_screen_test.dart`
 - Test: `supabase/functions/_tests/cancel_policy.test.ts`
+- Test: `supabase/functions/_tests/cancel_handler.test.ts` — added in fix round 1. 24 cases
+  through fakes, covering the six behaviours that were unpinned.
+- Test: `supabase/functions/_tests/cancel_clients_wiring.test.ts` — added in fix round 1.
+  Source-text assertions over `cancel-trip/clients.ts`, because a fake-`CancelDeps` test
+  cannot see which client a port uses or which columns it writes. Same mechanism and same
+  accepted cost as `_tests/clients_wiring.test.ts`.
 
 **Interfaces:**
 - Consumes: `Trip`, `TripStop`, `GeoPoint`, `DriverProfile` (Task 4), `TripState` (Task 3), `TripRepository` (Task 8)
 - Produces:
-  - `supabase/functions/cancel-trip/policy.ts` → `export const FREE_CANCEL_WINDOW_MS = 120_000`, `export const DRIVER_CANCELLATION_FEE_GHS = 5.0`, `export function cancellationCompensationGhs(input: { state: TripStateName; elapsedMs: number }): number` returning `0` for a free cancel, `5.0` when the driver must be compensated, and `-1` when the trip is not rider-cancellable. `TripStateName` is the string union `'requested' | 'matched' | 'arriving' | 'ongoing' | 'completed' | 'cancelled'`. Also `export function isTripStateName(value: unknown): value is TripStateName`, which the function uses instead of casting the `trips.state` value off a PostgREST read.
-  - POST `cancel-trip` `{tripId}` → `{cancelled: boolean, trip: Trip, compensatedGhs: number}`. Every non-200 answer carries the `{ error: <string> }` body that `describeFunctionFailure` reads, including the 409, so the function never reports `cancelled: true` for a write that failed or matched no row.
-  - `TrackingController({required TripRepository trips, required Trip initialTrip, DriverProfile? initialDriver})` — `ChangeNotifier` with fields `Trip? trip`, `DriverProfile? driver`, `int? etaMinutes`, `bool sosRaised`, `String? error`; methods `Future<void> cancel()`, `Future<void> raiseSos()`, `Future<void> refresh()`.
+    - `supabase/functions/cancel-trip/policy.ts` → `export const FREE_CANCEL_WINDOW_MS = 120_000`, `export const DRIVER_CANCELLATION_FEE_GHS = 5.0`, `export function cancellationCompensationGhs(input: { state: TripStateName; elapsedMs: number }): number` returning `0` for a free cancel, `5.0` when the driver must be compensated, and `-1` when the trip is not rider-cancellable. `TripStateName` is the string union `'requested' | 'matched' | 'arriving' | 'ongoing' | 'completed' | 'cancelled'`. Also `export function isTripStateName(value: unknown): value is TripStateName`, which the function uses instead of casting the `trips.state` value off a PostgREST read. That predicate is load-bearing twice: it is the runtime guard, and it is also the only thing that narrows `row.state` to the union, so removing the guard outright is a `TS2322` and `deno test` refuses to run.
+  - `supabase/functions/cancel-trip/handler.ts` → `export interface CancelDeps`, `export interface TripRow`, `export function handleCancel(req: Request, deps: CancelDeps): Promise<Response>`, `export function elapsedSinceCommit(matchedAt: string | null, createdAt: string): number`. Six ports: `authenticate`, `readTrip`, `writeCancel`, `releaseDriver`, `releaseOffers`, `recordCompensation`. Added in fix round 1; without it `index.ts` was unimportable and none of the function's behaviour was testable.
+  - `supabase/functions/cancel-trip/clients.ts` → `export function buildClients(): SupabaseClient` and `export function buildDeps(service: SupabaseClient): CancelDeps`.
+  - POST `cancel-trip` `{tripId}` → `{cancelled: boolean, trip: Trip, compensatedGhs: number}`. Every non-200 answer carries the `{ error: <string> }` body that `describeFunctionFailure` reads, including the 409, so the function never reports `cancelled: true` for a write that failed or matched no row. `trip` in the 200 body is the row as the database holds it *after* the write, so its `cancelled_at` is the instant that was written and not the pre-update null.
+  - `TrackingController({required TripRepository trips, required Trip initialTrip, DriverProfile? initialDriver})` — `ChangeNotifier` with fields `Trip? trip`, `DriverProfile? driver`, `int? etaMinutes`, `bool sosRaised`, `String? error`; methods `Future<void> cancel()`, `Future<void> raiseSos()`, `Future<void> refresh()`. `etaMinutes` is seeded from `initialTrip.etaMinutes` in the constructor and mirrored from `fresh.etaMinutes` on every refresh; it is never assigned a literal. Nothing in `apps/rider/lib/` constructs this controller yet, so the seeding is what Task 16's wiring will read, and a hardcoded number here would be a wrong number on a live-tracking screen.
   - `TrackingScreen()` reads `TrackingController` from `Provider`.
   - `FindingDriverScreen({required Trip trip, required VoidCallback onCancelSearch})` — key `cancelSearchButton`, copy `3 drivers found`, `Asking Standard drivers near you`.
   - `EtaBadge({required int minutes})` — key `etaBadge`, renders the amber pill `$minutes min`.
-  - `DriverSummary({required DriverProfile driver, required Vehicle? vehicle})`.
+  - `DriverSummary({required DriverProfile driver, this.vehicle})` — **deviation from the signature below, accepted by review round 1 and deliberately not changed.** The brief said `required Vehicle? vehicle`; the shipped widget takes an optional `vehicle`. A live-tracking widget has to render a driver whose vehicle is not attached yet, and `required Vehicle?` is exactly as unsatisfiable as it looks: a `required` named parameter whose type already admits null adds a demand the caller cannot meet without passing an explicit null, and the screen is the caller.
+  - `DriverSummary` as the brief wrote it: `{required DriverProfile driver, required Vehicle? vehicle}`. Kept here so the difference is visible rather than quietly overwritten; the shipped signature is the line above.
   - Widget keys: `sosButton`, `callButton`, `messageButton`, `cancelButton`, `etaBadge`, `cancelSearchButton`.
   - `sos_events` rows are inserted directly by `SupabaseTripRepository.raiseSos` (added in Task 8's repository), so no separate SOS Edge Function is required in this build.
 
@@ -7092,13 +7108,46 @@ cd ~/meet-n-go/supabase && deno test functions/_tests/cancel_policy.test.ts
 Expected: 10 tests pass. Two more than the eight the first draft listed: one for a
 state the union does not name, and one for `isTripStateName`.
 
-- [ ] **Step 5: Write `cancel-trip/index.ts`**
+- [ ] **Step 5: Write `cancel-trip/handler.ts`, `cancel-trip/clients.ts` and `cancel-trip/index.ts`**
+
+`supabase/functions/cancel-trip/index.ts`:
 
 ```ts
+// The only file that starts anything. `buildDeps` turns the client into the six
+// ports `handleCancel` takes, so the routing and the rules stay testable without
+// a client and this stays short enough to read. Same shape as
+// `offers/index.ts`.
 import { serve } from 'https://deno.land/std@0.224.0/http/server.ts';
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.45.4';
+import { buildClients, buildDeps } from './clients.ts';
+import { handleCancel } from './handler.ts';
+
+serve((req) => handleCancel(req, buildDeps(buildClients())));
+```
+
+`supabase/functions/cancel-trip/index.ts` is the whole of the wiring.
+
+`supabase/functions/cancel-trip/handler.ts`:
+
+The routing, the status codes and the response bodies, behind six ports instead of a client.
+
+```ts
 import { corsHeaders } from '../_shared/cors.ts';
 import { cancellationCompensationGhs, isTripStateName } from './policy.ts';
+
+// The HTTP surface of `cancel-trip`, and nothing that talks to a client.
+//
+// This file used to be `index.ts` in full, with `serve()` at module scope. That
+// makes it unimportable: a test that imports it starts a server, and the six
+// behaviours below -- the row-count refusal, the checked `trips` write, the
+// `error` key on the 409, the three checked writes behind it, the `cancelled_at`
+// it writes and the state guard -- had no test at all, because there was no way
+// to reach them. They are all reachable now, through `CancelDeps`, and each has
+// a case in `_tests/cancel_handler.test.ts`.
+//
+// The split is `offers/handler.ts`'s: the routing, the status codes and the
+// response bodies live here, `clients.ts` builds the ports out of two
+// supabase-js clients, and `index.ts` is the three lines that wire one to the
+// other. Nothing here imports supabase-js.
 
 const json = (status: number, payload: Record<string, unknown>) =>
   new Response(JSON.stringify(payload), {
@@ -7106,52 +7155,101 @@ const json = (status: number, payload: Record<string, unknown>) =>
     headers: { ...corsHeaders, 'Content-Type': 'application/json' },
   });
 
-serve(async (req) => {
-  if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
+/**
+ * The `trips` row as it comes off the wire, snake_case because that is what
+ * comes off the wire. `state` is a plain `string` and not the `TripStateName`
+ * union on purpose: the whole point of the `isTripStateName` guard below is that
+ * this value is unverified, and typing it as the union would let the guard read
+ * as redundant. The index signature is the other half of that -- the 200 body
+ * echoes the row, so the handler has to be able to carry columns it never reads.
+ */
+export interface TripRow {
+  id: string;
+  rider_id: string;
+  driver_id: string | null;
+  state: string;
+  created_at: string;
+  matched_at: string | null;
+  [column: string]: unknown;
+}
 
-  // One service-role client, and nothing on it that belongs to the caller. The
-  // trip read, the state write, the driver's availability, the offer release and
-  // the compensation all run on this client, because none of them has a
-  // client-side RLS path: `trips` carries no INSERT policy and `ledger_entries`
-  // carries no INSERT policy at all, and `revoke update on trips from anon,
-  // authenticated` with a grant of `(state, eta_minutes, started_at,
-  // completed_at)` leaves `cancelled_at` unwritable by a rider
-  // (`init.sql:614-615`). So the authorisation this function removes is replaced
-  // here instead: the rider is whatever `getUser` says the token is, and the
-  // trip's `rider_id` is compared against that, never read from the body.
-  const service = createClient(
-    Deno.env.get('SUPABASE_URL')!,
-    Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
-  );
+export interface CancelDeps {
+  // Resolves a bearer token to a user id. `error` and `userId` are both checked:
+  // `getUser` answers a revoked or malformed token with a null user *and* an
+  // error, and either alone is enough to refuse.
+  authenticate(token: string): Promise<{ userId: string | null; error: string | null }>;
+  readTrip(tripId: string): Promise<{ row: TripRow | null; error: string | null }>;
+  // The single-winner write. `row` is the row *as the database now holds it*, so
+  // the 200 body can echo `cancelled_at` rather than the pre-update null. A null
+  // `row` with a null `error` is a zero-row match, which is a lost race and not
+  // a failure, and the two are answered differently.
+  writeCancel(
+    tripId: string,
+    fromState: string,
+    cancelledAt: string,
+  ): Promise<{ row: TripRow | null; error: string | null }>;
+  releaseDriver(driverId: string): Promise<{ error: string | null }>;
+  releaseOffers(tripId: string): Promise<{ error: string | null }>;
+  recordCompensation(input: {
+    driverId: string;
+    tripId: string;
+    amountGhs: number;
+  }): Promise<{ error: string | null }>;
+}
 
-  const header = req.headers.get('Authorization') ?? '';
-  const token = header.replace(/^Bearer\s+/i, '');
-  if (!token) return json(401, { error: 'unauthenticated' });
+// Milliseconds since the driver committed, or 0 when the reference cannot be
+// read. The guard is load-bearing and the comparison is why: `new Date('junk')
+// .getTime()` is NaN, `Date.now() - NaN` is NaN, and `NaN <= FREE_CANCEL_WINDOW_MS`
+// is **false**, so an unparseable timestamp does not read as "free" -- it reads
+// as "past the window" and pays the driver. Measured on Deno 2.9.7.
+// `new Date(null).getTime()` is 0 rather than NaN, so a null would look like a
+// trip open since 1970 and reach the same branch; `created_at` is `not null`
+// (`init.sql:65`), so that is defence in depth rather than a reachable case.
+export function elapsedSinceCommit(matchedAt: string | null, createdAt: string): number {
+  const reference = new Date(matchedAt ?? createdAt).getTime();
+  return Number.isFinite(reference) ? Date.now() - reference : 0;
+}
 
-  const { data: userData, error: userError } = await service.auth.getUser(token);
-  if (userError || !userData.user) return json(401, { error: 'unauthenticated' });
-  const riderId = userData.user.id;
-
+// Two ways the body can be unusable, kept apart because they are two different
+// messages: a body that does not parse is a malformed request, and a body that
+// parses without a `tripId` is a request for something that does not exist.
+const readTripId = async (req: Request): Promise<
+  { ok: true; tripId: string } | { ok: false; error: string }
+> => {
   let body: unknown;
   try {
     body = await req.json();
   } catch {
-    return json(400, { error: 'body must be JSON' });
+    return { ok: false, error: 'body must be JSON' };
   }
   const tripId = (body as { tripId?: unknown } | null)?.tripId;
   if (typeof tripId !== 'string' || tripId.length === 0) {
-    return json(400, { error: 'tripId is required' });
+    return { ok: false, error: 'tripId is required' };
   }
+  return { ok: true, tripId };
+};
 
-  const { data: trip, error } = await service
-    .from('trips')
-    .select('*')
-    .eq('id', tripId)
-    .limit(1);
-  const row = Array.isArray(trip) ? trip[0] ?? null : null;
-  if (error) return json(500, { error: error.message });
+export async function handleCancel(req: Request, deps: CancelDeps): Promise<Response> {
+  if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
+
+  // The rider is whatever `getUser` says the token is, and the trip's `rider_id`
+  // is compared against that. No field of the body can decide who the trip
+  // belongs to. See `clients.ts` for why every one of these ports is on the
+  // service key rather than the caller's own credential.
+  const header = req.headers.get('Authorization') ?? '';
+  const token = header.replace(/^Bearer\s+/i, '');
+  if (!token) return json(401, { error: 'unauthenticated' });
+
+  const { userId, error: authError } = await deps.authenticate(token);
+  if (authError || !userId) return json(401, { error: 'unauthenticated' });
+
+  const parsed = await readTripId(req);
+  if (!parsed.ok) return json(400, { error: parsed.error });
+
+  const { row, error: readError } = await deps.readTrip(parsed.tripId);
+  if (readError) return json(500, { error: readError });
   if (!row) return json(404, { error: 'trip not found' });
-  if (row.rider_id !== riderId) return json(403, { error: 'not your trip' });
+  if (row.rider_id !== userId) return json(403, { error: 'not your trip' });
 
   // Checked rather than cast, and this is the check `state as never` did not
   // make: the policy function branches on this value, and an unrecognised one
@@ -7162,29 +7260,18 @@ serve(async (req) => {
 
   // The free window runs from the moment the driver committed, not from the
   // moment the trip was created, so `matched_at` is the reference once it
-  // exists and `created_at` is only the fallback for a `requested` trip — which
+  // exists and `created_at` is only the fallback for a `requested` trip -- which
   // is always free anyway, so the fallback never reaches the fee.
-  //
-  // The `Number.isFinite` guard is what keeps an unparseable reference out of
-  // the fee branch, and the comparison is why it is needed: `new Date('junk')
-  // .getTime()` is NaN, `Date.now() - NaN` is NaN, and `NaN <= FREE_CANCEL_
-  // WINDOW_MS` is **false**, so a bad timestamp does not read as "free" — it
-  // reads as "past the window" and pays the driver. Measured on Deno 2.9.7.
-  // `new Date(null).getTime()` is 0 rather than NaN, so a null would look like a
-  // trip open since 1970 and reach the same branch; `created_at` is `not null`
-  // (`init.sql:65`), so that is defence in depth rather than a reachable case.
-  const reference = new Date(row.matched_at ?? row.created_at).getTime();
-  const elapsedMs = Number.isFinite(reference) ? Date.now() - reference : 0;
   const compensatedGhs = cancellationCompensationGhs({
     state: row.state,
-    elapsedMs,
+    elapsedMs: elapsedSinceCommit(row.matched_at, row.created_at),
   });
 
   // One refusal body for both ways a cancel can be too late, and it carries the
   // `error` key that `describeFunctionFailure` reads
   // (`apps/rider/lib/src/data/function_failure.dart:17-26`). The brief's 409 had
-  // no `error`, so a rider who cancelled after the trip went `ongoing` — a
-  // reachable path, since the driver's app moves the state under them — read
+  // no `error`, so a rider who cancelled after the trip went `ongoing` -- a
+  // reachable path, since the driver's app moves the state under them -- read
   // `Something went wrong (409)`.
   const refuse = (reason: number) =>
     json(409, {
@@ -7196,31 +7283,14 @@ serve(async (req) => {
 
   if (compensatedGhs < 0) return refuse(compensatedGhs);
 
-  // `.eq('state', row.state)` makes this the single-winner write, and
-  // `.select('id,state')` is what makes its outcome readable: measured, a
-  // postgrest update with no `select` answers `data = null` and `error = null`
-  // whether it wrote a row or matched none, which is the silent no-op
-  // `offers/clients.ts` measures and works around in `writeDecline`. Without
-  // the row count the brief answered `cancelled: true` for a write that failed
-  // and for a race it lost to a second cancel or to the driver's own advance,
-  // and `SupabaseTripRepository.cancelTrip` reads no field of the body, so the
-  // rider's controller believed it either way.
-  const { data: updated, error: updateError } = await service
-    .from('trips')
-    // `cancelled_at` is written here and nowhere else in the build. It exists
-    // on the table (`init.sql:69`) and the verification harness populates it
-    // for a cancelled trip (`supabase/tests/verify_migration.sql:244`), so a
-    // cancellation that leaves it null makes the column permanently
-    // unpopulated and any later "how long was this open" read wrong.
-    .update({ state: 'cancelled', cancelled_at: new Date().toISOString() })
-    .eq('id', row.id)
-    .eq('state', row.state)
-    .select('id,state');
-
-  if (updateError) return json(500, { error: updateError.message });
-  if (!Array.isArray(updated) || updated.length !== 1) {
-    return refuse(-1);
-  }
+  const cancelledAt = new Date().toISOString();
+  const { row: written, error: cancelError } = await deps.writeCancel(
+    row.id,
+    row.state,
+    cancelledAt,
+  );
+  if (cancelError) return json(500, { error: cancelError });
+  if (!written) return refuse(-1);
 
   if (row.driver_id) {
     // Every write below is checked. The trip is already cancelled at this point,
@@ -7230,50 +7300,160 @@ serve(async (req) => {
     // the step is the honest report. The rider's `cancelTrip` turns it into a
     // `TripRequestFailure` carrying this string, which is why the message is
     // written for them rather than for a log.
-    const { error: driverError } = await service
-      .from('profiles')
-      .update({ availability: 'online' })
-      .eq('id', row.driver_id);
+    const { error: driverError } = await deps.releaseDriver(row.driver_id);
     if (driverError) {
-      return json(500, { error: `the trip was cancelled but the driver was not released: ${driverError.message}` });
+      return json(500, { error: `the trip was cancelled but the driver was not released: ${driverError}` });
     }
 
-    const { error: offerError } = await service
-      .from('offers')
-      .update({ state: 'released' })
-      .eq('trip_id', row.id)
-      .eq('state', 'pending');
+    const { error: offerError } = await deps.releaseOffers(row.id);
     if (offerError) {
-      return json(500, { error: `the trip was cancelled but its pending offers were not released: ${offerError.message}` });
+      return json(500, { error: `the trip was cancelled but its pending offers were not released: ${offerError}` });
     }
 
     if (compensatedGhs > 0) {
-      const { error: ledgerError } = await service.from('ledger_entries').insert({
-        driver_id: row.driver_id,
-        trip_id: row.id,
-        amount_ghs: compensatedGhs,
-        kind: 'compensation',
-        note: 'Rider cancelled after the free window',
-        is_demo: true,
+      const { error: ledgerError } = await deps.recordCompensation({
+        driverId: row.driver_id,
+        tripId: row.id,
+        amountGhs: compensatedGhs,
       });
       if (ledgerError) {
-        return json(500, { error: `the trip was cancelled but the driver's compensation was not recorded: ${ledgerError.message}` });
+        return json(500, { error: `the trip was cancelled but the driver's compensation was not recorded: ${ledgerError}` });
       }
     }
   }
 
-  return json(200, {
-    cancelled: true,
-    // `driver_id` is left as the row holds it. Releasing the driver and
-    // releasing the offers do not unassign them: `trips_driver_idx` is the
-    // driver's trip history and `ledger_entries.trip_id` points back here, and
-    // nulling the column would take the row out of the driver's reach under
-    // `driver reads assigned trips` (`init.sql:520-521`). The rider's own view
-    // is the controller's, which clears it locally.
-    trip: { ...row, state: 'cancelled' },
-    compensatedGhs,
-  });
-});
+  // `written` is the row the database holds now, so the body carries the
+  // `cancelled_at` that was just written. The brief answered `{...row, state:
+  // 'cancelled'}` from the *pre-update* row, so its `cancelled_at` was null
+  // while the row it claimed to describe had one.
+  //
+  // `driver_id` is left as the row holds it. Releasing the driver and releasing
+  // the offers do not unassign them: `trips_driver_idx` is the driver's trip
+  // history and `ledger_entries.trip_id` points back here, and nulling the column
+  // would take the row out of the driver's reach under `driver reads assigned
+  // trips` (`init.sql:520-521`). The rider's own view is the controller's, which
+  // clears it locally.
+  return json(200, { cancelled: true, trip: written, compensatedGhs });
+}
+```
+
+`supabase/functions/cancel-trip/clients.ts`:
+
+Builds those six ports out of one service-role client. This is the
+only file in the function that mentions supabase-js, and it is the only one a fake-port test
+cannot see into, which is why `_tests/cancel_clients_wiring.test.ts` asserts over its text.
+
+```ts
+// The two clients, and what each one is allowed to do.
+//
+// Every port in `CancelDeps` runs on the service key, and none of them runs on
+// the caller's own credential. That is not a simplification, it is forced by the
+// migration: `trips` carries no INSERT policy, `ledger_entries` carries no
+// INSERT policy at all, and `revoke update on trips from anon, authenticated`
+// with a grant of `(state, eta_minutes, started_at, completed_at)`
+// (`init.sql:614-615`) leaves `cancelled_at` unwritable by a rider. So the
+// authorisation that the service key bypasses is replaced here, in the handler:
+// the caller must present a token that `authenticate` validates, and the trip's
+// `rider_id` is compared against that identity and never read from the body.
+//
+// supabase-js only sets `Authorization` when the request has none
+// (`@supabase/supabase-js@2.45.4/dist/module/lib/fetch.js`, `if
+// (!headers.has('Authorization'))`), so a service key paired with a forwarded
+// bearer leaves the bearer as the effective credential rather than the key. This
+// file therefore builds one client and forwards nothing onto it: the token is
+// the explicit argument to `getUser`, which is the same construction
+// `request-ride/index.ts` and `offers/clients.ts` use.
+import { createClient, type SupabaseClient } from 'https://esm.sh/@supabase/supabase-js@2.45.4';
+import type { CancelDeps, TripRow } from './handler.ts';
+
+const first = <T>(rows: T[] | null): T | null =>
+  (Array.isArray(rows) ? rows[0] ?? null : null);
+
+export function buildClients(): SupabaseClient {
+  return createClient(
+    Deno.env.get('SUPABASE_URL')!,
+    Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
+  );
+}
+
+const ok = (error: { message: string } | null) => error?.message ?? null;
+
+// Every port the handler gets, so the handler holds no client and no supabase-js
+// import of its own. That split is what lets the handler be tested against fakes
+// with no network and no environment.
+export function buildDeps(service: SupabaseClient): CancelDeps {
+  return {
+    authenticate: async (token) => {
+      const { data, error } = await service.auth.getUser(token);
+      return { userId: data.user?.id ?? null, error: ok(error) };
+    },
+
+    // `limit(1)` and index the result rather than `single()`, for the reason
+    // `offers/clients.ts` gives in full: a 0-row read is a 200 with `[]` and the
+    // client turns that into `data = null` itself, and `limit(1)` never asks the
+    // client to interpret a row count at all.
+    readTrip: async (tripId) => {
+      const { data, error } = await service
+        .from('trips')
+        .select('*')
+        .eq('id', tripId)
+        .limit(1);
+      return { row: first(data) as TripRow | null, error: ok(error) };
+    },
+
+    // `.eq('state', fromState)` makes this the single-winner write: a second
+    // cancel, or the driver's own app advancing the state, matches no row and
+    // the handler answers a 409 rather than reporting a cancellation that did not
+    // happen. `.select('*')` is what makes the outcome readable -- measured, an
+    // update with no `select` answers `data = null` and `error = null` whether it
+    // wrote a row or matched none -- and it is also what puts the `cancelled_at`
+    // this call writes back into the row the handler echoes as the 200 body.
+    //
+    // `cancelled_at` is written here and nowhere else in the build. It exists on
+    // the table (`init.sql:69`) and the verification harness populates it for a
+    // cancelled trip (`supabase/tests/verify_migration.sql:244`), so a
+    // cancellation that leaves it null makes the column permanently unpopulated
+    // and any later "how long was this open" read wrong.
+    writeCancel: async (tripId, fromState, cancelledAt) => {
+      const { data, error } = await service
+        .from('trips')
+        .update({ state: 'cancelled', cancelled_at: cancelledAt })
+        .eq('id', tripId)
+        .eq('state', fromState)
+        .select('*');
+      return { row: first(data) as TripRow | null, error: ok(error) };
+    },
+
+    releaseDriver: async (driverId) => {
+      const { error } = await service
+        .from('profiles')
+        .update({ availability: 'online' })
+        .eq('id', driverId);
+      return { error: ok(error) };
+    },
+
+    releaseOffers: async (tripId) => {
+      const { error } = await service
+        .from('offers')
+        .update({ state: 'released' })
+        .eq('trip_id', tripId)
+        .eq('state', 'pending');
+      return { error: ok(error) };
+    },
+
+    recordCompensation: async ({ driverId, tripId, amountGhs }) => {
+      const { error } = await service.from('ledger_entries').insert({
+        driver_id: driverId,
+        trip_id: tripId,
+        amount_ghs: amountGhs,
+        kind: 'compensation',
+        note: 'Rider cancelled after the free window',
+        is_demo: true,
+      });
+      return { error: ok(error) };
+    },
+  };
+}
 ```
 
 - [ ] **Step 6: Deploy and commit the function**
@@ -7307,11 +7487,16 @@ void useDesignSurface(WidgetTester tester) {
   addTearDown(tester.view.reset);
 }
 
-Trip tripInState(TripState state) => Trip(
+/// `etaMinutes` is a parameter and not a fixed 4 because a fixture that pins
+/// every ETA to the same number cannot tell a mirrored `eta_minutes` from a
+/// hardcoded one. `TripStop` has no `operator ==`, so nothing here asserts on a
+/// `TripStop` — only on `.address` and `.point`.
+Trip tripInState(TripState state, {int? etaMinutes, RideCategory? category}) =>
+    Trip(
       id: 't1',
       riderId: 'r1',
       driverId: 'd1',
-      category: RideCategory.standard,
+      category: category ?? RideCategory.standard,
       state: state,
       pickup: const TripStop('P', GeoPoint(5.6037, -0.1870), 'Osu, Accra'),
       dropoff:
@@ -7319,6 +7504,7 @@ Trip tripInState(TripState state) => Trip(
       distanceKm: 2.4,
       fareGhs: 12.50,
       isDemo: true,
+      etaMinutes: etaMinutes,
     );
 
 /// Stands in for the raw `http.ClientException` a direct PostgREST call lets
@@ -7401,8 +7587,14 @@ class FakeTripRepository implements TripRepository {
 }
 
 class FakeTrackingController extends TrackingController {
-  FakeTrackingController(this.state)
-      : super(trips: FakeTripRepository(), initialTrip: tripInState(state)) {
+  /// `initialTrip` is a parameter because the controller seeds `etaMinutes` from
+  /// it, and a test that cannot hand the constructor a trip carrying a
+  /// particular `eta_minutes` cannot pin the seeding at all.
+  FakeTrackingController(this.state, [Trip? initialTrip])
+      : super(
+          trips: FakeTripRepository(),
+          initialTrip: initialTrip ?? tripInState(state),
+        ) {
     driver = const DriverProfile(
       id: 'd1',
       fullName: 'Jane Cooper',
@@ -7446,13 +7638,24 @@ void main() {
     expect(find.text('Ride confirmed'), findsOneWidget);
   });
 
-  testWidgets('arriving state shows the ETA badge with minutes', (tester) async {
+  testWidgets('arriving state shows the ride-confirmed headline with the ETA badge',
+      (tester) async {
     useDesignSurface(tester);
-    final c = FakeTrackingController(TripState.arriving)..etaMinutes = 4;
+    // 7, not the 4 the previous implementation hardcoded and not the 4 this test
+    // used to set by hand, so both the constructor seeding and the refresh mirror
+    // are distinguishable from a literal. Driving the badge through the
+    // constructor is also the only way to reach the seeding at all: nothing in
+    // `apps/rider/lib/` constructs this controller yet, so there is no
+    // production path that would set the field for it.
+    final c = FakeTrackingController(
+      TripState.arriving,
+      tripInState(TripState.arriving, etaMinutes: 7),
+    );
+    expect(c.etaMinutes, 7);
     await tester.pumpWidget(wrapTracking(c));
     expect(find.text('Arriving soon'), findsOneWidget);
     expect(find.byKey(const Key('etaBadge')), findsOneWidget);
-    expect(find.text('4 min'), findsOneWidget);
+    expect(find.text('7 min'), findsOneWidget);
   });
 
   testWidgets('driver name, rating and car are summarised', (tester) async {
@@ -7698,6 +7901,134 @@ void main() {
     await tester.pumpWidget(wrapTracking(c));
     expect(tester.takeException(), isNull);
   });
+
+  // --- the ETA is the row's number, never a constant ------------------------
+
+  testWidgets('refresh takes the ETA from the row it just read', (tester) async {
+    useDesignSurface(tester);
+    final c = FakeTrackingController(
+      TripState.arriving,
+      tripInState(TripState.arriving, etaMinutes: 9),
+    )..repo.active = tripInState(TripState.arriving, etaMinutes: 1);
+    await tester.pumpWidget(wrapTracking(c));
+    await c.refresh();
+    await tester.pump();
+    // The old code only assigned for `arriving` when `etaMinutes` was still null,
+    // so a seeded 9 survived every refresh and the pill never moved.
+    expect(c.etaMinutes, 1);
+    expect(find.text('1 min'), findsOneWidget);
+  });
+
+  testWidgets('a row that stops carrying an ETA takes the badge away',
+      (tester) async {
+    useDesignSurface(tester);
+    final c = FakeTrackingController(
+      TripState.arriving,
+      tripInState(TripState.arriving, etaMinutes: 9),
+    )..repo.active = tripInState(TripState.arriving);
+    await tester.pumpWidget(wrapTracking(c));
+    expect(find.byKey(const Key('etaBadge')), findsOneWidget);
+    await c.refresh();
+    await tester.pump();
+    expect(c.etaMinutes, isNull);
+    expect(find.byKey(const Key('etaBadge')), findsNothing);
+  });
+
+  // --- the controller's own copy of the cancel guard ------------------------
+
+  testWidgets('cancel refuses a trip it may not cancel without calling the function',
+      (tester) async {
+    useDesignSurface(tester);
+    // Called directly rather than through the button, because `TrackingScreen`
+    // hides the button for this state, so the screen test can never reach the
+    // controller's own `canTransition` check. It is a second copy of the same
+    // rule, and a second copy is only defence in depth while both are pinned.
+    final c = FakeTrackingController(TripState.ongoing);
+    await c.cancel();
+    expect(c.error, 'This trip can no longer be cancelled');
+    expect(c.repo.cancelCalls, 0);
+    expect(c.repo.cancelled, isFalse);
+    expect(c.trip!.state, TripState.ongoing);
+    expect(c.trip!.hasDriver, isTrue);
+  });
+
+  // --- headlines and the route line ----------------------------------------
+
+  testWidgets('requested state shows the finding-a-driver headline', (tester) async {
+    useDesignSurface(tester);
+    await tester.pumpWidget(wrapTracking(FakeTrackingController(TripState.requested)));
+    expect(find.text('Finding your driver'), findsOneWidget);
+  });
+
+  testWidgets('completed state shows the trip-complete headline', (tester) async {
+    useDesignSurface(tester);
+    await tester.pumpWidget(wrapTracking(FakeTrackingController(TripState.completed)));
+    expect(find.text('Trip complete'), findsOneWidget);
+  });
+
+  testWidgets('the route line reads both addresses', (tester) async {
+    useDesignSurface(tester);
+    // Built from the fixture's own `.address` values rather than a literal, so
+    // this tracks the fixture and not a copy of it, and never asserts on a
+    // `TripStop` -- the model has no `operator ==` and compares by identity.
+    final trip = tripInState(TripState.arriving);
+    await tester.pumpWidget(wrapTracking(
+      FakeTrackingController(TripState.arriving, trip),
+    ));
+    expect(
+      find.text('${trip.pickup.address} to ${trip.dropoff.address}'),
+      findsOneWidget,
+    );
+  });
+
+  // --- the null active trip still repaints ---------------------------------
+
+  testWidgets('a refresh with no active trip clears a stale error and repaints',
+      (tester) async {
+    useDesignSurface(tester);
+    final c = FakeTrackingController(TripState.arriving)
+      ..error = 'Could not reach the server';
+    await tester.pumpWidget(wrapTracking(c));
+    expect(find.text('Could not reach the server'), findsOneWidget);
+    // `activeTrip()` answers null, which is the path that used to `return`
+    // before `notifyListeners`.
+    await c.refresh();
+    await tester.pump();
+    expect(c.error, isNull);
+    expect(c.trip!.state, TripState.arriving);
+    expect(find.text('Could not reach the server'), findsNothing);
+    expect(find.text('Arriving soon'), findsOneWidget);
+  });
+
+  // --- the category label in the search copy -------------------------------
+
+  testWidgets('the finding-driver copy names the category the trip was booked as',
+      (tester) async {
+    useDesignSurface(tester);
+    // `RideCategory.van`'s label is `Van`, capitalised
+    // (`mng_core/lib/src/models/category.dart:8`) — read off the enum, not
+    // assumed. A standard-trip-only assertion cannot tell this line from a
+    // hardcoded string, because the hardcoded string was Standard's.
+    for (final category in RideCategory.values) {
+      await tester.pumpWidget(ScreenUtilInit(
+        designSize: const Size(390, 844),
+        builder: (_, _) => MaterialApp(
+          theme: MngTheme.light,
+          home: FindingDriverScreen(
+            trip: tripInState(TripState.requested, category: category),
+            onCancelSearch: () {},
+          ),
+        ),
+      ));
+      expect(
+        find.text('Asking ${category.label} drivers near you'),
+        findsOneWidget,
+        reason: category.name,
+      );
+    }
+    expect(find.text('Asking Van drivers near you'), findsOneWidget);
+    expect(find.text('Asking Standard drivers near you'), findsNothing);
+  });
 }
 ```
 
@@ -7720,17 +8051,25 @@ import '../data/trip_repository.dart';
 
 /// What the tracking screen reads and what every button on it calls.
 ///
-/// The three methods are the screen's only outlets, so each one has to end in
-/// either the new state or a message: an exception escaping an `onPressed`
-/// reaches the framework as an unhandled async error, not as anything the
-/// rider can read. `refresh`, `cancel` and `raiseSos` therefore each catch, and
-/// `error` is what `TrackingScreen` paints in red.
+/// The three methods are the screen's only outlets, so an exception escaping
+/// any of them reaches the framework as an unhandled async error rather than as
+/// anything the rider can read. All three therefore catch, all three repaint
+/// whatever they decided -- including the paths that decide nothing, because a
+/// model that changed without a `notifyListeners` is a screen showing yesterday's
+/// state -- and `error` is what `TrackingScreen` paints in red.
 class TrackingController extends ChangeNotifier {
   TrackingController({
     required this.trips,
     required Trip initialTrip,
     DriverProfile? initialDriver,
   })  : _trip = initialTrip,
+        // Seeded from the trip and not invented. `Trip.etaMinutes` is parsed
+        // from the row's `eta_minutes` (`mng_core/lib/src/models/trip.dart:51`)
+        // and is what the driver app writes as it moves, so the badge has to
+        // show that number or nothing. This used to start null, which meant the
+        // `EtaBadge` could not render until the first `refresh`, and `refresh`
+        // then overwrote the row's number with a hardcoded 4.
+        etaMinutes = initialTrip.etaMinutes,
         driver = initialDriver;
 
   final TripRepository trips;
@@ -7740,6 +8079,10 @@ class TrackingController extends ChangeNotifier {
 
   DriverProfile? driver;
   Vehicle? driverVehicle;
+
+  /// The ETA the pill renders, or null when the row does not carry one. Mirrored
+  /// from `Trip.etaMinutes` and never fabricated: a live-tracking screen that
+  /// shows a constant number is worse than one that shows none.
   int? etaMinutes;
   bool sosRaised = false;
   String? error;
@@ -7761,12 +8104,19 @@ class TrackingController extends ChangeNotifier {
     error = null;
     try {
       final fresh = await trips.activeTrip();
-      if (fresh == null) return;
-      _trip = fresh;
-      if (fresh.state == TripState.arriving && etaMinutes == null) {
-        etaMinutes = 4;
+      // A null active trip is not a reason to skip the notification. The
+      // `error = null` above is already a state change, and returning before
+      // `notifyListeners` would clear it in the model while the red line stayed
+      // on screen until some *other* call happened to repaint.
+      if (fresh != null) {
+        _trip = fresh;
+        // The row's own ETA, in both directions: a driver that was 7 minutes out
+        // and is now 2 has to show 2, and a row that stops carrying one has to
+        // stop showing a pill. The two `== TripState.arriving` /
+        // `== TripState.matched` branches that used to assign a literal 4 were
+        // the whole of the old behaviour and they were never read off anything.
+        etaMinutes = fresh.etaMinutes;
       }
-      if (fresh.state == TripState.matched) etaMinutes = 4;
     } on Exception catch (e) {
       // The trip on screen is left as it was: a failed read is not evidence
       // about the trip, and replacing it with nothing would take the screen's
@@ -8329,15 +8679,23 @@ against a later round rather than rewritten here.
 
 ```bash
 export PATH="$HOME/.deno/bin:$PATH"
-cd ~/meet-n-go && deno test --allow-env supabase/functions/_tests/cancel_policy.test.ts
-deno check supabase/functions/cancel-trip/index.ts
-deno lint supabase/functions/cancel-trip/
+# The CI form, from .github/workflows/ci.yml. `--allow-read=functions/` is not
+# optional: `_tests/clients_wiring.test.ts` and
+# `_tests/cancel_clients_wiring.test.ts` read their clients.ts as text, and
+# without it `deno test` aborts with NotCapable on the first of them. Run from
+# `~/meet-n-go/supabase`, because the permission is relative to the working
+# directory.
+cd ~/meet-n-go/supabase && deno test --allow-env --allow-read=functions/ functions/_tests/
+deno check functions/cancel-trip/index.ts
+deno lint functions/
 cd ~/meet-n-go/apps/rider && flutter test test/tracking/ && flutter analyze --fatal-infos
 ```
 
-Expected: 10 Deno tests pass, including `cancel_after_arriving_compensates_driver_test`,
-which is one of the plan's seven Review Focus tests. `deno check` and `deno lint` are
-silent. 19 widget tests pass. `flutter analyze` reports `No issues found!`.
+Expected: 34 Deno tests pass — 10 policy, 24 handler, 8 offers and the rest of
+the existing function suites. `cancel_after_arriving_compensates_driver_test` is
+one of the plan's seven Review Focus tests and is among them. `deno check` and
+`deno lint` are silent. 27 widget tests pass. `flutter analyze` reports
+`No issues found!`.
 
 The repo has no `deno fmt` step in CI, so do not add one.
 
@@ -8349,21 +8707,35 @@ cd ~/meet-n-go && git add -A
 git -c user.email=opencode@local -c user.name=opencode commit -m "feat(rider): live tracking, SOS and cancellation compensation"
 ```
 
-Expected: 89 rider tests pass. Measured per file on this host, so the breakdown is
+Expected: 97 rider tests pass. Measured per file on this host, so the breakdown is
 `grep -c` output and not an addition you should trust blindly: 1 skeleton, 9 login,
 7 reset, 4 forgot-password, 15 home, 15 choose-car, 7 route-entry-sheet, 9 data-layer
-(plain `test(`), 3 trip-json (plain `test(`), 19 tracking (18 `testWidgets(` and one
-plain `test(`, the `copyWith` release test). That is 70 pre-existing plus 19 new. Read
-the runner's own total as the authority. Counting by hand matters:
-`grep -c 'testWidgets('` returns 0 for `data_layer_test.dart` and `trip_json_test.dart`
-because they use plain `test(`, and it returns 18 rather than 19 for
-`tracking_screen_test.dart` for the same reason; the 4-space indentation inside
-Task 9's `group()` bodies is **not** a cause of a zero count — a 4-space-indented
-`testWidgets(` counts and returns 1. The earlier explanation in this section blaming
-indentation was wrong and is corrected here.
+(plain `test(`), 3 trip-json (plain `test(`), 27 tracking. That is 70 pre-existing
+plus 27 new. Read the runner's own total as the authority. Counting by hand
+matters: `grep -c 'testWidgets('` returns 0 for `data_layer_test.dart` and
+`trip_json_test.dart` because they use plain `test(`, and it returns 26 rather than
+27 for `tracking_screen_test.dart` for the same reason — its `copyWith` release
+test is the one plain `test(`. The 4-space indentation inside Task 9's `group()`
+bodies is **not** a cause of a zero count — a 4-space-indented `testWidgets(`
+counts and returns 1. The earlier explanation in this section blaming indentation
+was wrong and is corrected here.
 
-Nineteen, not the ten the first draft listed, and not the fourteen guessed before the
-work started. The nine extra are the two the cancellation release needed — `cancel()`
+Twenty-seven, not the ten the first draft listed, not the fourteen guessed before the
+work started, and not the nineteen round 1 shipped. Review round 1 killed thirteen
+mutations, and every one of them needed a test that did not exist, which is the whole
+reason the count moved again. The seventeen over the ten are two the cancellation
+release needed, and fifteen paths the ten did not reach: the ETA read from
+`eta_minutes` rather than fabricated, the badge taken away when the row stops carrying
+one, the controller's own `canTransition` guard in `cancel()`, the `requested` and
+`completed` headlines, the route line, the null-active-trip repaint, the category label
+in the search copy, a refused SOS write, a dropped connection, a retry after a failed
+write, a failed cancel, a failed refresh, a successful refresh, a 200% text-scale
+render, and a second render of the search screen per category.
+
+Round 1's own paragraph, kept because it records the first correction rather than
+the current one: nineteen, not the ten the first draft listed, and not the fourteen
+guessed before the work started. The nine extra are the two the cancellation release
+needed — `cancel()`
 leaving `trip.hasDriver` false, and `copyWith(driverId: null)` keeping the driver where
 `clearDriver: true` drops it — and the seven that pin the failure paths: a refused SOS
 write, a dropped connection, a retry after a failed write, a failed cancel, a failed

@@ -585,14 +585,14 @@ create policy "own sos events" on sos_events
 -- There is deliberately no state gate, and that is a deliberate symmetry with
 -- "own sos events" above, which is also ungated. An earlier draft of this policy
 -- added `t.state in ('matched','arriving','ongoing')`, and that recreated the
--- very defect this policy exists to remove: TrackingController.activeTrip()
--- includes `requested`, raiseSos fires whenever the trip is non-null, and
--- sosRaised is set to true *before* the await, so a rider who pressed the
--- button while still waiting for a driver got a 42501 that surfaced as an
--- uncaught exception on a screen already reading "Help is on the way", with no
--- row in sos_events. `requested` is exactly the state a rider may need SOS in.
--- Do not narrow the plan's button to fit a policy; narrow the policy if
--- anything, never the other way round.
+-- very defect this policy exists to remove: TripRepository.activeTrip() -- not
+-- TrackingController's, it has no such method -- includes `requested`, and
+-- TrackingController.raiseSos fires whenever the trip is non-null, so a rider
+-- who pressed the button while still waiting for a driver got a 42501 and no
+-- row in sos_events. `sosRaised` was set to true *before* that await, so the
+-- 42501 left the screen reading "Help is on the way"; raiseSos now catches and
+-- puts it back to false, but the gate is still wrong, and `requested` is
+-- exactly the state a rider may need SOS in. Never narrow the button to fit it.
 create policy "raise sos on a trip you are party to" on sos_events
   for insert with check (
     raised_by = auth.uid()

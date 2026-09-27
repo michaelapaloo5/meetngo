@@ -4,17 +4,25 @@ import '../data/trip_repository.dart';
 
 /// What the tracking screen reads and what every button on it calls.
 ///
-/// The three methods are the screen's only outlets, so each one has to end in
-/// either the new state or a message: an exception escaping an `onPressed`
-/// reaches the framework as an unhandled async error, not as anything the
-/// rider can read. `refresh`, `cancel` and `raiseSos` therefore each catch, and
-/// `error` is what `TrackingScreen` paints in red.
+/// The three methods are the screen's only outlets, so an exception escaping
+/// any of them reaches the framework as an unhandled async error rather than as
+/// anything the rider can read. All three therefore catch, all three repaint
+/// whatever they decided -- including the paths that decide nothing, because a
+/// model that changed without a `notifyListeners` is a screen showing yesterday's
+/// state -- and `error` is what `TrackingScreen` paints in red.
 class TrackingController extends ChangeNotifier {
   TrackingController({
     required this.trips,
     required Trip initialTrip,
     DriverProfile? initialDriver,
   })  : _trip = initialTrip,
+        // Seeded from the trip and not invented. `Trip.etaMinutes` is parsed
+        // from the row's `eta_minutes` (`mng_core/lib/src/models/trip.dart:51`)
+        // and is what the driver app writes as it moves, so the badge has to
+        // show that number or nothing. This used to start null, which meant the
+        // `EtaBadge` could not render until the first `refresh`, and `refresh`
+        // then overwrote the row's number with a hardcoded 4.
+        etaMinutes = initialTrip.etaMinutes,
         driver = initialDriver;
 
   final TripRepository trips;
@@ -24,6 +32,10 @@ class TrackingController extends ChangeNotifier {
 
   DriverProfile? driver;
   Vehicle? driverVehicle;
+
+  /// The ETA the pill renders, or null when the row does not carry one. Mirrored
+  /// from `Trip.etaMinutes` and never fabricated: a live-tracking screen that
+  /// shows a constant number is worse than one that shows none.
   int? etaMinutes;
   bool sosRaised = false;
   String? error;
@@ -45,12 +57,19 @@ class TrackingController extends ChangeNotifier {
     error = null;
     try {
       final fresh = await trips.activeTrip();
-      if (fresh == null) return;
-      _trip = fresh;
-      if (fresh.state == TripState.arriving && etaMinutes == null) {
-        etaMinutes = 4;
+      // A null active trip is not a reason to skip the notification. The
+      // `error = null` above is already a state change, and returning before
+      // `notifyListeners` would clear it in the model while the red line stayed
+      // on screen until some *other* call happened to repaint.
+      if (fresh != null) {
+        _trip = fresh;
+        // The row's own ETA, in both directions: a driver that was 7 minutes out
+        // and is now 2 has to show 2, and a row that stops carrying one has to
+        // stop showing a pill. The two `== TripState.arriving` /
+        // `== TripState.matched` branches that used to assign a literal 4 were
+        // the whole of the old behaviour and they were never read off anything.
+        etaMinutes = fresh.etaMinutes;
       }
-      if (fresh.state == TripState.matched) etaMinutes = 4;
     } on Exception catch (e) {
       // The trip on screen is left as it was: a failed read is not evidence
       // about the trip, and replacing it with nothing would take the screen's
