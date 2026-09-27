@@ -314,6 +314,13 @@ begin
   -- the trip, releasing every other offer and locking the remaining drivers
   -- out. The offers Edge Function performs the same ownership check in
   -- TypeScript before calling; this is the database-side copy of it.
+  --
+  -- A caller with no `sub` claim has a NULL auth.uid() and is refused here too,
+  -- because `null is distinct from <uuid>` is true and offers.driver_id is NOT
+  -- NULL. On this host `anon` and `service_role` both measure that way, and both
+  -- hold EXECUTE on this function, so neither role can accept an offer through
+  -- it: the offers Edge Function has to call it on a user client carrying the
+  -- driver's bearer token, never on a service-role client.
   if v_offer.driver_id is distinct from auth.uid() then
     return query select false, null::uuid, null::uuid;
     return;
@@ -329,19 +336,21 @@ begin
   -- 3. Now the offer. The unlocked read above may be stale by the time the
   --    trip lock is granted, so re-read and re-check ownership under the lock.
   --
-  --    The IF NOT FOUND here is not belt and braces. What it closes is the one
-  --    caller the ownership check below does not cover. A zero-row
-  --    `select * into v_offer` nulls the *whole record*, not just the fields the
-  --    later statements read, so v_offer.trip_id is NULL: the sibling release
-  --    and the trip match both key off a NULL and touch no rows at all. For any
-  --    authenticated caller the check below already returned false, because
-  --    `null is distinct from <uuid>` is true. A caller with a NULL auth.uid()
-  --    is the exception: `null is distinct from null` is false, so the ownership
-  --    check is skipped, the state guard evaluates to NULL and is not taken, and
-  --    the function returns accepted = true with trip_id and driver_id both
-  --    NULL. Only an anon caller gets that far, and only on an offer id that
-  --    does not exist, so no row is written either way and the damage is a false
-  --    accepted = true rather than a corrupted trip.
+  --    The IF NOT FOUND here is defence in depth, not the check that closes this
+  --    path. A zero-row `select * into v_offer ... for update` nulls the whole
+  --    record, so v_offer.driver_id is NULL, and the ownership re-check
+  --    immediately below this one refuses that on its own, for the same reason
+  --    the unlocked check above does: `null is distinct from <uuid>` is true.
+  --    Measured on this host, with a service-role DELETE of the offer committed
+  --    while the call was parked on the trip lock: this branch, and the same
+  --    branch with the ownership re-check also deleted, both returned false and
+  --    left the trip `requested`. With both deleted the call fell through to
+  --    `return query select true, v_trip.id, v_offer.driver_id` and answered
+  --    accepted = true with a NULL driver id, having written no rows, because
+  --    every keyed UPDATE below matched on a NULL. So what this pair of guards
+  --    is worth is refusing a false positive, not preventing a corrupted trip,
+  --    and either one alone does that. Keep both: this is a destructive path and
+  --    a redundant guard on one is cheap.
   select * into v_offer from offers where id = p_offer for update;
   if not found then
     return query select false, null::uuid, null::uuid;
