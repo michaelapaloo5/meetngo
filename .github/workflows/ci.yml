@@ -33,7 +33,11 @@ jobs:
       - name: Edge function tests
         if: ${{ !cancelled() && hashFiles('supabase/functions/_tests/**') != '' }}
         working-directory: supabase
-        run: deno test --allow-env functions/_tests/
+        # --allow-read is scoped to functions/ for clients_wiring.test.ts, which
+        # asserts over the source text of offers/clients.ts. That file builds the
+        # two clients and is unreachable from the port-level tests, so the
+        # assertions are the only thing pinning which client each port uses.
+        run: deno test --allow-env --allow-read=functions/ functions/_tests/
       - name: Push migrations
         if: ${{ !cancelled() && github.event_name == 'push' && hashFiles('supabase/**') != '' && secrets.SUPABASE_ACCESS_TOKEN != '' && secrets.SUPABASE_PROJECT_REF != '' }}
         working-directory: supabase

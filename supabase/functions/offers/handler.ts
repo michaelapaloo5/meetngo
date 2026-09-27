@@ -4,13 +4,19 @@
 // lives in clients.ts and the rule set lives in resolve.ts.
 import { corsHeaders } from '../_shared/cors.ts';
 import { parseOfferCommand } from './command.ts';
-import {
-  confirmDecline,
-  declineRefusal,
-  resolveAccept,
-  type OfferStateName,
-  type TripStateName,
-} from './resolve.ts';
+import { confirmDecline, declineRefusal, resolveAccept, type OfferStateName } from './resolve.ts';
+
+// The two classifier refusals the handler answers itself, and the only two. The
+// test is on the reason prefix, which is a string match, and that is a real
+// coupling: `resolveAccept` is the single place the reasons are produced, the
+// two that belong to the RPC are produced by the very same function, and a
+// reworded reason here would silently send a terminal offer to the RPC -- which
+// is safe, just less specific. Widening the other way is the dangerous
+// direction and `terminal refusal` / `offer not found` is checked explicitly in
+// the test file rather than left to this prefix to carry.
+const OURS = ['offer not found', 'offer already '];
+const classificationIsOurs = (reason: string): boolean =>
+  OURS.some((prefix) => reason.startsWith(prefix));
 
 const json = (status: number, payload: Record<string, unknown>) =>
   new Response(JSON.stringify(payload), {
@@ -25,6 +31,9 @@ export interface OfferSnapshot {
   driver_id: string;
   state: string;
   trip_id: string;
+  // Read because it is free on a read that happens anyway, and passed to the
+  // classifier truthfully. The handler does not act on the expiry verdict, for
+  // the reason in `accept`.
   expires_at: string;
 }
 
@@ -42,9 +51,10 @@ export interface OfferDeps {
   // On the caller's own bearer, so `driver reads own offers` is what makes the
   // row evidence about this driver rather than merely visible to them.
   readOffer(offerId: string): Promise<{ row: OfferSnapshot | null; error: string | null }>;
-  // On the service client, `state` only. See the note in `accept` for why this
-  // cannot be read on the caller's bearer.
-  readTripState(tripId: string): Promise<{ state: string | null; error: string | null }>;
+  // On the caller's own bearer too, and there is deliberately no port for
+  // reading a trip: the classifier's trip-state verdict is one the handler does
+  // not act on, because the RPC's refusal path is what performs the `expired`
+  // write. See `accept`.
   acceptOffer(offerId: string): Promise<{ rows: unknown; error: string | null }>;
   writeDecline(offerId: string, driverId: string): Promise<{ updated: number; error: string | null }>;
 }
@@ -53,22 +63,38 @@ export async function handleOfferRequest(req: Request, deps: OfferDeps): Promise
   if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
 
   // A Deno Edge Function has no session to read, so the identity comes from the
-  // request's own bearer and the token is passed to `getUser` explicitly. The
-  // `Bearer ` prefix is stripped rather than required: an `Authorization` that
-  // is already the bare token is still a credential, and refusing it would be a
-  // client-shaped failure in a function that is otherwise fine.
-  const header = req.headers.get('Authorization') ?? '';
-  const token = header.replace(/^Bearer\s+/i, '');
-  if (!token) return json(401, { error: 'unauthenticated' });
+  // request's own bearer and the token is passed to `getUser` explicitly.
+  //
+  // The `Bearer ` scheme is **required**, not stripped. PostgREST resolves the
+  // role from that scheme word and not from the header's mere presence: wai's
+  // `extractBearerAuth` returns the token only when the scheme compares equal to
+  // `bearer` after lowercasing, and PostgREST substitutes `""` otherwise, so a
+  // bare token authenticates nowhere. Stripping the prefix leniently would be
+  // worse than refusing it, because `authenticate` is the one port that
+  // tolerates a bare token -- supabase-js's `getUser(token)` adds the scheme
+  // itself -- while `readOffer` and `acceptOffer` forward the raw header. The
+  // request would then pass the identity check and fail later at a PostgREST
+  // port, with an outcome that is a 500 or a misleading 404. Refusing here
+  // makes that unreachable.
+  //
+  // The scheme is matched case-insensitively, which is what wai's comparison
+  // does, so `bearer <token>` is accepted the same as `Bearer <token>`.
+  const match = /^Bearer\s+(\S+)\s*$/i.exec(req.headers.get('Authorization') ?? '');
+  if (!match) return json(401, { error: 'unauthenticated' });
+  const token = match[1];
 
   const { userId, error: authError } = await deps.authenticate(token);
   if (authError || !userId) return json(401, { error: 'unauthenticated' });
   const driverId = userId;
 
   // `req.json()` throws on a truncated or non-JSON body. Unguarded, that escapes
-  // to `serve`'s default onError, which returns a bare 500 with no body, so a
-  // client that sends a bad body is told its request failed rather than that its
-  // body was wrong.
+  // to `serve`'s default onError, which is
+  // `new Response("Internal Server Error", { status: 500 })` with no headers at
+  // all (std 0.224.0 `http/server.ts:102-106`). The body is the smaller problem:
+  // that response carries no `Access-Control-Allow-Origin`, so a browser or
+  // Flutter-web client cannot read it, and every other response this handler
+  // returns goes out through `corsHeaders`. Catching it here is what keeps a
+  // malformed body a readable 400.
   let body: unknown;
   try {
     body = await req.json();
@@ -101,28 +127,39 @@ async function accept(
   // (migration:368).
   const { row, error: readError } = await deps.readOffer(offerId);
   if (readError) return json(500, { error: readError });
+  // One refusal shape for every refusal this handler produces: `accepted`,
+  // `tripId`, `winnerDriverId`, `reason`. Task 13 can read `tripId` off any of
+  // them without branching on which refusal it got.
+  //
+  // `tripId` is null here even when the row was read, because the row is
+  // somebody else's and naming its trip would hand a stranger an id they have no
+  // claim to. An offer that is not there has no trip to name either.
   if (!row || row.driver_id !== driverId) {
-    return json(404, { accepted: false, reason: 'offer not found' });
+    return json(404, {
+      accepted: false,
+      tripId: null,
+      winnerDriverId: null,
+      reason: 'offer not found',
+    });
   }
 
-  // The trip state comes from the service client because the caller's own
-  // bearer cannot get it: `driver reads assigned trips` (migration:520) is
-  // `using (driver_id = auth.uid())`, and a trip's driver_id is NULL until
-  // `accept_offer` matches it. Probe 11 measures the driver reading their own
-  // offer and 0 trip rows at that moment; probe 12 measures the same read
-  // returning 1 row after the accept. So no role this function can put a
-  // caller's token on has an RLS path to the trip the offer belongs to.
+  // No trip read, and that is the point. An earlier version of this function
+  // read the trip's state from the service client here, to feed the
+  // classifier's `trip is no longer awaiting a driver` branch, and that read
+  // cost a privileged round trip per accept. It is gone because the handler does
+  // not act on that verdict: the RPC's refusal path is what moves the offer to
+  // `expired` there (migration:373-376), and skipping the call skipped the
+  // write. So `tripState` is passed as null -- "not read" -- and the mirror
+  // skips the check it has no data for rather than guessing.
   //
-  // This is a privileged read of one column, and it is a read of a fact the
-  // driver is entitled to anyway: it is the state of the trip their own offer is
-  // on. `select('state')` and not `select('*')` is deliberate -- the trip row
-  // also carries the rider's `pickup`, `dropoff` and `fare_ghs`, and this
-  // function has no use for them. The decision it feeds is still the RPC's: a
-  // refusal here only ever skips a call the RPC would have refused too, which is
-  // what the monotonicity argument in resolve.ts is for.
-  const { state: tripState, error: tripError } = await deps.readTripState(row.trip_id);
-  if (tripError) return json(500, { error: tripError });
-
+  // The read was not possible on the caller's own bearer either, which is why
+  // the port had to be the service one: `driver reads assigned trips`
+  // (migration:520) is `using (driver_id = auth.uid())` and a trip's driver_id
+  // is NULL until `accept_offer` matches it, so probe 11 measures the driver
+  // reading their own offer and 0 trip rows at that moment. Neither reading it
+  // nor not reading it is a shortcut here; not reading it is the only option
+  // that also keeps the write.
+  //
   // Only the chosen offer is passed in, so `released` is always empty and the
   // handler never reports sibling ids it has not read. `winnerDriverId` is
   // likewise not reported: the winner is the RPC's to name. Both fields exist so
@@ -134,32 +171,47 @@ async function accept(
       driverId: row.driver_id,
       // Cast, not narrowed. `state` is the `offer_state` enum (migration:83), so
       // the database cannot produce a value outside it, and a cast that were
-      // wrong would read as not-`pending` and refuse rather than accept. Same
-      // direction for the trip state.
+      // wrong would read as not-`pending` and refuse rather than accept.
       state: row.state as OfferStateName,
       tripId: row.trip_id,
-      // A trip that is gone, or in a state this build does not name, is not
-      // `requested`, and both refuse. `accept_offer` answers `false / NULL /
-      // NULL` for a missing trip (migration:330-334) for the same reason.
-      tripState: (tripState ?? 'cancelled') as TripStateName,
+      // Not read, and not guessed. See the note above.
+      tripState: null,
       expiresAt: row.expires_at,
     }],
     chosenOfferId: offerId,
   });
 
-  // A refusal the RPC would have made too, answered with the reason that
-  // applies instead of a bare `false`. No write is skipped: every fact tested
-  // above is monotone, so this accept was already invalid.
-  if (!classified.accepted) {
+  // Act on a refusal **only** when the RPC's `expired` write cannot fire for it.
+  // That write is `where id = p_offer and state = 'pending'` (migration:376), so
+  // it is inert for an offer that is not there and for one already in a terminal
+  // state. For `offer expired` and `trip is no longer awaiting a driver` the RPC
+  // *does* write, and those two verdicts are deliberately ignored here so the
+  // call goes out and the offer is moved to `expired`. `classificationIsOurs`
+  // names the two, so narrowing or widening this set is a visible edit.
+  //
+  // The 404 above has already answered the not-there case, so in practice this
+  // branch is the terminal-state refusal. It is kept as a named condition rather
+  // than folded into the 404 because the two answers come from different facts
+  // and the classifier is where that fact is interpreted.
+  if (!classified.accepted && classificationIsOurs(classified.reason)) {
+    // `tripId` is the one field this refusal can supply truthfully: the offer
+    // row was read, so `trip_id` is known. Every accept refusal carries the same
+    // three keys, with `tripId: null` where the trip is not knowable, so Task
+    // 13 can read `tripId` without branching on which refusal it got.
     return json(classified.refusalStatus ?? 409, {
       accepted: false,
+      tripId: row.trip_id,
+      winnerDriverId: null,
       reason: classified.reason,
     });
   }
 
-  // Classified acceptable, and the RPC decides. A `false` here is the ordinary
-  // outcome of losing the race, it is reported verbatim, and nothing the
-  // classifier said overrides it.
+  // Classified acceptable -- or classified with a verdict the RPC owns, which is
+  // most of the refusals -- and the RPC decides. A `false` here is the ordinary
+  // outcome of losing the race, or the correct answer for an expired offer, and
+  // it is reported verbatim. Nothing the classifier said can override it or
+  // promote it: the classifier is only ever read in the branch above, which
+  // returns.
   const { rows, error } = await deps.acceptOffer(offerId);
   if (error) return json(500, { error });
 

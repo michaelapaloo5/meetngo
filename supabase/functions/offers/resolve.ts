@@ -4,24 +4,41 @@
 // `resolveAccept` is a *classifier* in front of the `accept_offer` RPC, and both
 // halves of that are load bearing.
 //
-// It classifies refusals only. A refusal it returns is one the RPC would have
-// made too, so skipping the call costs nothing, and it lets the driver be told
-// which of the four reasons applied instead of a bare `false`. It never decides
-// the outcome: when it returns `accepted: true` the handler still calls the RPC
-// and reports that answer verbatim, including a `false`. The pre-check cannot
-// promote an accept, and nothing it returns reaches the driver as an outcome.
+// It never decides the outcome. When it returns `accepted: true` the handler
+// calls the RPC and reports that answer verbatim, including a `false`, so the
+// pre-check cannot promote an accept and nothing it returns reaches the driver as
+// an outcome.
 //
-// Why a refusal is safe to act on alone, which is the whole justification: every
-// fact tested here is **monotone**, so an accept classified as invalid was
-// already invalid and cannot become valid again. An offer's state only ever
-// leaves `pending` (migration:376, :381 and :391); `expires_at` only approaches as the
-// clock advances; and no trip transition returns a trip to `requested` -- the
-// legality predicate at migration:192-197 contains no `new.state` of
-// `requested`, and probe 13 of supabase/tests/verify_offer_authz.sql measures
-// all six states refusing the move. The read this classifier runs on therefore
-// cannot go stale in the direction that would produce a false refusal. The other
-// direction is ordinary and expected: a rival accept landing between the read
-// and the RPC, which the RPC reports as `false` and the handler passes on.
+// It refuses *some* refusals without calling the RPC, and **which** ones is the
+// whole subtlety. `accept_offer` does not only answer on its refusal path, it
+// writes: the guard at migration:373-375 sends an offer that is expired, already
+// terminal, or on a trip that is no longer `requested` down a branch that runs
+// `update offers set state = 'expired' where id = p_offer and state = 'pending'`
+// (migration:376) before answering `false`. That is the only write of `expired`
+// in the tree -- no sweeper, no cron, no other function -- so a handler that
+// short-circuits those two reasons leaves the offer `pending` in the database
+// forever and Task 13's driver queue reads it. So the handler acts on a refusal
+// from here only when the RPC's own write cannot fire, which is the two refusals
+// whose write is blocked by its own `state = 'pending'` guard: an offer that is
+// not there, and an offer that is already in a terminal state. For `offer
+// expired` and `trip is no longer awaiting a driver` the handler ignores this
+// verdict and calls the RPC, which does the write and returns the trip id the
+// driver app needs to close its queue.
+//
+// Two different claims, and the earlier version of this comment conflated them.
+// The **monotonicity** argument below proves there is **no false accept**: every
+// fact tested here is monotone, so an accept classified as invalid was already
+// invalid and cannot become valid again. It does **not** prove no side effect is
+// skipped, because the side effect above is the RPC's to perform. An offer's
+// state only ever leaves `pending` (migration:376, :381 and :391); `expires_at`
+// only approaches as the clock advances; and no trip transition returns a trip to
+// `requested` -- the legality predicate at migration:192-197 contains no
+// `new.state` of `requested`, and probe 13 of
+// supabase/tests/verify_offer_authz.sql measures all six states refusing the
+// move. So the read cannot go stale in the direction that would produce a false
+// refusal. The other direction is ordinary and expected: a rival accept landing
+// between the read and the RPC, which the RPC reports as `false` and the handler
+// passes on.
 //
 // The lock behaviour itself is not pinned here. It is pinned by
 // supabase/tests/verify_concurrency.sql, which fires two real concurrent accepts
@@ -37,10 +54,19 @@ export interface OfferRow {
   driverId: string;
   state: OfferStateName;
   tripId: string;
-  // The trip's state as of the read, which is the authoritative value. The RPC
-  // reads the trip under `for update` and tests that row (migration:373), so
-  // the mirror reads the same row rather than a value handed to it by a caller.
-  tripState: TripStateName;
+  // The trip's state as of the read, which is the authoritative value, or null
+  // when the caller did not read it. The RPC reads the trip under `for update`
+  // and tests that row (migration:373), so the mirror reads the same row rather
+  // than a value handed to it by a caller.
+  //
+  // Null is not a guess of `requested`. The handler cannot read the trip at all
+  // on the caller's own bearer -- `driver reads assigned trips`
+  // (migration:520) is `using (driver_id = auth.uid())` and the trip's driver_id
+  // is NULL until `accept_offer` matches it, so probe 11 measures 0 rows for the
+  // very driver holding the offer -- and it will not pay a privileged read for a
+  // verdict it does not act on. Null therefore means "no information", and the
+  // mirror skips the check it has no data for instead of answering it wrongly.
+  tripState: TripStateName | null;
   expiresAt: string;
 }
 
@@ -94,12 +120,17 @@ export function resolveAccept(input: {
   // cross-checked against the row and the opposite order to the database.
   const chosen = input.existingOffers.find((o) => o.id === input.chosenOfferId);
   // 404 for an offer that is not there and 409 for one that is there but in a
-  // state that forbids the accept. Both are refusals the RPC agrees with: it
-  // answers `false / NULL / NULL` for an unknown id (probe 10) and moves an
-  // already-terminal or expired offer on before answering `false` (probes 9 and
-  // 3), so nothing is skipped that the database would have done.
+  // state that forbids the accept. These are the two the handler acts on without
+  // calling the RPC, and both are refusals whose `expired` write cannot fire:
+  // migration:376 is itself guarded by `state = 'pending'`, so an offer already
+  // in a terminal state matches nothing there. The RPC agrees with both -- it
+  // answers `false / NULL / NULL` for an unknown id (probe 10) and `false` with
+  // the trip id for a terminal offer.
   if (!chosen) return reject('offer not found', null, 404);
-  if (chosen.tripState !== 'requested') {
+  // Only when the state was actually read. With `tripState: null` this check
+  // does not run, and the handler is relying on the RPC for exactly that
+  // refusal, which is what performs the `expired` write.
+  if (chosen.tripState !== null && chosen.tripState !== 'requested') {
     return reject('trip is no longer awaiting a driver', chosen.tripState, 409);
   }
   if (chosen.state !== 'pending') {

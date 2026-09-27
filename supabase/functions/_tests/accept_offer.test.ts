@@ -388,35 +388,37 @@ interface Harness {
   calls: string[];
 }
 
+// Every port records its call, including a port a test overrides. An earlier
+// version of this harness only recorded the defaults, so `calls` was empty
+// whenever a test supplied its own `readOffer` or `acceptOffer` -- and an
+// assertion like "the RPC was not called" passed on a port that had been
+// replaced rather than skipped. The labels are the same either way so a test
+// cannot see the difference.
+const LABELS: Record<keyof OfferDeps, (...args: string[]) => string> = {
+  authenticate: (token) => `authenticate:${token}`,
+  readOffer: (offerId) => `readOffer:${offerId}`,
+  acceptOffer: (offerId) => `acceptOffer:${offerId}`,
+  writeDecline: (offerId, driverId) => `writeDecline:${offerId}:${driverId}`,
+};
+
 const harness = (over: Partial<OfferDeps> = {}): Harness => {
   const calls: string[] = [];
-  const deps: OfferDeps = {
-    authenticate: (token) => {
-      calls.push(`authenticate:${token}`);
-      return Promise.resolve({ userId: 'd1', error: null });
-    },
-    readOffer: (offerId) => {
-      calls.push(`readOffer:${offerId}`);
-      return Promise.resolve({ row: offerRow(), error: null });
-    },
-    readTripState: (tripId) => {
-      calls.push(`readTripState:${tripId}`);
-      return Promise.resolve({ state: 'requested', error: null });
-    },
-    acceptOffer: (offerId) => {
-      calls.push(`acceptOffer:${offerId}`);
-      return Promise.resolve({
-        rows: [{ accepted: true, trip_id: 't1', driver_id: 'd1' }],
-        error: null,
-      });
-    },
-    writeDecline: (offerId, driverId) => {
-      calls.push(`writeDecline:${offerId}:${driverId}`);
-      return Promise.resolve({ updated: 1, error: null });
-    },
-    ...over,
+  const defaults: OfferDeps = {
+    authenticate: () => Promise.resolve({ userId: 'd1', error: null }),
+    readOffer: () => Promise.resolve({ row: offerRow(), error: null }),
+    acceptOffer: () =>
+      Promise.resolve({ rows: [{ accepted: true, trip_id: 't1', driver_id: 'd1' }], error: null }),
+    writeDecline: () => Promise.resolve({ updated: 1, error: null }),
   };
-  return { deps, calls };
+  const deps = {} as Record<string, unknown>;
+  for (const port of Object.keys(LABELS) as (keyof OfferDeps)[]) {
+    const impl = over[port] ?? defaults[port];
+    deps[port] = (...args: string[]) => {
+      calls.push(LABELS[port](...args));
+      return (impl as (...a: string[]) => unknown)(...args);
+    };
+  }
+  return { deps: deps as unknown as OfferDeps, calls };
 };
 
 const post = (body: unknown, init: { raw?: string; headers?: Record<string, string> } = {}) =>
@@ -437,12 +439,12 @@ Deno.test('the accept path answers accepted, the trip and the winner', async () 
   assertEquals(res.status, 200);
   assertEquals(body, { accepted: true, tripId: 't1', winnerDriverId: 'd1' });
   // The identity is resolved from the caller's own token, the offer is read on
-  // that token, the trip state is read for the classifier, and only then does
-  // the accept go out. The write port is never touched on this path.
+  // that token, and the accept goes out. There is no trip read: the handler
+  // does not act on the classifier's trip-state verdict, and reading the trip
+  // would need the service client to get a row the caller's bearer cannot see.
   assertEquals(calls, [
     'authenticate:DRIVER-JWT',
     `readOffer:${OFFER_ID}`,
-    `readTripState:${TRIP_ID}`,
     `acceptOffer:${OFFER_ID}`,
   ]);
 });
@@ -453,7 +455,7 @@ Deno.test("accepting another driver's offer is a 404 and never reaches the RPC",
     { readOffer: () => Promise.resolve({ row: offerRow({ driver_id: 'd2' }), error: null }) },
   );
   assertEquals(res.status, 404);
-  assertEquals(body, { accepted: false, reason: 'offer not found' });
+  assertEquals(body, { accepted: false, tripId: null, winnerDriverId: null, reason: 'offer not found' });
   assertEquals(calls.filter((c) => c.startsWith('acceptOffer')), []);
 });
 
@@ -526,75 +528,97 @@ Deno.test('an error on the ownership read is a 500', async () => {
 // Each of the classifier's three refusals on an offer that is otherwise the
 // caller's. The RPC is never called, and each answer carries the reason that
 // applies rather than the blanket 404 the offer read used to produce.
-Deno.test('a classified refusal answers its own reason and never reaches the RPC', async () => {
-  const cases: [string, Record<string, unknown>, Record<string, unknown>, number][] = [
-    [
-      'offer already declined',
-      { state: 'declined' },
-      {},
-      409,
-    ],
-    [
-      'offer already accepted',
-      { state: 'accepted' },
-      {},
-      409,
-    ],
-    [
-      'offer already released',
-      { state: 'released' },
-      {},
-      409,
-    ],
-    [
-      'offer expired',
-      { expires_at: new Date(Date.now() - 1000).toISOString() },
-      {},
-      409,
-    ],
-    [
-      'trip is no longer awaiting a driver',
-      {},
-      { state: 'matched' },
-      409,
-    ],
-  ];
-  for (const [reason, offer, trip, status] of cases) {
+// The two refusals the handler answers itself. `migration:376`'s
+// `update offers set state = 'expired'` is itself guarded by
+// `state = 'pending'`, so for an offer already in a terminal state it matches
+// nothing and there is no write to skip. Asserting the RPC is *not* called is
+// the property; the reason string and the status are the visible part of it.
+Deno.test('a terminal-offer refusal answers its own reason and never reaches the RPC', async () => {
+  for (const state of ['declined', 'accepted', 'expired', 'released'] as const) {
     const { res, calls, body } = await call(
       { action: 'accept', offerId: OFFER_ID },
-      {
-        readOffer: () => Promise.resolve({ row: offerRow(offer), error: null }),
-        readTripState: () =>
-          Promise.resolve({ state: 'requested' as string | null, error: null, ...trip }),
-      },
+      { readOffer: () => Promise.resolve({ row: offerRow({ state }), error: null }) },
     );
-    assertEquals(res.status, status, reason);
-    assertEquals(body, { accepted: false, reason });
-    // The whole point: a refusal the RPC would have made too is not paid for.
-    assertEquals(calls.filter((c) => c.startsWith('acceptOffer')), [], reason);
+    assertEquals(res.status, 409, `state ${state}`);
+    assertEquals(body, {
+      accepted: false,
+      tripId: TRIP_ID,
+      winnerDriverId: null,
+      reason: `offer already ${state}`,
+    });
+    assertEquals(calls.filter((c) => c.startsWith('acceptOffer')), [], `state ${state}`);
   }
 });
 
-// Every one of the six trip states refuses, and a trip that is missing entirely
-// refuses rather than crashing. `accept_offer` answers `false / NULL / NULL`
-// for a missing trip (migration:330-334), so a null state is the safe direction.
-Deno.test('a trip that has left requested is refused before the RPC', async () => {
-  for (const state of ['matched', 'arriving', 'ongoing', 'completed', 'cancelled', null] as const) {
-    const { res, calls, body } = await call(
-      { action: 'accept', offerId: OFFER_ID },
-      { readTripState: () => Promise.resolve({ state, error: null }) },
-    );
-    assertEquals(res.status, 409, `trip state ${state}`);
-    assertEquals(body, { accepted: false, reason: 'trip is no longer awaiting a driver' });
-    assertEquals(calls.filter((c) => c.startsWith('acceptOffer')), [], `trip state ${state}`);
-  }
+// The F1 defect, pinned. An expired offer must reach `accept_offer`, because
+// the RPC's refusal path is the only thing in the tree that moves an offer to
+// `expired` (migration:376, the sole such write). A handler that answered this
+// with the classifier's verdict would leave the offer `pending` in the database
+// forever, on a trip that is never coming back, and Task 13's queue would read
+// it. The classifier does classify it as expired -- the mirror is unchanged --
+// and the handler ignores that verdict.
+Deno.test('an expired offer reaches the RPC, which is what marks it expired', async () => {
+  const { res, calls, body } = await call(
+    { action: 'accept', offerId: OFFER_ID },
+    {
+      readOffer: () =>
+        Promise.resolve({ row: offerRow({ expires_at: new Date(Date.now() - 1000).toISOString() }), error: null }),
+      acceptOffer: () =>
+        Promise.resolve({ rows: [{ accepted: false, trip_id: TRIP_ID, driver_id: null }], error: null }),
+    },
+  );
+  assertEquals(res.status, 200);
+  // The RPC was called, and its answer is what the driver is told -- not the
+  // classifier's `offer expired` and not a 409.
+  assertEquals(calls.filter((c) => c.startsWith('acceptOffer')), [`acceptOffer:${OFFER_ID}`]);
+  assertEquals(body, { accepted: false, tripId: TRIP_ID, winnerDriverId: null });
+  assert(!('reason' in body), 'the RPC refusal carries no classifier reason');
+});
+
+// Same for the trip-state verdict, which the handler cannot even see: it passes
+// `tripState: null`. What is pinned is that a refusal the RPC owns never
+// short-circuits, and the mirror's behaviour on a null trip state is pinned
+// below rather than here.
+Deno.test('the handler acts on exactly two classifier reasons', async () => {
+  // A pending, unexpired offer reaches the RPC, so the classifier's `ok` is not
+  // being mistaken for a refusal.
+  const pass = await call({ action: 'accept', offerId: OFFER_ID });
+  assertEquals(pass.calls.filter((c) => c.startsWith('acceptOffer')), [`acceptOffer:${OFFER_ID}`]);
+  // And a terminal offer does not, so the refusal branch is not dead code.
+  const refuse = await call(
+    { action: 'accept', offerId: OFFER_ID },
+    { readOffer: () => Promise.resolve({ row: offerRow({ state: 'declined' }), error: null }) },
+  );
+  assertEquals(refuse.res.status, 409);
+  assertEquals(refuse.calls.filter((c) => c.startsWith('acceptOffer')), []);
+});
+
+// `tripState: null` means "not read", and the mirror skips the check it has no
+// data for rather than guessing `requested` and passing. Guessing would be the
+// C9 defect again: a check that consults a value the caller made up.
+Deno.test('the mirror does not guess a trip state it was not given', () => {
+  const guessed = resolveAccept({
+    existingOffers: [offer({ tripState: null })],
+    chosenOfferId: 'o1',
+  });
+  assertEquals(guessed.accepted, true);
+  assertEquals(guessed.refusalStatus, null);
+
+  // And it still refuses when the state is known and is not `requested`, so the
+  // check itself is not simply gone.
+  const known = resolveAccept({
+    existingOffers: [offer({ tripState: 'cancelled' })],
+    chosenOfferId: 'o1',
+  });
+  assertEquals(known.accepted, false);
+  assertEquals(known.reason, 'trip is no longer awaiting a driver');
+  assertEquals(known.refusalStatus, 409);
 });
 
 // The direction most likely to be got wrong. The classifier passed, so the RPC
 // was called, and the RPC says the driver lost the race. The answer is the
 // RPC's, verbatim: `accepted: false`. Nothing the classifier said may promote
-// this to a win, and nothing it said may be reported to the driver as the
-// outcome.
+// this to a win, and nothing it said may be reported as the outcome.
 Deno.test('a pre-check pass whose RPC answers false is reported as false', async () => {
   const { res, body } = await call(
     { action: 'accept', offerId: OFFER_ID },
@@ -629,29 +653,56 @@ Deno.test('the winner is the RPC\'s driver, not the one the classifier read', as
   assertEquals(body, { accepted: true, tripId: 't1', winnerDriverId: 'd2' });
 });
 
-// The mirror image, and the reason the pre-check exists at all: a refusal here
-// is one the RPC agrees with, so the driver gets a reason instead of a bare
-// false. This is the improvement over the old blanket 404.
-Deno.test('a classified refusal replaces the blanket 404 with a specific reason', async () => {
-  const { res, body } = await call(
-    { action: 'accept', offerId: OFFER_ID },
-    { readOffer: () => Promise.resolve({ row: offerRow({ state: 'expired' }), error: null }) },
-  );
-  assertEquals(res.status, 409);
-  assertEquals(body.reason, 'offer already expired');
-});
-
-// The trip read is on the service client because the caller's bearer cannot get
-// it, so a failure there is a 500 of its own and must not be reported as a lost
-// race or a refusal.
-Deno.test('an error on the trip state read is a 500 and never reaches the RPC', async () => {
-  const { res, calls, body } = await call(
-    { action: 'accept', offerId: OFFER_ID },
-    { readTripState: () => Promise.resolve({ state: null, error: 'permission denied for table trips' }) },
-  );
-  assertEquals(res.status, 500);
-  assertEquals(body, { error: 'permission denied for table trips' });
-  assertEquals(calls.filter((c) => c.startsWith('acceptOffer')), []);
+// Every accept refusal carries the same three keys plus a reason, so Task 13 can
+// read `tripId` off any of them without branching on which refusal it got.
+Deno.test('every accept refusal carries tripId, null where it is unknowable', async () => {
+  const shapes: [string, unknown, Partial<OfferDeps>, number, string | null][] = [
+    [
+      'no such offer',
+      { action: 'accept', offerId: OFFER_ID },
+      { readOffer: () => Promise.resolve({ row: null, error: null }) },
+      404,
+      null,
+    ],
+    [
+      "another driver's offer",
+      { action: 'accept', offerId: OFFER_ID },
+      { readOffer: () => Promise.resolve({ row: offerRow({ driver_id: 'd2' }), error: null }) },
+      404,
+      // Null, not the row's trip_id: the row is a stranger's.
+      null,
+    ],
+    [
+      'a terminal offer',
+      { action: 'accept', offerId: OFFER_ID },
+      { readOffer: () => Promise.resolve({ row: offerRow({ state: 'declined' }), error: null }) },
+      409,
+      // The one the classifier can supply truthfully, because it read the offer.
+      TRIP_ID,
+    ],
+    [
+      'an expired offer, refused by the RPC',
+      { action: 'accept', offerId: OFFER_ID },
+      {
+        readOffer: () =>
+          Promise.resolve({ row: offerRow({ expires_at: new Date(Date.now() - 1000).toISOString() }), error: null }),
+        acceptOffer: () =>
+          Promise.resolve({ rows: [{ accepted: false, trip_id: TRIP_ID, driver_id: null }], error: null }),
+      },
+      200,
+      TRIP_ID,
+    ],
+  ];
+  for (const [label, body, over, status, tripId] of shapes) {
+    const { res, body: payload } = await call(body, over);
+    assertEquals(res.status, status, label);
+    assertEquals(payload, {
+      accepted: false,
+      tripId,
+      winnerDriverId: null,
+      ...(status === 200 ? {} : { reason: label === 'a terminal offer' ? 'offer already declined' : 'offer not found' }),
+    }, label);
+  }
 });
 
 // An offer state the build does not name is not `pending`, so it refuses. A cast
@@ -662,7 +713,7 @@ Deno.test('an offer state the build does not name is refused, not accepted', asy
     { readOffer: () => Promise.resolve({ row: offerRow({ state: 'pendingish' }), error: null }) },
   );
   assertEquals(res.status, 409);
-  assertEquals(body, { accepted: false, reason: 'offer already pendingish' });
+  assertEquals(body.reason, 'offer already pendingish');
   assertEquals(calls.filter((c) => c.startsWith('acceptOffer')), []);
 });
 
@@ -812,17 +863,46 @@ Deno.test('a token that resolves to no user is a 401', async () => {
   }
 });
 
-Deno.test('a bare token with no Bearer prefix is still a credential', async () => {
-  const h = harness();
-  await handleOfferRequest(
-    new Request('https://example.supabase.co/functions/v1/offers', {
-      method: 'POST',
-      headers: { Authorization: 'DRIVER-JWT' },
-      body: JSON.stringify({ action: 'decline', offerId: OFFER_ID }),
-    }),
-    h.deps,
-  );
-  assertEquals(h.calls[0], 'authenticate:DRIVER-JWT');
+// The scheme word is required, and this is the test that can fail if that
+// changes. It replaced one that only asserted the string reached `authenticate`,
+// which passed whether or not the claim was true because it never touched
+// `clients.ts` -- and the claim was false: PostgREST resolves the role from the
+// scheme, not from the header's presence, so a bare token authenticates nowhere
+// at the PostgREST ports while `authenticate` alone tolerates it.
+Deno.test('a bare token with no Bearer scheme is a 401 before any port is called', async () => {
+  for (const header of ['DRIVER-JWT', '', '   ', 'Basic DRIVER-JWT', 'Bearer', 'Bearer ']) {
+    const h = harness();
+    const res = await handleOfferRequest(
+      new Request('https://example.supabase.co/functions/v1/offers', {
+        method: 'POST',
+        headers: header === '' ? {} : { Authorization: header },
+        body: JSON.stringify({ action: 'decline', offerId: OFFER_ID }),
+      }),
+      h.deps,
+    );
+    assertEquals(res.status, 401, `Authorization: ${JSON.stringify(header)}`);
+    assertEquals(await res.json(), { error: 'unauthenticated' });
+    // Nothing ran. Not the identity check, and so not any query.
+    assertEquals(h.calls, [], `Authorization: ${JSON.stringify(header)}`);
+  }
+});
+
+// The scheme is compared case-insensitively, which is what wai's
+// `S.map toLower x == "bearer"` does, so a client that sends lowercase is not
+// refused for its punctuation.
+Deno.test('the Bearer scheme is matched case-insensitively', async () => {
+  for (const header of ['Bearer DRIVER-JWT', 'bearer DRIVER-JWT', 'BEARER DRIVER-JWT', 'Bearer   DRIVER-JWT']) {
+    const h = harness();
+    await handleOfferRequest(
+      new Request('https://example.supabase.co/functions/v1/offers', {
+        method: 'POST',
+        headers: { Authorization: header },
+        body: JSON.stringify({ action: 'decline', offerId: OFFER_ID }),
+      }),
+      h.deps,
+    );
+    assertEquals(h.calls[0], `authenticate:DRIVER-JWT`, header);
+  }
 });
 
 Deno.test('a preflight is answered without a token', async () => {

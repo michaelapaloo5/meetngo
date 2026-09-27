@@ -128,23 +128,6 @@ export function buildDeps(clients: OfferClients): OfferDeps {
       return { row: first(data), error: error?.message ?? null };
     },
 
-    // The trip state, on the service client and `state` only. It cannot go on
-    // the caller's bearer: `driver reads assigned trips` (migration:520) is
-    // `using (driver_id = auth.uid())` and a trip's driver_id is NULL until
-    // `accept_offer` matches it, so the policy matches zero rows for the very
-    // driver holding the offer (probe 11) and returns the row only once the
-    // accept has landed (probe 12).
-    //
-    // `select('state')` rather than `select('*')` is load bearing on a read that
-    // bypasses RLS: the trip row also carries the rider's `pickup`, `dropoff`
-    // and `fare_ghs`, none of which this function has any use for, and a
-    // privileged read should not widen to the whole row because it was easier.
-    readTripState: async (tripId) => {
-      const { data, error } = await service.from('trips').select('state').eq('id', tripId).limit(1);
-      const row = first(data);
-      return { state: row ? String(row.state) : null, error: error?.message ?? null };
-    },
-
     // On the user client, so `auth.uid()` is the driver. `accept_offer` is
     // declared `returns table` (migration:292), so PostgREST answers with an
     // array and the handler reads the first row.
