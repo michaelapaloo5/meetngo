@@ -862,11 +862,16 @@ insert into write_probe (ord, seq, as_role, as_sub, widen_grant, probe, expectat
    $$insert into sos_events (trip_id, raised_by, note)
       values ('a0000000-0000-4000-8000-000000000002',
               '11111111-1111-4111-8111-111111111111', 'not my trip')$$),
-  (9, 9, 'authenticated', '11111111-1111-4111-8111-111111111111', false,
-   'rider raises SOS on a completed trip', 'blocked 42501',
+  -- The rider is still waiting for a driver here: trip_b is `requested`, and
+  -- TrackingController.activeTrip() includes `requested` while raiseSos fires
+  -- whenever the trip is non-null. This probe used to demand `blocked 42501`,
+  -- and that state gate recreated the very defect the SOS policy exists to
+  -- remove. A party must be able to raise SOS in this state.
+  (9, 9, 'authenticated', '22222222-2222-4222-8222-222222222222', false,
+   'rider raises SOS while still waiting for a driver, on a requested trip', 'allowed 1 row',
    $$insert into sos_events (trip_id, raised_by, note)
-      values ('a0000000-0000-4000-8000-000000000003',
-              '11111111-1111-4111-8111-111111111111', 'that trip is over')$$),
+      values ('a0000000-0000-4000-8000-000000000002',
+              '22222222-2222-4222-8222-222222222222', 'nobody has accepted yet')$$),
   (10, 10, 'authenticated', '11111111-1111-4111-8111-111111111111', false,
    'rider raises SOS in somebody elses name', 'blocked 42501',
    $$insert into sos_events (trip_id, raised_by, note)
@@ -1014,7 +1019,15 @@ insert into write_probe (ord, seq, as_role, as_sub, widen_grant, probe, expectat
   -- section 5 probe 1.
   (36, 36, 'authenticated', '11111111-1111-4111-8111-111111111111', false,
    'a signed-in rider cannot read the driver candidate list for a trip', 'blocked 42501',
-   $$select * from match_offers_for_trip('a0000000-0000-4000-8000-000000000001')$$);
+   $$select * from match_offers_for_trip('a0000000-0000-4000-8000-000000000001')$$),
+  -- Pin the whole gate, not just the `requested` half. The SOS policy carries no
+  -- state clause at all, matching the ungated read policy on the same table, so a
+  -- party can also raise SOS on a trip that has already finished.
+  (37, 37, 'authenticated', '11111111-1111-4111-8111-111111111111', false,
+   'the SOS policy carries no state gate, so a completed trip is allowed too', 'allowed 1 row',
+   $$insert into sos_events (trip_id, raised_by, note)
+      values ('a0000000-0000-4000-8000-000000000003',
+              '11111111-1111-4111-8111-111111111111', 'that trip is over')$$);
 
 do $$
 declare
@@ -1052,30 +1065,30 @@ begin
 end
 $$;
 
--- 37-39: reads the removed driver directory policy used to expose. With no
+-- 38-40: reads the removed driver directory policy used to expose. With no
 -- role = 'driver' SELECT policy, a signed-in rider sees exactly one profiles
 -- row, their own, and the anon key that ships in the APK sees none.
 set local role authenticated;
 set local request.jwt.claim.sub = :'rider_a';
 insert into t_write (seq, probe, expectation, observed) values
-  (37, 'a rider sees no driver rows through the profiles table', '0',
+  (38, 'a rider sees no driver rows through the profiles table', '0',
    (select count(*)::text from profiles where role = 'driver')),
-  (38, 'a rider sees only their own profiles row', '1',
+  (39, 'a rider sees only their own profiles row', '1',
    (select count(*)::text from profiles));
 reset role;
 set local role anon;
 set local request.jwt.claim.sub = '';
 insert into t_write (seq, probe, expectation, observed) values
-  (39, 'the anon key reads no profiles row at all, so no KYC PII leaks', '0',
+  (40, 'the anon key reads no profiles row at all, so no KYC PII leaks', '0',
    (select count(*)::text from profiles));
 reset role;
 
--- 40-41: the signup path. handle_new_user ran when the fixture inserted these
+-- 41-42: the signup path. handle_new_user ran when the fixture inserted these
 -- two auth.users rows, and every other column took its default.
 insert into t_write (seq, probe, expectation, observed) values
-  (40, 'a signup asking for role admin gets a rider', 'rider',
+  (41, 'a signup asking for role admin gets a rider', 'rider',
    (select role::text from profiles where id = :'signup_x')),
-  (41, 'a signup asking for role driver gets a driver with default KYC', 'driver|notStarted|5.0|0',
+  (42, 'a signup asking for role driver gets a driver with default KYC', 'driver|notStarted|5.0|0',
    (select role::text || '|' || kyc_status::text || '|' || rating::text || '|' || trip_count::text
       from profiles where id = :'signup_d'));
 

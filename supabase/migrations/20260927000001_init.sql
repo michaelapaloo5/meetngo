@@ -328,7 +328,17 @@ begin
 
   -- 3. Now the offer. The unlocked read above may be stale by the time the
   --    trip lock is granted, so re-read and re-check ownership under the lock.
+  --    A zero-row SELECT INTO leaves v_offer at its step 1 value rather than
+  --    nulling it, so the not-found case has to be tested the same way step 2
+  --    tests it. Without this, a privileged DELETE landing between the two reads
+  --    would let the function accept a vanished offer, release its siblings and
+  --    match the trip. Not reachable from a client: offers has no DELETE policy
+  --    and no other writer, but the pattern one line above already checks it.
   select * into v_offer from offers where id = p_offer for update;
+  if not found then
+    return query select false, null::uuid, null::uuid;
+    return;
+  end if;
   if v_offer.driver_id is distinct from auth.uid() then
     return query select false, null::uuid, null::uuid;
     return;
@@ -544,9 +554,19 @@ create policy "own sos events" on sos_events
   for select using (raised_by = auth.uid());
 -- SOS is dead in the field without this. The plan has
 -- SupabaseTripRepository.raiseSos inserting with the rider's own client, and
--- RLS default-denied the INSERT, so every SOS returned 42501. The state gate
--- keeps it to a trip that is actually under way, so a caller cannot farm SOS
--- rows against a stale or unassigned trip.
+-- RLS default-denied the INSERT, so every SOS returned 42501.
+--
+-- There is deliberately no state gate, and that is a deliberate symmetry with
+-- "own sos events" above, which is also ungated. An earlier draft of this policy
+-- added `t.state in ('matched','arriving','ongoing')`, and that recreated the
+-- very defect this policy exists to remove: TrackingController.activeTrip()
+-- includes `requested`, raiseSos fires whenever the trip is non-null, and
+-- sosRaised is set to true *before* the await, so a rider who pressed the
+-- button while still waiting for a driver got a 42501 that surfaced as an
+-- uncaught exception on a screen already reading "Help is on the way", with no
+-- row in sos_events. `requested` is exactly the state a rider may need SOS in.
+-- Do not narrow the plan's button to fit a policy; narrow the policy if
+-- anything, never the other way round.
 create policy "raise sos on a trip you are party to" on sos_events
   for insert with check (
     raised_by = auth.uid()
@@ -554,7 +574,6 @@ create policy "raise sos on a trip you are party to" on sos_events
       select 1 from trips t
       where t.id = sos_events.trip_id
         and (t.rider_id = auth.uid() or t.driver_id = auth.uid())
-        and t.state in ('matched','arriving','ongoing')
     )
   );
 
