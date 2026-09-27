@@ -27,6 +27,12 @@ Every task implicitly includes this section. Values are fixed for the whole buil
 - **Offer TTL:** 20 seconds, hard-coded in `mng_core`, not configurable per ride.
 - **Host budget:** ~322 MB free RAM, 5.7 GB free disk, 4 CPUs. `flutter test` (Dart VM) is the verification path on this box. `assembleAndroid` and `assembleIOS` are not runnable here.
 
+**Before committing a change to this task, sweep the nouns the diff removes.**
+
+1. Grep every file you touched for its own comments naming each noun the diff removed — a removed read, a removed port, a removed clause, a changed pattern form — and fix any comment still describing the old code. This is the one that matters; it is short and it is the one a tired implementer will still run.
+2. In the same commit, grep this task's section of the plan for the same nouns. A comment and its plan twin must move together; the twin is in a different file and is the one that gets missed. Both directions have happened in this build: plan corrected and code stale, and code corrected and plan stale.
+3. Any claim of the form "X returns Z" that you did not execute in this round must be executed before you write it, or written as a claim about source you read, with `file:line`. Constructor defaults, library behaviour and response header sets are not knowable by reading. Clause 3 is a separate discipline from clauses 1 and 2: a stale comment is found by looking, and this one has to be looked for deliberately, because the claim was wrong the moment it was written rather than invalidated by a later change.
+
 ## Review Focus
 
 Five input classes the spec implies but no screen test naturally covers. Each is pinned by a named test in the task that owns the logic.
