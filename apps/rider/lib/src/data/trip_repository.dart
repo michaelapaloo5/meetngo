@@ -3,6 +3,8 @@ import 'package:mng_core/mng_core.dart';
 class TripRequestFailure implements Exception {
   const TripRequestFailure(this.message);
   final String message;
+  @override
+  String toString() => message;
 }
 
 abstract class TripRepository {

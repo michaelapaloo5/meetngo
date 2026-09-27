@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:meetngo_rider/src/auth/auth_controller.dart';
+import 'package:meetngo_rider/src/auth/forgot_password_screen.dart';
 import 'package:meetngo_rider/src/auth/login_screen.dart';
 import 'package:meetngo_rider/src/data/auth_repository.dart';
 import 'package:mng_core/mng_core.dart';
@@ -114,9 +115,15 @@ void main() {
     expect(repo.googlePressed, isTrue);
   });
 
-  testWidgets('forgot password link is present', (tester) async {
+  testWidgets('forgot password link opens the reset flow', (tester) async {
     await tester.pumpWidget(wrap(repo));
     expect(find.text('Forgot Password?'), findsOneWidget);
+    // The tap, not just the label: the label alone is on the screen whether or
+    // not the `GestureDetector` at `login_screen.dart:72-77` still has a
+    // handler, so asserting the text proved nothing about the link.
+    await tester.tap(find.text('Forgot Password?'));
+    await tester.pumpAndSettle();
+    expect(find.byType(ForgotPasswordScreen), findsOneWidget);
   });
 
   testWidgets('password visibility toggles', (tester) async {

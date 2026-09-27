@@ -80,12 +80,35 @@ class SupabaseAuthRepository implements AuthRepository {
     } on AuthException catch (e) {
       throw AuthFailure(e.message);
     } finally {
-      // Every exit signs out, the refusal above included. The client is signed
-      // in on the server-issued temporary password at this point, so signing
-      // out is not only the tidy-up after a successful reset: skipping it on
-      // one path leaves the rider holding a session on a password they never
-      // chose and never saw.
+      await _discardTemporarySession();
+    }
+  }
+
+  /// Signing out is cleanup, and cleanup must not be able to change the answer.
+  ///
+  /// `GoTrueClient._signOut` clears the local session and notifies subscribers
+  /// *before* it revokes the token, then rethrows any `AuthException` whose
+  /// status is not 401/403/404 (`gotrue_client.dart:1085-1108`). A transport
+  /// failure arrives as `AuthRetryableFetchException`, which extends
+  /// `AuthException` with a null `statusCode` and rethrows for the same reason
+  /// (`fetch.dart:187-189`, `types/auth_exception.dart:55-59`). An exception
+  /// thrown out of a `finally` replaces whatever the block above was in the
+  /// middle of reporting, so a bare `signOut()` here did two bad things at
+  /// once: a reset that had already changed the password was reported to the
+  /// rider as a failure, and an `AuthFailure` was replaced by a raw
+  /// `AuthException` that `ResetController.submit` does not catch, leaving the
+  /// button with nothing at all to show.
+  ///
+  /// What is given up: the local session is gone either way, so the only thing
+  /// a swallowed failure loses is the server-side revoke, and that token then
+  /// stays valid until it expires on its own.
+  Future<void> _discardTemporarySession() async {
+    try {
       await _client.auth.signOut();
+    } on Object {
+      // `on Object` with no catch binding, on purpose: this method's contract
+      // is that it cannot throw, whatever the storage or network layer does. A
+      // binding would be an unused variable, which `--fatal-infos` rejects.
     }
   }
 }

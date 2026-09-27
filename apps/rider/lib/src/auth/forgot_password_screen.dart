@@ -145,9 +145,18 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
                   // the "Check your email" copy off screen with it.
                   child: SingleChildScrollView(
                     padding: EdgeInsets.only(top: 24.h),
+                    // `stretch`, to match the outer column: without it this one
+                    // centres its children and "Enter code" shrink-wraps to
+                    // its own label, which is the only CTA in the task that is
+                    // not full width.
                     child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
-                        const Icon(Icons.mail_outline, size: 40, color: MngColors.error),
+                        // Amber, not red: this is the panel that says the code
+                        // was sent. A red mail icon on the one screen state
+                        // that succeeded reads as a failure, and red is
+                        // already carrying failure everywhere else in this file.
+                        const Icon(Icons.mail_outline, size: 40, color: MngColors.primary),
                         SizedBox(height: 12.h),
                         Text('Check your email', style: text.titleLarge),
                         SizedBox(height: 6.h),

@@ -43,8 +43,11 @@ dependencies:
   # See the "Screenutil is pinned to 5.x" section of README.md.
   flutter_screenutil: ^5.9.3
   # Auth, Realtime and Edge Functions. `google_maps_flutter` and
-  # `url_launcher` are deliberately absent: nothing in this app imports them
-  # yet, and each is added by the task that does.
+  # `url_launcher` are not direct dependencies of this app: nothing here
+  # imports them, and each is added by the task that does. (`url_launcher` and
+  # `shared_preferences` do appear in pubspec.lock, as transitive dependencies
+  # of supabase_flutter — that is not the same thing as depending on them
+  # here, and it is why this list is read off this file, not the lock.)
   supabase_flutter: ^2.4.0
   geolocator: ^13.0.1
   provider: ^6.1.2

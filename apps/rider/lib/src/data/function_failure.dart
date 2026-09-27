@@ -1,10 +1,13 @@
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 /// Every Edge Function in this project answers an error status with the body
-/// `{ error: <string> }` (`_shared/cors.ts` sets `Content-Type: application/json`,
-/// and `functions_client` decodes a JSON body before handing it back as
-/// `details`). A body that is not JSON, or a JSON body with no `error` key,
-/// must still produce a message rather than `null`.
+/// `{ error: <string> }`, and each one sets `Content-Type: application/json`
+/// on that body in its own `json()` helper (`request-ride/index.ts:14`,
+/// `offers/handler.ts:24`) — not in `_shared/cors.ts`, which carries only the
+/// three `Access-Control-Allow-*` headers. `functions_client` decodes a JSON
+/// body before handing it back as `details`. A body that is not JSON, or a
+/// JSON body with no `error` key, must still produce a message rather than
+/// `null`.
 String describeFunctionFailure(FunctionException e) {
   final details = e.details;
   if (details is Map) {

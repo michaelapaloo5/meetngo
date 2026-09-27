@@ -40,8 +40,14 @@ void main() {
   testWidgets('renders step two of three with the copy from the reference', (tester) async {
     await tester.pumpWidget(wrap(RecordingAuthRepository()));
     expect(find.text('Create new password'), findsOneWidget);
-    expect(find.byType(LinearProgressIndicator), findsOneWidget);
     expect(find.byKey(const Key('codeField')), findsOneWidget);
+    // The step, by value and not just by count: `findsOneWidget` on the type is
+    // satisfied by the first step's `0.33` as much as this step's `0.66`, so
+    // it did not pin that this is the second of three.
+    expect(find.text('2 of 3'), findsOneWidget);
+    final indicator =
+        tester.widget<LinearProgressIndicator>(find.byType(LinearProgressIndicator));
+    expect(indicator.value, closeTo(0.66, 0.0001));
   });
 
   testWidgets('code shorter than six digits blocks submit', (tester) async {

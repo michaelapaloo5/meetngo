@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
 import 'package:mng_core/mng_core.dart';
 import 'package:provider/provider.dart';
@@ -6,17 +7,13 @@ import '../data/auth_repository.dart';
 import 'reset_controller.dart';
 
 class ResetPasswordScreen extends StatelessWidget {
-  const ResetPasswordScreen({super.key, required this.email, this.repository});
+  const ResetPasswordScreen({super.key, required this.email});
   final String email;
-  final AuthRepository? repository;
 
   @override
   Widget build(BuildContext context) {
     return ChangeNotifierProvider<ResetController>(
-      create: (_) => ResetController(
-        repository ?? context.read<AuthRepository>(),
-        email,
-      ),
+      create: (_) => ResetController(context.read<AuthRepository>(), email),
       child: _ResetPasswordView(email: email),
     );
   }
@@ -110,6 +107,12 @@ class _ResetPasswordViewState extends State<_ResetPasswordView> {
                 key: const Key('codeField'),
                 controller: _code,
                 keyboardType: TextInputType.number,
+                // Digits only, because the gate in `ResetController` counts
+                // characters and nothing else checks them: without this a
+                // six-letter code clears the client check and is refused
+                // server-side, where the rider is told the code is wrong for a
+                // code this field should not have been able to hold.
+                inputFormatters: [FilteringTextInputFormatter.digitsOnly],
                 maxLength: 6,
                 decoration: const InputDecoration(hintText: '6-digit code'),
               ),

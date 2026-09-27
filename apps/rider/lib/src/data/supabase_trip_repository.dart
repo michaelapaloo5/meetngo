@@ -10,9 +10,21 @@ class SupabaseTripRepository implements TripRepository {
 
   @override
   Future<Trip?> activeTrip() async {
-    // No `rider_id` filter on purpose: the `rider reads own trips` RLS policy
-    // is `using (rider_id = auth.uid())`, so the anon key cannot widen this to
-    // another rider's trip even with the filter removed.
+    final user = _client.auth.currentUser;
+    if (user == null) return null;
+    // The `rider_id` filter is load-bearing, and it is here because `trips`
+    // carries **two** SELECT policies, not one: `rider reads own trips`
+    // (`init.sql:518-519`) and `driver reads assigned trips` (`:520-521`).
+    // RLS ORs permissive policies, so the row set for one signed-in user is
+    // `rider_id = me OR driver_id = me`. Dropping this filter let a rider who
+    // is also the assigned driver of a live trip match both arms, and
+    // `.order('created_at', ...).limit(1)` then picks by recency rather than by
+    // role, so the driver-side row could come back from a method whose name
+    // promises the rider's own trip. Both arms are self-scoped, so the old
+    // version was never an authorisation hole — the filter is here because the
+    // name is a claim and the claim has to be exact. The driver app's
+    // counterpart filters `.eq('driver_id', _uid)`, so this is the symmetric
+    // shape.
     //
     // `rows` is the row list itself, not a `PostgrestResponse`: awaiting a
     // postgrest builder yields `T`, and `T` is `PostgrestList` for a `select`
@@ -22,6 +34,7 @@ class SupabaseTripRepository implements TripRepository {
     final rows = await _client
         .from('trips')
         .select()
+        .eq('rider_id', user.id)
         // `inFilter`, not `in`: `in` is a reserved word, so `.in(...)` does not
         // parse, and postgrest 2.9.1 spells the filter `inFilter`
         // (`postgrest_filter_builder.dart:239`).
@@ -101,6 +114,20 @@ class SupabaseTripRepository implements TripRepository {
 
   @override
   Future<void> raiseSos(String tripId, String note) async {
+    // Read the user first and refuse with a message. The insert needs
+    // `raised_by`, and the null-assertion that used to supply it threw
+    // `Null check operator used on a null value` *before* the row was written.
+    // The `on PostgrestException` below cannot catch a `TypeError`, so the SOS
+    // disappeared with no error the rider could read and nothing in
+    // `sos_events` to answer a question with — the exact outcome the
+    // migration's own comment at `init.sql:585-592` says the insert policy
+    // exists to prevent. Checking here also keeps a signed-out call off the
+    // geolocator platform channel, so it fails the same way whether or not
+    // location is available.
+    final user = _client.auth.currentUser;
+    if (user == null) {
+      throw const TripRequestFailure('Not signed in');
+    }
     final here = await currentLocation();
     // Same shape as `activeTrip`: the insert yields the written rows and a
     // refused write throws, so the failure arrives as `PostgrestException` and
@@ -108,7 +135,7 @@ class SupabaseTripRepository implements TripRepository {
     try {
       await _client.from('sos_events').insert({
         'trip_id': tripId,
-        'raised_by': _client.auth.currentUser!.id,
+        'raised_by': user.id,
         'note': note,
         if (here != null) 'point': 'POINT(${here.lng} ${here.lat})',
       });
