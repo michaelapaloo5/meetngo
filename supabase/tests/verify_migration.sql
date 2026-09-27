@@ -47,6 +47,7 @@
 \set trip_b    a0000000-0000-4000-8000-000000000002
 \set trip_geo  a0000000-0000-4000-8000-000000000003
 \set trip_live a0000000-0000-4000-8000-000000000004
+\set trip_gone a0000000-0000-4000-8000-000000000005
 \set offer_c   c0000000-0000-4000-8000-000000000001
 \set offer_d   c0000000-0000-4000-8000-000000000002
 \set offer_b   c0000000-0000-4000-8000-000000000003
@@ -231,9 +232,23 @@ insert into trips (id, rider_id, category, state, pickup, dropoff, pickup_point,
    st_setsrid(st_makepoint(-0.1870, 5.6037), 4326)::geography,
    2.33, 1.00, 12.00, 9);
 
+-- A cancelled trip owned by rider_b. The SOS policy must accept this state too,
+-- which is what closes the last hole in the state coverage: matched (probe 7),
+-- requested (probe 9), completed (probe 37) and cancelled (probe 38). Owned by
+-- rider_b so rider A's visible trip set in section 3 does not change.
+insert into trips (id, rider_id, category, state, pickup, dropoff, pickup_point,
+                   dropoff_point, distance_km, surge, fare_ghs, eta_minutes,
+                   created_at, cancelled_at)
+values (:'trip_gone', :'rider_b', 'standard', 'cancelled',
+   '{"label":"Osu","point":{"lat":5.6037,"lng":-0.1870},"address":"Osu, Accra"}',
+   '{"label":"Airport Residential","point":{"lat":5.6052,"lng":-0.1660},"address":"Airport Residential, Accra"}',
+   st_setsrid(st_makepoint(-0.1870, 5.6037), 4326)::geography,
+   st_setsrid(st_makepoint(-0.1660, 5.6052), 4326)::geography,
+   2.33, 1.00, 12.00, 9, now() - interval '40 minutes', now() - interval '39 minutes');
+
 -- An in-flight trip assigned to driver_c. Section 6 needs a trip that the
 -- driver client is allowed to touch, and a trip that is neither requested nor
--- terminal so the SOS state gate passes.
+-- terminal.
 insert into trips (id, rider_id, driver_id, category, state, pickup, dropoff,
                    pickup_point, dropoff_point, distance_km, surge, fare_ghs,
                    eta_minutes, matched_at, pickup_otp)
@@ -516,7 +531,7 @@ set local role authenticated;
 set local request.jwt.claim.sub = :'rider_b';
 insert into t_rls (seq, probe, actor, expectation, observed) values
   (7, 'rider B lists trips', 'authenticated ' || :'rider_b',
-   :'trip_b',
+   :'trip_b' || ',' || :'trip_gone',
    (select coalesce(string_agg(id::text, ',' order by id::text), '<none>') from trips)),
   (8, 'rider B reads rider A trip by id', 'authenticated ' || :'rider_b',
    '<none>',
@@ -762,13 +777,31 @@ insert into t_rpc (seq, probe, expectation, observed) values
    (select coalesce(accepted::text, '<no row>') from accept_offer(:'offer_e')));
 reset role;
 
--- No caller identity at all. auth.uid() is null, `is distinct from` is true,
--- and a request with no subject is refused rather than accepted.
+-- No caller identity at all. auth.uid() is null, and on an offer id that does
+-- not exist v_offer comes back null as well, so the ownership check compares
+-- `null is distinct from null`, which is false. That is the one path the check
+-- does not close on its own; the IF NOT FOUND on the locked re-read is what
+-- stops it, and without it the function returned accepted = true here with both
+-- ids NULL. Probe 15 is the same path with the anon role instead of an
+-- authenticated session carrying no subject.
 set local role authenticated;
 set local request.jwt.claim.sub = '';
 insert into t_rpc (seq, probe, expectation, observed) values
   (12, 'accept_offer with no caller identity loses', 'false',
-   (select coalesce(accepted::text, '<no row>') from accept_offer(:'offer_e')));
+   (select coalesce(accepted::text, '<no row>') from accept_offer(:'offer_e'))),
+  (14, 'no identity and no such offer id: both ids come back null, not a win', 'false|-|-',
+   (select coalesce(string_agg(
+             accepted::text || '|' || coalesce(trip_id::text, '-') || '|' || coalesce(driver_id::text, '-'),
+             ';'), '<no row>')
+      from accept_offer('c0000000-0000-4000-8000-0000000000ee')));
+reset role;
+set local role anon;
+insert into t_rpc (seq, probe, expectation, observed) values
+  (15, 'accept_offer as the anon role loses rather than returning a NULL winner', 'false|-|-',
+   (select coalesce(string_agg(
+             accepted::text || '|' || coalesce(trip_id::text, '-') || '|' || coalesce(driver_id::text, '-'),
+             ';'), '<no row>')
+      from accept_offer('c0000000-0000-4000-8000-0000000000ef')));
 reset role;
 insert into t_rpc (seq, probe, expectation, observed) values
   (13, 'the refused offer is still pending, so nobody was force-matched', 'requested|pending',
@@ -1020,14 +1053,29 @@ insert into write_probe (ord, seq, as_role, as_sub, widen_grant, probe, expectat
   (36, 36, 'authenticated', '11111111-1111-4111-8111-111111111111', false,
    'a signed-in rider cannot read the driver candidate list for a trip', 'blocked 42501',
    $$select * from match_offers_for_trip('a0000000-0000-4000-8000-000000000001')$$),
-  -- Pin the whole gate, not just the `requested` half. The SOS policy carries no
-  -- state clause at all, matching the ungated read policy on the same table, so a
-  -- party can also raise SOS on a trip that has already finished.
+  -- The SOS policy carries no state clause at all, matching the ungated read
+  -- policy on the same table. Probes 7, 9, 37 and 38 cover matched, requested,
+  -- completed and cancelled, so no state-restricting variant survives, including
+  -- a `t.state <> 'cancelled'` one.
   (37, 37, 'authenticated', '11111111-1111-4111-8111-111111111111', false,
    'the SOS policy carries no state gate, so a completed trip is allowed too', 'allowed 1 row',
    $$insert into sos_events (trip_id, raised_by, note)
       values ('a0000000-0000-4000-8000-000000000003',
-              '11111111-1111-4111-8111-111111111111', 'that trip is over')$$);
+              '11111111-1111-4111-8111-111111111111', 'that trip is over')$$),
+  (38, 38, 'authenticated', '22222222-2222-4222-8222-222222222222', false,
+   'the sixth state, cancelled, is allowed too, so no state clause can hide', 'allowed 1 row',
+   $$insert into sos_events (trip_id, raised_by, note)
+      values ('a0000000-0000-4000-8000-000000000005',
+              '22222222-2222-4222-8222-222222222222', 'reporting after cancelling')$$),
+  -- Every other SOS probe runs as a rider, so the policy's
+  -- `or t.driver_id = auth.uid()` branch had no coverage at all. driver_c is the
+  -- driver on trip_live, so this is the driver side of that disjunction.
+  (39, 39, 'authenticated', '33333333-3333-4333-8333-333333333333', false,
+   'the driver side of the SOS party check is allowed, not only the rider side', 'allowed 1 row',
+   $$insert into sos_events (trip_id, raised_by, point, note)
+      values ('a0000000-0000-4000-8000-000000000004',
+              '33333333-3333-4333-8333-333333333333',
+              'SRID=4326;POINT(-0.187 5.6037)'::geography, 'driver pressed SOS')$$);
 
 do $$
 declare
@@ -1065,30 +1113,30 @@ begin
 end
 $$;
 
--- 38-40: reads the removed driver directory policy used to expose. With no
+-- 40-42: reads the removed driver directory policy used to expose. With no
 -- role = 'driver' SELECT policy, a signed-in rider sees exactly one profiles
 -- row, their own, and the anon key that ships in the APK sees none.
 set local role authenticated;
 set local request.jwt.claim.sub = :'rider_a';
 insert into t_write (seq, probe, expectation, observed) values
-  (38, 'a rider sees no driver rows through the profiles table', '0',
+  (40, 'a rider sees no driver rows through the profiles table', '0',
    (select count(*)::text from profiles where role = 'driver')),
-  (39, 'a rider sees only their own profiles row', '1',
+  (41, 'a rider sees only their own profiles row', '1',
    (select count(*)::text from profiles));
 reset role;
 set local role anon;
 set local request.jwt.claim.sub = '';
 insert into t_write (seq, probe, expectation, observed) values
-  (40, 'the anon key reads no profiles row at all, so no KYC PII leaks', '0',
+  (42, 'the anon key reads no profiles row at all, so no KYC PII leaks', '0',
    (select count(*)::text from profiles));
 reset role;
 
--- 41-42: the signup path. handle_new_user ran when the fixture inserted these
+-- 43-44: the signup path. handle_new_user ran when the fixture inserted these
 -- two auth.users rows, and every other column took its default.
 insert into t_write (seq, probe, expectation, observed) values
-  (41, 'a signup asking for role admin gets a rider', 'rider',
+  (43, 'a signup asking for role admin gets a rider', 'rider',
    (select role::text from profiles where id = :'signup_x')),
-  (42, 'a signup asking for role driver gets a driver with default KYC', 'driver|notStarted|5.0|0',
+  (44, 'a signup asking for role driver gets a driver with default KYC', 'driver|notStarted|5.0|0',
    (select role::text || '|' || kyc_status::text || '|' || rating::text || '|' || trip_count::text
       from profiles where id = :'signup_d'));
 

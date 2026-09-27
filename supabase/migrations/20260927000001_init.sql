@@ -328,12 +328,20 @@ begin
 
   -- 3. Now the offer. The unlocked read above may be stale by the time the
   --    trip lock is granted, so re-read and re-check ownership under the lock.
-  --    A zero-row SELECT INTO leaves v_offer at its step 1 value rather than
-  --    nulling it, so the not-found case has to be tested the same way step 2
-  --    tests it. Without this, a privileged DELETE landing between the two reads
-  --    would let the function accept a vanished offer, release its siblings and
-  --    match the trip. Not reachable from a client: offers has no DELETE policy
-  --    and no other writer, but the pattern one line above already checks it.
+  --
+  --    The IF NOT FOUND here is not belt and braces. What it closes is the one
+  --    caller the ownership check below does not cover. A zero-row
+  --    `select * into v_offer` nulls the *whole record*, not just the fields the
+  --    later statements read, so v_offer.trip_id is NULL: the sibling release
+  --    and the trip match both key off a NULL and touch no rows at all. For any
+  --    authenticated caller the check below already returned false, because
+  --    `null is distinct from <uuid>` is true. A caller with a NULL auth.uid()
+  --    is the exception: `null is distinct from null` is false, so the ownership
+  --    check is skipped, the state guard evaluates to NULL and is not taken, and
+  --    the function returns accepted = true with trip_id and driver_id both
+  --    NULL. Only an anon caller gets that far, and only on an offer id that
+  --    does not exist, so no row is written either way and the damage is a false
+  --    accepted = true rather than a corrupted trip.
   select * into v_offer from offers where id = p_offer for update;
   if not found then
     return query select false, null::uuid, null::uuid;
