@@ -1,0 +1,402 @@
+import { corsHeaders } from '../_shared/cors.ts';
+// The six trip states are defined once, in `cancel-trip/policy.ts`, and read
+// from there rather than restated. The guard is the one thing standing between
+// an unrecognised value and the branch that pays money, and a second copy of
+// the six names is a second thing to forget to extend. A relative import out of
+// the function's own directory is not a new deployment shape either: every
+// function here already reaches `../_shared/cors.ts` and `../offers/clients.ts`.
+import { isTripStateName } from '../cancel-trip/policy.ts';
+import { readFareGhs, settleAgainstTripState, settleFare } from './ledger.ts';
+
+// The HTTP surface of `complete-trip`, and nothing that talks to a client.
+//
+// The brief's draft of this function was one `serve()` callback in `index.ts`,
+// which is unimportable -- a test that imports it starts a server -- so the
+// settlement, the money identity, the ratings write and all fourteen behaviours
+// in the table below had no test at all. Task 10's review raised that exact
+// shape as a Critical against `cancel-trip/index.ts`, and the fix there is this
+// one: the routing, the status codes and the bodies live here, `clients.ts`
+// builds the ports out of one service-role client, and `index.ts` is the
+// wiring. Nothing here imports supabase-js.
+
+const json = (status: number, payload: Record<string, unknown>) =>
+  new Response(JSON.stringify(payload), {
+    status,
+    headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+  });
+
+/**
+ * The `trips` row as the ownership read returns it, snake_case because that is
+ * what comes off the wire. `state` is a plain `string` and not the `TripStateName`
+ * union on purpose: the whole point of the `isTripStateName` guard below is that
+ * this value is unverified, and typing it as the union would let the guard read
+ * as redundant. `fare_ghs` is `unknown` for the same reason -- it is checked by
+ * `readFareGhs` rather than cast, because a cast would let a row that lost its
+ * fare settle as `GHS 0.00`. The index signature is the other half of all of
+ * that: the 200 body echoes the row, so the handler has to be able to carry
+ * columns it never reads.
+ */
+export interface TripRow {
+  id: string;
+  rider_id: string;
+  driver_id: string | null;
+  state: string;
+  fare_ghs: unknown;
+  [column: string]: unknown;
+}
+
+export interface PaymentRow {
+  id: string;
+  trip_id: string;
+  payer_id: string;
+  amount_ghs: unknown;
+  method: string;
+  state: string;
+  [column: string]: unknown;
+}
+
+/**
+ * One row of `ledger_entries` as this function writes it.
+ *
+ * `kind` is a string and not a union of the five the CHECK allows
+ * (`init.sql:126`) because the handler chooses it and the client binds it; the
+ * values it can produce are those five and the test pins them. `amountGhs` is
+ * signed, and the `commission` row is negative: that is what makes the fare and
+ * the commission sum to the payout.
+ */
+export interface LedgerEntryInput {
+  kind: string;
+  amountGhs: number;
+  note: string;
+}
+
+export interface RatingInput {
+  tripId: string;
+  raterId: string;
+  rateeId: string;
+  fromRole: 'rider' | 'driver';
+  stars: number;
+  comment: string;
+}
+
+export interface CompleteDeps {
+  // Resolves a bearer token to a user id. `error` and `userId` are both checked:
+  // `getUser` answers a revoked or malformed token with a null user *and* an
+  // error, and either alone is enough to refuse.
+  authenticate(token: string): Promise<{ userId: string | null; error: string | null }>;
+  findTrip(tripId: string): Promise<{ row: TripRow | null; error: string | null }>;
+  /**
+   * The trip's newest `payments` row, whatever state it is in.
+   *
+   * The name says "open" because an open row is what a caller usually wants,
+   * but this port must **not** filter on `state = 'pending'`, and the reason is
+   * the money. `complete-trip` flips the payment to `succeeded` *before* it
+   * writes the ledger, so on the retry that follows a failed ledger write the
+   * row is no longer pending: a pending-only read would find nothing, the
+   * handler would read an absent payment as a pending one, and it would write
+   * the fare and the payout a second time. The brief's draft read the newest row
+   * with no state filter, and that is what this port is.
+   */
+  findOpenPayment(tripId: string): Promise<{ row: PaymentRow | null; error: string | null }>;
+  /**
+   * The two payment writes, and they have two different failure answers: an
+   * error from the database is a 500 and a zero-row match is a 404, so the port
+   * carries both rather than the single boolean the brief's Interfaces block had.
+   * A zero-row match is a lost race -- the row was deleted or already moved
+   * between the read above and this write -- and it is a 404 because the payment
+   * the caller asked to charge is not there, not because the database refused.
+   */
+  markPaymentSucceeded(paymentId: string): Promise<{ row: PaymentRow | null; error: string | null }>;
+  markPaymentVoided(paymentId: string): Promise<{ row: PaymentRow | null; error: string | null }>;
+  writeLedger(
+    tripId: string,
+    driverId: string,
+    entries: LedgerEntryInput[],
+  ): Promise<{ ok: boolean; error: string | null }>;
+  writePayout(
+    tripId: string,
+    driverId: string,
+    amountGhs: number,
+  ): Promise<{ ok: boolean; error: string | null }>;
+  /**
+   * `duplicate` is the port's own reading of the insert rather than the
+   * handler's, because the discriminator is PostgREST's `code` field and
+   * `clients.ts` owns that.
+   */
+  writeRating(input: RatingInput): Promise<{ ok: boolean; duplicate: boolean }>;
+}
+
+/**
+ * What the response says about the rating, which the settlement is not allowed
+ * to depend on. `skipped` is a call with no `rating` in the body at all.
+ */
+export type RatingState = 'skipped' | 'recorded' | 'duplicate' | 'failed';
+
+/**
+ * The body of a `complete-trip` call, read off the request's JSON before
+ * anything is looked up.
+ *
+ * Split out of `index.ts` so it is reachable from a test, which is the point of
+ * the split: `tripId` is not optional in the call, and the brief's draft passed
+ * whatever `req.json()` produced straight into `.eq('id', tripId)`, where a
+ * missing `tripId` became a filter that matched nothing and therefore a 404
+ * naming a trip that does not exist.
+ *
+ * `stars` is deliberately **not** range-checked here. It is checked in
+ * `handleComplete`, against `Rating.isValidStars`'s rule, because a rating of 0
+ * or 6 is a decision this function makes and reports as its own 400 rather than
+ * as a malformed request. A non-number is a different thing and is refused
+ * here, where the shape of the body is the question.
+ */
+export function readCompleteBody(body: unknown):
+  | { ok: true; tripId: string; rating?: { stars: number; comment: string } }
+  | { ok: false; error: string } {
+  const record = typeof body === 'object' && body !== null && !Array.isArray(body)
+    ? body as Record<string, unknown>
+    : null;
+  if (!record) return { ok: false, error: 'body must be a JSON object' };
+
+  const tripId = record['tripId'];
+  if (typeof tripId !== 'string' || tripId.length === 0) {
+    return { ok: false, error: 'tripId is required' };
+  }
+
+  const rawRating = record['rating'];
+  if (rawRating === undefined || rawRating === null) return { ok: true, tripId };
+  if (typeof rawRating !== 'object' || Array.isArray(rawRating)) {
+    return { ok: false, error: 'rating must be an object' };
+  }
+  const { stars, comment } = rawRating as Record<string, unknown>;
+  if (typeof stars !== 'number') {
+    return { ok: false, error: 'rating.stars must be a number' };
+  }
+  return {
+    ok: true,
+    tripId,
+    rating: { stars, comment: typeof comment === 'string' ? comment : '' },
+  };
+}
+
+export async function handleComplete(input: {
+  deps: CompleteDeps;
+  // Null when the request carried no `Bearer ` token, or when the auth server
+  // refused the one it did. Both are the same 401, and the handler is where the
+  // 401 lives, so the refusal is reachable from a test rather than sitting in
+  // `index.ts` beside `serve()`.
+  callerId: string | null;
+  tripId: string;
+  rating?: { stars: number; comment: string };
+}): Promise<Response> {
+  const { deps, tripId } = input;
+  const callerId = input.callerId;
+  if (!callerId) return json(401, { error: 'unauthenticated' });
+
+  // The range check is here, before the first lookup and before any write, and
+  // it is a refusal of the whole call rather than a note in the body. The two
+  // rules it could have lived under want different answers: a rating of 0 or 6
+  // is a malformed request, and `ratings.stars` carries `check (stars between 1
+  // and 5)` (`init.sql:138`) so the value would otherwise arrive as a 500 from
+  // the CHECK; but a rating whose *write* fails must not unsettle a completed
+  // trip, so that failure is reported in the body of a 200 instead. Nothing has
+  // been settled yet when this runs, so a 400 here costs the rider nothing.
+  //
+  // `Rating.isValidStars` is `stars >= 1 && stars <= 5`
+  // (`packages/mng_core/lib/src/models/rating.dart:24`), reimplemented because
+  // this is TypeScript and that is Dart: the rule is those two comparisons, and
+  // `Number.isInteger` is what keeps a `2.5` or a `NaN` from passing them.
+  if (input.rating !== undefined &&
+    (!Number.isInteger(input.rating.stars) || input.rating.stars < 1 || input.rating.stars > 5)) {
+    return json(400, { error: 'stars must be 1 to 5' });
+  }
+
+  const { row: trip, error: tripError } = await deps.findTrip(tripId);
+  if (tripError) return json(500, { error: 'trip lookup failed' });
+  if (!trip) return json(404, { error: 'trip not found' });
+
+  // Either party may settle: the rider is who pays and the driver is who is
+  // paid, and a demo trip's settlement is a function of the fare rather than of
+  // which of the two pressed the button. The comparison is against the validated
+  // identity and never against a field of the body, which is the authorisation
+  // the service key bypasses: `trips` carries no INSERT policy, and `revoke
+  // update on trips from anon, authenticated` with a grant of `(state,
+  // eta_minutes, started_at, completed_at)` (`init.sql:614-615`) leaves this
+  // function unable to move the trip on the caller's own credential either.
+  if (trip.rider_id !== callerId && trip.driver_id !== callerId) {
+    return json(403, { error: 'not your trip' });
+  }
+
+  // Checked rather than cast, and the check is load-bearing:
+  // `settleAgainstTripState` branches on this string, and an unrecognised value
+  // used to reach the charge branch as though it were `completed`. This is the
+  // same guard, and the same 500, as `cancel-trip`'s
+  // (`cancel-trip/handler.ts:124-126`).
+  if (!isTripStateName(trip.state)) {
+    return json(500, { error: 'trip row carries a state this build does not know' });
+  }
+
+  // A trip that is neither finished nor cancelled has nothing to settle, and the
+  // brief's draft answered it with a 200 carrying a `settlement` and a
+  // `paymentState` nobody had written: a receipt for a ride still in progress,
+  // which is what the rider's screen renders as a total. Worse, that draft ran
+  // its void branch on *every* `!shouldCharge` outcome, so calling this on an
+  // `arriving` trip voided the pending demo charge. This is the refusal, and it
+  // is answered from the trip row alone, before the payment is even read. The
+  // body carries the `error` key `describeFunctionFailure` reads
+  // (`apps/rider/lib/src/data/function_failure.dart:29-38`).
+  if (trip.state !== 'completed' && trip.state !== 'cancelled') {
+    return json(409, { error: 'This trip is not complete yet', trip });
+  }
+
+  const fareGhs = readFareGhs(trip);
+  if (fareGhs === null) {
+    return json(500, { error: 'trip row carries no finite fare' });
+  }
+  const settlement = settleFare(fareGhs);
+
+  const { row: payment, error: paymentError } = await deps.findOpenPayment(trip.id);
+  if (paymentError) return json(500, { error: 'payment lookup failed' });
+
+  const decision = settleAgainstTripState({
+    tripState: trip.state,
+    paymentState: payment?.state ?? 'pending',
+    settlement,
+  });
+
+  if (!decision.shouldCharge) {
+    if (decision.paymentState === 'voided' && payment && payment.state !== 'voided') {
+      const { row: voided, error: voidError } = await deps.markPaymentVoided(payment.id);
+      if (voidError) return json(500, { error: 'void write failed' });
+      if (!voided) return json(404, { error: 'payment not found' });
+      // A `void` entry of **zero**, not a negative one. The charge being voided
+      // never became a credit, so the driver's record of this trip is nothing
+      // rather than a debit. `kind` is one of the five the CHECK allows
+      // (`init.sql:126`) and `ledger_entries.driver_id` is `not null`
+      // (`init.sql:123`), which is why this is written only when the trip has a
+      // driver at all.
+      if (trip.driver_id) {
+        const written = await deps.writeLedger(trip.id, trip.driver_id, [
+          { kind: 'void', amountGhs: 0, note: 'Trip was not completed, charge voided' },
+        ]);
+        if (!written.ok) {
+          return json(500, { error: 'void ledger write failed' });
+        }
+      }
+    }
+    // A rating is written on this path too, and for the same reason: a rider who
+    // rates a cancelled trip is answering a question the rider was asked.
+    return json(200, { trip, settlement, paymentState: decision.paymentState, ...await rateTrip(input, trip, deps) });
+  }
+
+  // The charge. The payment first, then the two money writes, each checked. The
+  // payment is already `succeeded` by the time a failed ledger write answers
+  // 500, so that 500 is not a refusal that rolled anything back -- it is the
+  // report. The retry is what `settleAgainstTripState`'s already-succeeded guard
+  // keeps from paying twice.
+  if (payment) {
+    const { row: paid, error: paidError } = await deps.markPaymentSucceeded(payment.id);
+    if (paidError) return json(500, { error: 'payment write failed' });
+    if (!paid) return json(404, { error: 'payment not found' });
+  }
+  if (trip.driver_id) {
+    // The money identity. The two amounts must sum to
+    // `Settlement.driverPayoutGhs` and to `payouts.amount_ghs`, and they do by
+    // construction rather than by coincidence:
+    //
+    //   - the `fare` entry is the **gross** `settlement.fareGhs`;
+    //   - the `commission` entry is `-(fareGhs - driverPayoutGhs)`, *derived*
+    //     and not `settlement.commissionGhs`.
+    //
+    // The draft had the fare entry carrying the **net** payout *and* a negative
+    // commission against the same `driver_id`, which is `not null`
+    // (`init.sql:123`). That netted 14.28 against a 17.34 payout, and
+    // `ledger_entries` is the driver's only per-trip record of what they are
+    // owed, so the error was permanent. Deriving the commission from the payout
+    // keeps the pair summing correctly even if `settleFare`'s rounding ever
+    // moves: the sum is an identity in the code, not a coincidence of two
+    // independently rounded numbers.
+    const { ok: ledgerOk } = await deps.writeLedger(trip.id, trip.driver_id, [
+      { kind: 'fare', amountGhs: settlement.fareGhs, note: 'Trip fare' },
+      {
+        kind: 'commission',
+        amountGhs: -(settlement.fareGhs - settlement.driverPayoutGhs),
+        note: 'Platform commission 15%',
+      },
+    ]);
+    if (!ledgerOk) return json(500, { error: 'ledger write failed' });
+
+    const { ok: payoutOk } = await deps.writePayout(
+      trip.id,
+      trip.driver_id,
+      settlement.driverPayoutGhs,
+    );
+    if (!payoutOk) return json(500, { error: 'payout write failed' });
+  }
+
+  return json(200, { trip, settlement, paymentState: decision.paymentState, ...await rateTrip(input, trip, deps) });
+}
+
+/**
+ * The rider's half of the two-way rating, and the only half this task writes.
+ * The driver's rating of the rider is Task 14's, in the driver's own app;
+ * `unique (trip_id, from_role)` (`init.sql:141`) is what makes the two of them
+ * one row each rather than a race for one row.
+ *
+ * The write goes through the service-role port because `ratings` carries a
+ * SELECT policy and no INSERT policy (`own ratings`, `init.sql:555-556`), so RLS
+ * default-denies a client insert and the rider's own credential cannot write
+ * this row. `complete-trip` is the path that can: it has already validated the
+ * caller and already established that the caller is one of the trip's two
+ * parties.
+ *
+ * Nothing here can fail the settlement, and that is the point: the money is
+ * already written by the time this runs, so a refused settlement over a rating
+ * would leave a completed trip unsettled because a rider tapped a star twice.
+ * The four outcomes are reported in the body instead, and `TripController`
+ * turns the `failed` one into an error the rider can read while keeping the
+ * settlement it was handed.
+ *
+ * `ratingStatus` is the status the outcome *would* have been had it been allowed
+ * to be this response's own, and it is carried because the alternative is
+ * unreportable: `functions_client` throws on anything outside 200..299
+ * (`functions_client-2.7.1/lib/src/functions_client.dart:255-269`), so
+ * answering a re-rating with a literal 409 would throw in the client, lose the
+ * `paymentState: 'succeeded'` that was just written, and leave the rider looking
+ * at a failure for a trip that was paid.
+ */
+async function rateTrip(
+  input: { rating?: { stars: number; comment: string } },
+  trip: TripRow,
+  deps: CompleteDeps,
+): Promise<Record<string, unknown>> {
+  const rating = input.rating;
+  if (rating === undefined) return { ratingState: 'skipped' as RatingState };
+
+  // `ratee_id` is `not null` (`init.sql:136`), so a completed trip with no driver
+  // has nobody to rate. That is reported as a failure rather than skipped: the
+  // rider asked for a rating to be saved and it was not.
+  if (!trip.driver_id) {
+    return {
+      ratingState: 'failed' as RatingState,
+      ratingStatus: 500,
+      ratingError: 'this trip has no driver to rate',
+    };
+  }
+
+  const { ok, duplicate } = await deps.writeRating({
+    tripId: trip.id,
+    raterId: trip.rider_id,
+    rateeId: trip.driver_id,
+    fromRole: 'rider',
+    stars: rating.stars,
+    comment: rating.comment,
+  });
+  if (duplicate) return { ratingState: 'duplicate' as RatingState, ratingStatus: 409 };
+  if (!ok) {
+    return {
+      ratingState: 'failed' as RatingState,
+      ratingStatus: 500,
+      ratingError: 'the rating was not saved',
+    };
+  }
+  return { ratingState: 'recorded' as RatingState };
+}

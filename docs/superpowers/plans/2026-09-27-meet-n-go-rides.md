@@ -8767,17 +8767,17 @@ that gap is ledgered against a later round, so it is pinned from this side inste
 - Consumes: `Payment`, `PayMethod`, `PaymentState` (Task 4), `TripState` (Task 3), `Trip` (Task 4), `Rating` (Task 4), `FareCalculator` (Task 2), `TripRepository` (Task 8)
 - Produces:
   - `supabase/functions/complete-trip/ledger.ts` → `export interface Settlement { fareGhs: number; commissionGhs: number; driverPayoutGhs: number; }`, `export function settleFare(fareGhs: number, commissionRate?: number): Settlement` with `commissionRate` defaulting to `0.15`, throwing `TypeError` on a non-finite argument, and `export function settleAgainstTripState(input: { tripState: string; paymentState: string; settlement: Settlement }): { shouldCharge: boolean; paymentState: 'pending' | 'succeeded' | 'voided'; ledgerKinds: string[] }` returning `{shouldCharge: false, paymentState: 'voided', ledgerKinds: ['void']}` whenever the trip is cancelled. **The return type includes `'pending'`; the Interfaces block previously omitted it and the test asserts it.**
-  - `supabase/functions/complete-trip/handler.ts` → `export interface CompleteDeps { findTrip(tripId: string): Promise<TripRow | null>; findOpenPayment(tripId: string): Promise<PaymentRow | null>; markPaymentSucceeded(paymentId: string): Promise<boolean>; markPaymentVoided(paymentId: string): Promise<boolean>; writeLedger(tripId: string, driverId: string, entries: LedgerEntryInput[]): Promise<{ ok: boolean }>; writePayout(tripId: string, driverId: string, amountGhs: number): Promise<{ ok: boolean }>; writeRating(input: RatingInput): Promise<{ ok: boolean; duplicate: boolean }>; }` and `export async function handleComplete(input: { deps: CompleteDeps; callerId: string; tripId: string; rating?: { stars: number; comment: string } }): Promise<Response>`. The handler imports no supabase-js, so a fake `CompleteDeps` exercises every branch.
+  - `supabase/functions/complete-trip/handler.ts` → `export interface CompleteDeps { authenticate(token: string): Promise<{ userId: string | null; error: string | null }>; findTrip(tripId: string): Promise<{ row: TripRow | null; error: string | null }>; findOpenPayment(tripId: string): Promise<{ row: PaymentRow | null; error: string | null }>; markPaymentSucceeded(paymentId: string): Promise<{ row: PaymentRow | null; error: string | null }>; markPaymentVoided(paymentId: string): Promise<{ row: PaymentRow | null; error: string | null }>; writeLedger(tripId: string, driverId: string, entries: LedgerEntryInput[]): Promise<{ ok: boolean; error: string | null }>; writePayout(tripId: string, driverId: string, amountGhs: number): Promise<{ ok: boolean; error: string | null }>; writeRating(input: RatingInput): Promise<{ ok: boolean; duplicate: boolean }>; }` and `export async function handleComplete(input: { deps: CompleteDeps; callerId: string | null; tripId: string; rating?: { stars: number; comment: string } }): Promise<Response>`, plus `export function readCompleteBody(body: unknown)` for the request-body reader. **The read and payment-update ports carry `{ row, error }` and not the `Promise<boolean>` and `Promise<TripRow | null>` this block originally named, and `callerId` is nullable: Step 7 requires both a `trip lookup failed` 500 and a `payment not found` 404 from the same port, and a single boolean cannot tell a database error from a zero-row match. `authenticate` is here because `index.ts` is specified to call `getUser(token)` and a port is the only way to do that without the handler importing supabase-js.** The handler imports no supabase-js, so a fake `CompleteDeps` exercises every branch.
   - `supabase/functions/complete-trip/clients.ts` → `export function buildCompleteDeps(supabaseUrl: string, serviceKey: string): CompleteDeps`.
   - `supabase/functions/complete-trip/index.ts` — thin wiring only: the `Bearer ` scheme check, the stripped-token `getUser(token)`, `buildCompleteDeps(...)`, and one `serve()`.
-  - `supabase/functions/demo-pay/handler.ts` → `export interface DemoPayDeps { findTrip(tripId: string): Promise<TripRow | null>; findOpenPayment(tripId: string, payerId: string): Promise<PaymentRow | null>; createPayment(input: PaymentInput): Promise<PaymentRow | null>; }` and `export async function handleDemoPay(input: { deps: DemoPayDeps; callerId: string; tripId: string; method: string }): Promise<Response>`, with the same no-supabase-js property.
+  - `supabase/functions/demo-pay/handler.ts` → `export interface DemoPayDeps { authenticate(token: string): Promise<{ userId: string | null; error: string | null }>; findTrip(tripId: string): Promise<{ row: TripRow | null; error: string | null }>; findOpenPayment(tripId: string, payerId: string): Promise<{ row: PaymentRow | null; error: string | null }>; createPayment(input: PaymentInput): Promise<{ row: PaymentRow | null; error: string | null }>; }` and `export async function handleDemoPay(input: { deps: DemoPayDeps; callerId: string | null; tripId: string; method: string }): Promise<Response>`. **Same `{ row, error }` widening as `CompleteDeps`, for the same reason: the two 500s and the 404 in Step 6 come from these ports.**, with the same no-supabase-js property.
   - POST `complete-trip` `{tripId, rating?}` → `{trip, settlement, paymentState}`. `rating` is the **rider's** rating of the driver; the driver's half of the two-way rating is Task 14.
   - POST `demo-pay` `{tripId, method}` → `{payment: Payment, state: PaymentState}`. Never contacts a real provider; it writes a `payments` row with `is_demo = true`. Reuses an existing `pending` payment rather than inserting a second one, because `complete-trip` reads the newest row and a second insert would orphan the first forever.
-  - `TripController({required TripRepository trips})` with `Trip? trip`, `bool busy`, `String? error`, `Settlement? settlement`, `Future<void> complete({int? stars, String comment})`, `Future<void> pay({required PayMethod method})`. **A failed `complete` or `pay` must set `error` and must not clear `settlement`; the same rollback discipline Task 10 applied to `sosRaised`.**
+  - `TripController({required TripRepository trips, required TripFunctions functions, Trip? initialTrip})` with `Trip? trip`, `bool busy`, `String? error`, `Settlement? settlement`, `PaymentState? paymentState`, `Future<void> complete({int? stars, String comment})`, `Future<void> pay({required PayMethod method})` and `Future<void> refresh()`. **The two Edge Function calls sit behind a `TripFunctions` port in `apps/rider/lib/src/data/trip_functions.dart` rather than behind a `SupabaseClient` the controller holds, because a controller that reached for `Supabase.instance` itself could not be driven by a fake at all, and `TrackingController` sets that precedent.** **A failed `complete` or `pay` must set `error` and must not clear `settlement`; the same rollback discipline Task 10 applied to `sosRaised`.**
   - `ReceiptScreen({required Trip trip, required Settlement settlement, required PaymentState paymentState, required void Function(int stars, String comment) onRated})` — keys `receiptTotal`, `ratingStars`, `submitRatingButton`.
   - `RatingSheet({required void Function(int stars, String comment) onSubmit, String? headline})` — keys `ratingStars`, `ratingComment`, `submitRatingButton`, `star-1`..`star-5`, 1-5 star row, optional comment field.
   - `Rating.isValidStars` already exists from Task 4; the handler **uses** it, so a 0 or 6 stars is a 400 and never reaches the `ratings` table.
-- Widget keys this task owns: `receiptTotal`, `ratingStars`, `ratingComment`, `submitRatingButton`, `star-1`..`star-5`, `payButton`, `cashButton`, `momoButton`.
+- Widget keys this task owns: `receiptTotal`, `ratingStars`, `ratingComment`, `submitRatingButton`, `star-1`..`star-5`, `payButton`, `cashButton`, `momoButton`. **`payButton`, `cashButton` and `momoButton` have no deliverable in this task: the Files list has no pay-method surface, `ReceiptScreen` and `RatingSheet` carry none of the three, and `TripController.pay` is the only pay path. They are declared here and not built here, because inventing a pay surface with no specified copy is a worse guess than leaving the keys for the task that owns the pay screen.**
 
 **Three requirements this task's previous draft did not deliver at all.** Each is a named deliverable below, not an improvement:
 1. `trip_controller.dart` was in the Files list and in the Interfaces, and **no step wrote it**. Step 14 writes it.
@@ -9274,7 +9274,7 @@ Nothing may be dropped in the move. Every status code, every refusal message, th
 1. refuses `stars` outside 1..5 with a 400, using `Rating.isValidStars`'s rule — the migration carries `check (stars between 1 and 5)`, so a bad value would otherwise be a 500 from a CHECK violation;
 2. inserts one `ratings` row with `rater_id = trip.rider_id`, `ratee_id = trip.driver_id`, `from_role = 'rider'`, `trip_id`, `stars`, `comment`. A service-role client, because `ratings` has a SELECT policy only and RLS default-denies a client INSERT;
 3. treats `unique (trip_id, from_role)` rejecting the insert as a **409 duplicate**, not a 500 — a rider who re-rates has made a mistake, not hit a fault;
-4. never fails the settlement because the rating failed. A 409 on the rating is reported in the response body alongside a successful `paymentState`, because refusing to settle a completed trip over a rating is the worse failure.
+4. never fails the settlement because the rating failed. A 409 on the rating is reported in the response body alongside a successful `paymentState`, because refusing to settle a completed trip over a rating is the worse failure. **The body carries `ratingState` (`skipped` / `recorded` / `duplicate` / `failed`) and, for the two failure classes, the status it would have been (`ratingStatus: 409` for a duplicate, `500` for a write that failed). The response's own status stays 200 in both cases, because `functions_client` throws on anything outside 200..299 and a literal 409 would throw away the `paymentState: 'succeeded'` that had just been written.**
 
 The driver's half of the two-way rating is **Task 14's** `DriverChatScreen` sibling, not this task's. Say so in one comment; do not build a second writer here.
 
@@ -9796,6 +9796,73 @@ git -c user.email=opencode@local -c user.name=opencode commit -m "feat(rider): s
 Expected: every suite green and both analysers clean. **The rider suite's total is 97 pre-existing plus this task's, so read the runner's own line rather than predicting a number** — a prediction that has been wrong in this project more than once, including twice in the commit that corrects a brief for being wrong.
 
 ---
+
+**Corrections applied while implementing this task.** Each is a deviation from the
+text above, with the reason. Every one has a test that fails when the behaviour is
+removed, and the mutation battery is in
+`.superpowers/sdd/2026-09-27-meet-n-go-rides/task-11-report.md`.
+
+1. **`settleAgainstTripState` gained a fifth case.** A `completed` trip whose
+   payment is already `succeeded` returns `{shouldCharge: false, paymentState:
+   'succeeded', ledgerKinds: []}`. Step 5's body read the payment, flipped it and
+   wrote the ledger and the payout with nothing to stop a second call, and
+   neither `payments` nor `payouts` carries a unique constraint on trip
+   (`init.sql:112-130`), so a double tap wrote the fare twice against one trip.
+   The void branch already had this guard one level up; the charge path did not.
+2. **A trip that is neither `completed` nor `cancelled` is a 409**, answered from
+   the trip row before the payment is read. Step 5 answered it with a 200
+   carrying a `settlement` and a `paymentState` nobody had written — a receipt
+   for a ride in progress — and then ran its void branch on *every*
+   `!shouldCharge` outcome, so calling `complete-trip` on an `arriving` trip
+   voided the rider's open demo charge. The void branch now keys on the
+   decision's own `paymentState === 'voided'`.
+3. **`stars` outside 1..5 is a 400 answered before the first lookup**, which is
+   what Step 7 item 1 asks for, and separately from "a rating whose write failed
+   must not unsettle the trip" (item 4). The first is a malformed request and
+   nothing has been settled when it is checked; the second happens after the
+   money is written and is reported in the body.
+4. **A duplicate rating is reported as `ratingStatus: 409` inside a 200**, for
+   the reason given above: `functions_client` throws on a non-2xx, so a literal
+   409 would discard the `paymentState: 'succeeded'` the same call had just
+   written, which is the failure ruling 2 exists to prevent.
+5. **`readFareGhs` in `ledger.ts`** replaces Step 5's `Number(trip.fare_ghs)`.
+   `Number(null)` is 0 and `Number(undefined)` is NaN, so a damaged row settled
+   as `GHS 0.00` and wrote it to the ledger. A row with no finite fare is a 500
+   that names the problem. `demo-pay` reads the fare through the same function,
+   because the charge it writes has to be the charge the settlement settles.
+6. **`readCompleteBody` in `handler.ts`** reads the request body, so a missing
+   `tripId` is a 400 that names the field rather than a filter that matched
+   nothing and therefore a 404 for a trip that does not exist.
+7. **`isTripStateName` is imported from `cancel-trip/policy.ts`** rather than
+   restated, so the six state names have one definition.
+8. **Two files this task's Files list does not name.** `demo-pay` has no
+   `clients.ts` in the list, so `buildDemoPayDeps` sits in `demo-pay/index.ts`
+   beside the wiring, which is where `request-ride/index.ts` builds its client.
+   `settlement_clients_wiring.test.ts` is the static-text battery over the two
+   port builders, the mechanism `clients_wiring.test.ts` and
+   `cancel_clients_wiring.test.ts` already use, because a port-level test is
+   blind to which table a port reads and whether its row count is observable.
+9. **A stale locator in a file this task did not create, fixed here.**
+   `apps/rider/lib/src/data/function_failure.dart` cited
+   `cancel-trip/index.ts:9` for a `json()` helper that file does not contain — it
+   is nine lines of wiring, and the helper is in `cancel-trip/handler.ts`. Task
+   10's extraction moved the function and left the sentence behind. The two
+   sibling citations in that sentence (`request-ride/index.ts:14`,
+   `offers/handler.ts:24`) were checked and are correct, as are the two other
+   `request-ride/index.ts` citations in the tree
+   (`offers/resolve.ts:168`, `offers/clients.ts:87`).
+10. **The 200% text-scale pin measures what it claims, and only half of it.**
+    Removing `Flexible` + `FittedBox` from the receipt's total row reproduces
+    `A RenderFlex overflowed by 58 pixels on the right` at 200%, which is the
+    number this task's brief quotes. The same wrapper on `_row` is **not**
+    exercised by any value the receipt renders, so it is insurance rather than a
+    fix, and the mutation battery reports it as a survivor rather than pretending
+    otherwise.
+11. **`MngColors.error` as 14px body text is 3.91:1 on the page**, below the 4.5:1
+    WCAG AA floor for text. It is the palette's error token
+    (`tokens.dart`), it is used by `'Pick a rating first'` and
+    `'This trip was not charged'`, and this task does not change the palette, so
+    it is reported rather than fixed.
 
 ### Task 12: Driver app — onboarding and KYC
 
