@@ -110,15 +110,20 @@ serve(async (req) => {
     // full price for a code they supplied, which is a worse outcome than
     // failing: nothing in the response says the promo was not applied.
     if (promoError) return json(500, { error: promoError.message });
-    // `promoRows?.[0]` rather than `maybeSingle()`. `maybeSingle` sets
-    // `Accept: application/vnd.pgrst.object+json`, so a 0-row read comes back as
-    // a 406, and the shipped client clears that only by comparing the server's
-    // `details` against the substring `0 rows`
-    // (`@supabase/postgrest-js@1.16.1/src/PostgrestBuilder.ts:162`, the
-    // version supabase-js 2.45.4 resolves). So whether a typo'd promo code is a
-    // full-price quote or a 500 depends on an English string in someone else's
-    // API. `limit(1)` never asks for the single-object media type, so a 0-row
-    // read is a 200 with `[]` and we index it ourselves.
+    // `promoRows?.[0]` rather than `maybeSingle()`, and not for the reason this
+    // comment used to give. Measured with the shipped client and a stub fetch:
+    // on a GET, `maybeSingle()` sends `Accept: application/json`, not
+    // `application/vnd.pgrst.object+json`
+    // (`@supabase/postgrest-js@1.16.1/src/PostgrestTransformBuilder.ts:209-210`,
+    // the version supabase-js 2.45.4 resolves), so a 0-row read is a 200 with
+    // `[]` and the client turns it into `data = null` itself
+    // (`@supabase/postgrest-js@1.16.1/src/PostgrestBuilder.ts:118-134`). The
+    // `details.includes('0 rows')` comparison at `:162` is on the error branch,
+    // which a GET does not take. So a typo'd promo code reads as `null` here and
+    // is not a 500. `limit(1)` is used because it never asks the client to
+    // interpret a row count at all, so the shape of a 0-row read does not rest
+    // on a client-side coercion step in someone else's API, and because every
+    // read in this function is then the same shape.
     const promo = promoRows?.[0] ?? null;
     // `expires_at` is filtered here rather than in the query because a
     // PostgREST filter value is a literal, not SQL: `expires_at.gt.now()` is
