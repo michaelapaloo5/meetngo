@@ -9,3 +9,4 @@ export 'src/fare/fare_calculator.dart';
 export 'src/models/category.dart';
 export 'src/theme/app_theme.dart';
 export 'src/theme/tokens.dart';
+export 'src/trip/trip_state.dart';
