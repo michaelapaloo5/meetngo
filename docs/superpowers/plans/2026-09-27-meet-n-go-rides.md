@@ -2073,21 +2073,30 @@ begin
   -- 3. Now the offer. The unlocked read above may be stale by the time the
   --    trip lock is granted, so re-read and re-check ownership under the lock.
   --
-  --    The IF NOT FOUND here is defence in depth, not the check that closes this
-  --    path. A zero-row `select * into v_offer ... for update` nulls the whole
-  --    record, so v_offer.driver_id is NULL, and the ownership re-check
-  --    immediately below this one refuses that on its own, for the same reason
-  --    the unlocked check above does: `null is distinct from <uuid>` is true.
-  --    Measured on this host, with a service-role DELETE of the offer committed
-  --    while the call was parked on the trip lock: this branch, and the same
-  --    branch with the ownership re-check also deleted, both returned false and
-  --    left the trip `requested`. With both deleted the call fell through to
-  --    `return query select true, v_trip.id, v_offer.driver_id` and answered
-  --    accepted = true with a NULL driver id, having written no rows, because
-  --    every keyed UPDATE below matched on a NULL. So what this pair of guards
-  --    is worth is refusing a false positive, not preventing a corrupted trip,
-  --    and either one alone does that. Keep both: this is a destructive path and
-  --    a redundant guard on one is cheap.
+  --    Each of the two guards below was measured on this host by staging the
+  --    change in a second session, committing it while the call was parked on
+  --    the trip lock, and reading back which guard fired.
+  --
+  --    A service-role DELETE of the offer, committed in that window. The
+  --    re-read returns no row, so the IF NOT FOUND refuses it. That guard is
+  --    defence in depth rather than the thing doing the refusing: delete only
+  --    the IF NOT FOUND and the ownership re-check still refuses, because a
+  --    zero-row `select * into v_offer ... for update` leaves v_offer a NULL
+  --    record and `null is distinct from <uuid>` is true, the same ground the
+  --    unlocked check above stands on. Delete both and the call falls through
+  --    to `return query select true, v_trip.id, v_offer.driver_id` and answers
+  --    accepted = true with a NULL driver id, leaving the trip `requested` with
+  --    a NULL driver_id. What is refused there is a false positive.
+  --
+  --    A service-role reassignment of offers.driver_id to a different driver,
+  --    committed in the same window. The IF NOT FOUND cannot see this one,
+  --    because the offer still exists: the re-read returns a row, and the
+  --    ownership re-check is the only guard that refuses. Delete that one and
+  --    the call answers accepted = true, accepts the offer, releases its
+  --    siblings and matches the trip to the driver the offer was reassigned to
+  --    rather than to the caller. The ownership re-check is therefore the only
+  --    thing standing between a reassigned offer and a trip matched to the
+  --    wrong driver. Keep both, and do not drop the ownership re-check.
   select * into v_offer from offers where id = p_offer for update;
   if not found then
     return query select false, null::uuid, null::uuid;
@@ -2974,9 +2983,14 @@ Expected: 6 tests pass, 0 fail.
 
 The `global: { headers: { Authorization: ... } }` line below is load bearing and must not be
 simplified away. `accept_offer` refuses any caller whose `auth.uid()` is not the offer's
-`driver_id`, and a service-role request has a null `auth.uid()`, so swapping this client for
-the plain service-role client makes every `accept_offer` call return `false`. `getUser()` needs
-the same header for the same reason.
+`driver_id`, and `offers.driver_id` is `not null`, so the only way through the check is for
+`auth.uid()` to be that driver. The check is an explicit expression inside a `security definer`
+function rather than an RLS policy, so it is evaluated for every caller and `bypassrls` is no
+exemption: the outcome follows `auth.uid()` and nothing else. The line is what puts the driver's
+own bearer token on the request, so `auth.uid()` is the offer's driver. The plain service-role
+client sends the project's service-role key there instead, so the identity the check compares
+against is that key's own rather than the driver's, and every `accept_offer` call returns
+`false`. `getUser()` needs the same header for the same reason.
 
 ```ts
 import { serve } from 'https://deno.land/std@0.224.0/http/server.ts';
