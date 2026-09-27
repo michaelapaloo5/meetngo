@@ -8749,32 +8749,50 @@ that gap is ledgered against a later round, so it is pinned from this side inste
 
 **Files:**
 - Create: `supabase/functions/complete-trip/ledger.ts`
+- Create: `supabase/functions/complete-trip/handler.ts`
+- Create: `supabase/functions/complete-trip/clients.ts`
 - Create: `supabase/functions/complete-trip/index.ts`
+- Create: `supabase/functions/demo-pay/handler.ts`
 - Create: `supabase/functions/demo-pay/index.ts`
 - Create: `apps/rider/lib/src/trip/receipt_screen.dart`
 - Create: `apps/rider/lib/src/trip/rating_sheet.dart`
 - Create: `apps/rider/lib/src/trip/trip_controller.dart`
 - Test: `supabase/functions/_tests/settle.test.ts`
+- Test: `supabase/functions/_tests/complete_trip_handler.test.ts`
+- Test: `supabase/functions/_tests/demo_pay_handler.test.ts`
 - Test: `apps/rider/test/trip/receipt_screen_test.dart`
+- Test: `apps/rider/test/trip/trip_controller_test.dart`
 
 **Interfaces:**
-- Consumes: `Payment`, `PayMethod`, `PaymentState` (Task 4), `TripState` (Task 3), `Trip` (Task 4), `Rating` (Task 4), `FareCalculator` (Task 2)
+- Consumes: `Payment`, `PayMethod`, `PaymentState` (Task 4), `TripState` (Task 3), `Trip` (Task 4), `Rating` (Task 4), `FareCalculator` (Task 2), `TripRepository` (Task 8)
 - Produces:
-  - `supabase/functions/complete-trip/ledger.ts` → `export interface Settlement { fareGhs: number; commissionGhs: number; driverPayoutGhs: number; }`, `export function settleFare(fareGhs: number, commissionRate?: number): Settlement` with `commissionRate` defaulting to `0.15`, and `export function settleAgainstTripState(input: { tripState: string; paymentState: string; settlement: Settlement }): { shouldCharge: boolean; paymentState: 'succeeded' | 'voided'; ledgerKinds: string[] }` returning `{shouldCharge: false, paymentState: 'voided', ledgerKinds: ['void']}` whenever the trip is cancelled.
-  - POST `complete-trip` `{tripId}` → `{trip, settlement, paymentState}`.
-  - POST `demo-pay` `{tripId, method}` → `{payment: Payment, state: PaymentState}`. Never contacts a real provider; it writes a `payments` row with `is_demo = true` and a synthetic reference.
-  - `TripController({required TripRepository trips})` with `Trip? trip`, `bool busy`, `String? error`, `Settlement? settlement`, `Future<void> complete()`, `Future<void> pay({required PayMethod method})`.
+  - `supabase/functions/complete-trip/ledger.ts` → `export interface Settlement { fareGhs: number; commissionGhs: number; driverPayoutGhs: number; }`, `export function settleFare(fareGhs: number, commissionRate?: number): Settlement` with `commissionRate` defaulting to `0.15`, throwing `TypeError` on a non-finite argument, and `export function settleAgainstTripState(input: { tripState: string; paymentState: string; settlement: Settlement }): { shouldCharge: boolean; paymentState: 'pending' | 'succeeded' | 'voided'; ledgerKinds: string[] }` returning `{shouldCharge: false, paymentState: 'voided', ledgerKinds: ['void']}` whenever the trip is cancelled. **The return type includes `'pending'`; the Interfaces block previously omitted it and the test asserts it.**
+  - `supabase/functions/complete-trip/handler.ts` → `export interface CompleteDeps { findTrip(tripId: string): Promise<TripRow | null>; findOpenPayment(tripId: string): Promise<PaymentRow | null>; markPaymentSucceeded(paymentId: string): Promise<boolean>; markPaymentVoided(paymentId: string): Promise<boolean>; writeLedger(tripId: string, driverId: string, entries: LedgerEntryInput[]): Promise<{ ok: boolean }>; writePayout(tripId: string, driverId: string, amountGhs: number): Promise<{ ok: boolean }>; writeRating(input: RatingInput): Promise<{ ok: boolean; duplicate: boolean }>; }` and `export async function handleComplete(input: { deps: CompleteDeps; callerId: string; tripId: string; rating?: { stars: number; comment: string } }): Promise<Response>`. The handler imports no supabase-js, so a fake `CompleteDeps` exercises every branch.
+  - `supabase/functions/complete-trip/clients.ts` → `export function buildCompleteDeps(supabaseUrl: string, serviceKey: string): CompleteDeps`.
+  - `supabase/functions/complete-trip/index.ts` — thin wiring only: the `Bearer ` scheme check, the stripped-token `getUser(token)`, `buildCompleteDeps(...)`, and one `serve()`.
+  - `supabase/functions/demo-pay/handler.ts` → `export interface DemoPayDeps { findTrip(tripId: string): Promise<TripRow | null>; findOpenPayment(tripId: string, payerId: string): Promise<PaymentRow | null>; createPayment(input: PaymentInput): Promise<PaymentRow | null>; }` and `export async function handleDemoPay(input: { deps: DemoPayDeps; callerId: string; tripId: string; method: string }): Promise<Response>`, with the same no-supabase-js property.
+  - POST `complete-trip` `{tripId, rating?}` → `{trip, settlement, paymentState}`. `rating` is the **rider's** rating of the driver; the driver's half of the two-way rating is Task 14.
+  - POST `demo-pay` `{tripId, method}` → `{payment: Payment, state: PaymentState}`. Never contacts a real provider; it writes a `payments` row with `is_demo = true`. Reuses an existing `pending` payment rather than inserting a second one, because `complete-trip` reads the newest row and a second insert would orphan the first forever.
+  - `TripController({required TripRepository trips})` with `Trip? trip`, `bool busy`, `String? error`, `Settlement? settlement`, `Future<void> complete({int? stars, String comment})`, `Future<void> pay({required PayMethod method})`. **A failed `complete` or `pay` must set `error` and must not clear `settlement`; the same rollback discipline Task 10 applied to `sosRaised`.**
   - `ReceiptScreen({required Trip trip, required Settlement settlement, required PaymentState paymentState, required void Function(int stars, String comment) onRated})` — keys `receiptTotal`, `ratingStars`, `submitRatingButton`.
-  - `RatingSheet({required void Function(int stars, String comment) onSubmit})` — key `submitRatingButton`, 1-5 star row, optional comment field.
-  - `Rating.isValidStars` already exists from Task 4; reuse it.
-- Widget keys this task owns: `receiptTotal`, `ratingStars`, `ratingComment`, `submitRatingButton`, `payButton`, `cashButton`, `momoButton`.
+  - `RatingSheet({required void Function(int stars, String comment) onSubmit, String? headline})` — keys `ratingStars`, `ratingComment`, `submitRatingButton`, `star-1`..`star-5`, 1-5 star row, optional comment field.
+  - `Rating.isValidStars` already exists from Task 4; the handler **uses** it, so a 0 or 6 stars is a 400 and never reaches the `ratings` table.
+- Widget keys this task owns: `receiptTotal`, `ratingStars`, `ratingComment`, `submitRatingButton`, `star-1`..`star-5`, `payButton`, `cashButton`, `momoButton`.
+
+**Three requirements this task's previous draft did not deliver at all.** Each is a named deliverable below, not an improvement:
+1. `trip_controller.dart` was in the Files list and in the Interfaces, and **no step wrote it**. Step 14 writes it.
+2. Nothing ever inserted a `ratings` row, so the task titled "two-way rating" delivered a star row that called a callback no production caller implemented. `ratings` has a SELECT policy only, so RLS default-denies a client INSERT and the write **must** go through a service-role path. `complete-trip` is that path: it already authenticates and already authorises to the trip's two parties. `ratings` carries `unique (trip_id, from_role)`, so a second rating from the same role is a duplicate, not a second row.
+3. Neither Edge Function had a test, and `serve()` at module scope makes an un-inlined function unimportable — the same Critical the Task 10 review raised against `cancel-trip/index.ts`. The two handlers and their `Deps` port sets are what make these testable.
 
 - [ ] **Step 1: Write the failing settlement test**
 
 `supabase/functions/_tests/settle.test.ts`:
 
 ```ts
-import { assertEquals } from 'https://deno.land/std@0.224.0/testing/asserts.ts';
+import {
+  assertEquals,
+  assertThrows,
+} from 'https://deno.land/std@0.224.0/testing/asserts.ts';
 import { settleAgainstTripState, settleFare } from '../complete-trip/ledger.ts';
 
 Deno.test('platform takes 15 percent of the fare', () => {
@@ -8830,6 +8848,28 @@ Deno.test('an ongoing trip cannot be settled', () => {
   assertEquals(r.paymentState, 'pending');
 });
 
+Deno.test('a non-finite fare is refused rather than settled as NaN', () => {
+  // Math.max(0, NaN) is NaN, and numeric(10,2) accepts a NaN written by a
+  // privileged role, so an unguarded fare reaches the ledger as NaN.
+  assertThrows(() => settleFare(Number.NaN), TypeError);
+  assertThrows(() => settleFare(Number.POSITIVE_INFINITY), TypeError);
+  assertThrows(() => settleFare(20.4, Number.NaN), TypeError);
+});
+
+Deno.test('a settlement never leaves the zero-to-fare band', () => {
+  for (const fare of [0, 0.01, 0.05, 6, 20.4, 20.42, 33.33, 112221, -5]) {
+    for (const rate of [0.15, 0.2, 0, 1]) {
+      const s = settleFare(fare, rate);
+      assertEquals(s.fareGhs >= 0, true, `fare ${fare} rate ${rate}`);
+      assertEquals(
+        s.driverPayoutGhs >= 0 && s.driverPayoutGhs <= s.fareGhs,
+        true,
+        `payout ${s.driverPayoutGhs} outside 0..${s.fareGhs} at fare ${fare} rate ${rate}`,
+      );
+    }
+  }
+});
+
 Deno.test('zero fare still settles without negative commission', () => {
   const s = settleFare(0);
   assertEquals(s.commissionGhs, 0);
@@ -8859,6 +8899,14 @@ export interface Settlement {
 const round2 = (v: number) => Math.round(v * 100) / 100;
 
 export function settleFare(fareGhs: number, commissionRate = 0.15): Settlement {
+  // Math.max(0, NaN) is NaN, so an unguarded non-finite fare would write NaN
+  // into numeric(10,2). A corrupt fare settles as zero rather than as NaN.
+  if (!Number.isFinite(fareGhs)) {
+    throw new TypeError(`fareGhs must be finite, got ${fareGhs}`);
+  }
+  if (!Number.isFinite(commissionRate)) {
+    throw new TypeError(`commissionRate must be finite, got ${commissionRate}`);
+  }
   const fare = Math.max(0, round2(fareGhs));
   const commission = round2(fare * commissionRate);
   return {
@@ -8891,9 +8939,14 @@ export function settleAgainstTripState(input: {
 cd ~/meet-n-go/supabase && deno test functions/_tests/settle.test.ts
 ```
 
-Expected: 7 tests pass.
+Expected: 9 tests pass — the original 7 plus a non-finite-fare refusal and a band check that
+the settlement never leaves `0..fareGhs`.
 
-- [ ] **Step 5: Write `complete-trip/index.ts`**
+- [ ] **Step 5: Write the `complete-trip` body**
+
+Write the whole body in this one `serve()` callback so the logic is in one place, then split
+it into `handler.ts` + `clients.ts` in Step 7. Every behaviour written here must survive that
+split unchanged.
 
 ```ts
 import { serve } from 'https://deno.land/std@0.224.0/http/server.ts';
@@ -8914,8 +8967,20 @@ serve(async (req) => {
     { global: { headers: { Authorization: req.headers.get('Authorization')! } } },
   );
 
-  const { data: userData } = await userClient.auth.getUser();
-  if (!userData.user) {
+  // supabase-js only sets Authorization when the header is absent, so a service
+  // key on this client would be the fallback credential for every call without
+  // a forwarded bearer. The caller identity therefore comes from the stripped
+  // token, never from a key.
+  const auth = req.headers.get('Authorization') ?? '';
+  if (!auth.startsWith('Bearer ')) {
+    return new Response(JSON.stringify({ error: 'unauthenticated' }), {
+      status: 401,
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+    });
+  }
+  const token = auth.slice('Bearer '.length);
+  const { data: userData, error: userError } = await userClient.auth.getUser(token);
+  if (userError || !userData.user) {
     return new Response(JSON.stringify({ error: 'unauthenticated' }), {
       status: 401,
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
@@ -8923,7 +8988,18 @@ serve(async (req) => {
   }
 
   const { tripId } = await req.json();
-  const { data: trip } = await service.from('trips').select('*').eq('id', tripId).single();
+  const { data: tripRows, error: tripError } = await service
+    .from('trips')
+    .select('*')
+    .eq('id', tripId)
+    .limit(1);
+  if (tripError) {
+    return new Response(JSON.stringify({ error: 'trip lookup failed' }), {
+      status: 500,
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+    });
+  }
+  const trip = tripRows?.[0] ?? null;
   if (!trip) {
     return new Response(JSON.stringify({ error: 'trip not found' }), {
       status: 404,
@@ -8940,13 +9016,13 @@ serve(async (req) => {
   }
 
   const settlement = settleFare(Number(trip.fare_ghs));
-  const { data: payment } = await service
+  const { data: paymentRows } = await service
     .from('payments')
     .select('*')
     .eq('trip_id', trip.id)
     .order('created_at', { ascending: false })
-    .limit(1)
-    .maybeSingle();
+    .limit(1);
+  const payment = paymentRows?.[0] ?? null;
 
   const decision = settleAgainstTripState({
     tripState: trip.state,
@@ -8956,9 +9032,25 @@ serve(async (req) => {
 
   if (!decision.shouldCharge) {
     if (payment && payment.state !== 'voided') {
-      await service.from('payments').update({ state: 'voided' }).eq('id', payment.id);
+      const { data: voidedRows, error: voidError } = await service
+        .from('payments')
+        .update({ state: 'voided' })
+        .eq('id', payment.id)
+        .select('id');
+      if (voidError) {
+        return new Response(JSON.stringify({ error: 'void write failed' }), {
+          status: 500,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+      if (voidedRows?.length !== 1) {
+        return new Response(JSON.stringify({ error: 'payment not found' }), {
+          status: 404,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
       if (trip.driver_id) {
-        await service.from('ledger_entries').insert({
+        const { error: ledgerError } = await service.from('ledger_entries').insert({
           driver_id: trip.driver_id,
           trip_id: trip.id,
           amount_ghs: 0,
@@ -8966,6 +9058,12 @@ serve(async (req) => {
           note: 'Trip was not completed, charge voided',
           is_demo: true,
         });
+        if (ledgerError) {
+          return new Response(JSON.stringify({ error: 'void ledger write failed' }), {
+            status: 500,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
       }
     }
     return new Response(
@@ -8975,14 +9073,24 @@ serve(async (req) => {
   }
 
   if (payment) {
-    await service.from('payments').update({ state: 'succeeded' }).eq('id', payment.id);
+    const { data: paidRows, error: paidError } = await service
+      .from('payments')
+      .update({ state: 'succeeded' })
+      .eq('id', payment.id)
+      .select('id');
+    if (paidError || paidRows?.length !== 1) {
+      return new Response(JSON.stringify({ error: 'payment write failed' }), {
+        status: paidError ? 500 : 404,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
   }
   if (trip.driver_id) {
-    await service.from('ledger_entries').insert([
+    const { error: ledgerError } = await service.from('ledger_entries').insert([
       {
         driver_id: trip.driver_id,
         trip_id: trip.id,
-        amount_ghs: settlement.driverPayoutGhs,
+        amount_ghs: settlement.fareGhs,
         kind: 'fare',
         note: 'Trip fare',
         is_demo: true,
@@ -8990,18 +9098,30 @@ serve(async (req) => {
       {
         driver_id: trip.driver_id,
         trip_id: trip.id,
-        amount_ghs: -settlement.commissionGhs,
+        amount_ghs: -(settlement.fareGhs - settlement.driverPayoutGhs),
         kind: 'commission',
         note: 'Platform commission 15%',
         is_demo: true,
       },
     ]);
-    await service.from('payouts').insert({
+    if (ledgerError) {
+      return new Response(JSON.stringify({ error: 'ledger write failed' }), {
+        status: 500,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+    const { error: payoutError } = await service.from('payouts').insert({
       driver_id: trip.driver_id,
       trip_id: trip.id,
       amount_ghs: settlement.driverPayoutGhs,
       is_demo: true,
     });
+    if (payoutError) {
+      return new Response(JSON.stringify({ error: 'payout write failed' }), {
+        status: 500,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
   }
 
   return new Response(
@@ -9011,7 +9131,9 @@ serve(async (req) => {
 });
 ```
 
-- [ ] **Step 6: Write `demo-pay/index.ts`**
+- [ ] **Step 6: Write the `demo-pay` body**
+
+Same shape as Step 5, split in Step 7.
 
 ```ts
 import { serve } from 'https://deno.land/std@0.224.0/http/server.ts';
@@ -9033,8 +9155,20 @@ serve(async (req) => {
     { global: { headers: { Authorization: req.headers.get('Authorization')! } } },
   );
 
-  const { data: userData } = await userClient.auth.getUser();
-  if (!userData.user) {
+  // supabase-js only sets Authorization when the header is absent, so a service
+  // key on this client would be the fallback credential for every call without
+  // a forwarded bearer. The caller identity therefore comes from the stripped
+  // token, never from a key.
+  const auth = req.headers.get('Authorization') ?? '';
+  if (!auth.startsWith('Bearer ')) {
+    return new Response(JSON.stringify({ error: 'unauthenticated' }), {
+      status: 401,
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+    });
+  }
+  const token = auth.slice('Bearer '.length);
+  const { data: userData, error: userError } = await userClient.auth.getUser(token);
+  if (userError || !userData.user) {
     return new Response(JSON.stringify({ error: 'unauthenticated' }), {
       status: 401,
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
@@ -9049,10 +9183,43 @@ serve(async (req) => {
     });
   }
 
-  const { data: trip } = await service.from('trips').select('*').eq('id', tripId).single();
+  const { data: tripRows, error: tripError } = await service
+    .from('trips')
+    .select('*')
+    .eq('id', tripId)
+    .limit(1);
+  if (tripError) {
+    return new Response(JSON.stringify({ error: 'trip lookup failed' }), {
+      status: 500,
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+    });
+  }
+  const trip = tripRows?.[0] ?? null;
   if (!trip || trip.rider_id !== userData.user.id) {
     return new Response(JSON.stringify({ error: 'not your trip' }), {
       status: 404,
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+    });
+  }
+
+  if (trip.state === 'completed' || trip.state === 'cancelled') {
+    return new Response(JSON.stringify({ error: 'trip is not payable' }), {
+      status: 409,
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+    });
+  }
+
+  const { data: openRows } = await service
+    .from('payments')
+    .select('*')
+    .eq('trip_id', trip.id)
+    .eq('payer_id', userData.user.id)
+    .eq('state', 'pending')
+    .order('created_at', { ascending: false })
+    .limit(1);
+  const open = openRows?.[0] ?? null;
+  if (open) {
+    return new Response(JSON.stringify({ payment: open, state: open.state }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     });
   }
@@ -9086,19 +9253,87 @@ serve(async (req) => {
 });
 ```
 
-- [ ] **Step 7: Type-check and deploy both functions**
+- [ ] **Step 7: Extract the two handlers behind `Deps` port sets, and write the ratings path**
+
+The Step 5 and Step 6 code is a single `serve()` callback each, so neither file is importable and neither has a test. Task 10's review raised this against `cancel-trip/index.ts` as a Critical for exactly that reason, and the shape that fixed it there is the one to copy: `offers/handler.ts` is tested through an `OfferDeps` port set, and `request-ride/{request,compensate}.ts` and `offers/{command,resolve}.ts` are all extracted the same way.
+
+Split each function into three files, leaving `index.ts` as wiring only — the `Bearer ` scheme check, the stripped-token `getUser(token)`, the `build*Deps` call, one `serve()`:
+
+```
+supabase/functions/complete-trip/handler.ts   handleComplete(input) -> Response, no supabase-js import
+supabase/functions/complete-trip/clients.ts   buildCompleteDeps(url, serviceKey) -> CompleteDeps
+supabase/functions/complete-trip/index.ts     wiring
+supabase/functions/demo-pay/handler.ts        handleDemoPay(input) -> Response, no supabase-js import
+supabase/functions/demo-pay/index.ts          wiring
+```
+
+Nothing may be dropped in the move. Every status code, every refusal message, the `trip lookup failed` / `void write failed` / `void ledger write failed` / `payment write failed` / `ledger write failed` / `payout write failed` / `trip is not payable` 500s, the `payments` row-count refusals, the `isTripStateName`-style state guard on `trip.state`, and the two sign conventions in the ledger inserts all survive into the handler verbatim.
+
+**The ratings path, which nothing in the previous draft delivered.** `complete-trip` accepts an optional `rating: { stars, comment }` and, when present:
+
+1. refuses `stars` outside 1..5 with a 400, using `Rating.isValidStars`'s rule — the migration carries `check (stars between 1 and 5)`, so a bad value would otherwise be a 500 from a CHECK violation;
+2. inserts one `ratings` row with `rater_id = trip.rider_id`, `ratee_id = trip.driver_id`, `from_role = 'rider'`, `trip_id`, `stars`, `comment`. A service-role client, because `ratings` has a SELECT policy only and RLS default-denies a client INSERT;
+3. treats `unique (trip_id, from_role)` rejecting the insert as a **409 duplicate**, not a 500 — a rider who re-rates has made a mistake, not hit a fault;
+4. never fails the settlement because the rating failed. A 409 on the rating is reported in the response body alongside a successful `paymentState`, because refusing to settle a completed trip over a rating is the worse failure.
+
+The driver's half of the two-way rating is **Task 14's** `DriverChatScreen` sibling, not this task's. Say so in one comment; do not build a second writer here.
+
+**The identity that makes the money correct.** The two `ledger_entries` amounts must sum to `payouts.amount_ghs` **and** to `Settlement.driverPayoutGhs`, exactly:
+
+- the `fare` entry is the **gross** `settlement.fareGhs`;
+- the `commission` entry is `-(settlement.fareGhs - settlement.driverPayoutGhs)`, derived rather than `settlement.commissionGhs`, so the sum holds by construction and not by coincidence;
+- the previous draft had the fare entry carrying the **net** payout *and* a negative commission against the same `driver_id`, which is `not null` in the migration. That netted 14.28 against a 17.34 payout. Task 15's `EarningsSnapshot.fromLedger` sums `ledger_entries`, so the driver's wallet would have shown 14.28 forever.
+
+Pin it in `complete_trip_handler.test.ts` with a real assertion over the fakes, not an arithmetic identity written in the test — the draft's version of this test asserted `round2(f - (f - payout)) == payout`, which is arithmetic about the test's own expression and passes whatever the handler returns.
+
+`supabase/functions/_tests/complete_trip_handler.test.ts` and `supabase/functions/_tests/demo_pay_handler.test.ts` must cover, with fake `Deps` and a test that fails when the behaviour is removed:
+
+| behaviour | what the mutation is |
+|---|---|
+| unauthenticated caller gets 401 | return 200 |
+| a trip that is not the caller's gets 403, and a missing trip gets 404 | return 200 for both |
+| `trip.state` outside the six known values is refused | accept it |
+| the row-count refusal when `markPaymentVoided` writes zero rows | drop the check |
+| the row-count refusal when `markPaymentSucceeded` writes zero rows | drop the check |
+| a failed ledger write answers 500 rather than 200 | ignore the flag |
+| a failed payout write answers 500 rather than 200 | ignore the flag |
+| the two ledger amounts sum to the payout | credit the net twice |
+| `stars` 0 and 6 are 400 | write the row anyway |
+| a duplicate `ratings` insert is 409, not 500 | surface it as 500 |
+| a duplicate rating does not fail the settlement | refuse to settle |
+| `demo-pay` reuses an existing `pending` payment | insert a second one |
+| `demo-pay` on a completed or cancelled trip is 409 | accept it |
+| `demo-pay` with a method outside momo/cash/card is 400 | accept it |
+
+- [ ] **Step 8: Type-check and test both functions**
 
 ```bash
 cd ~/meet-n-go/supabase
-deno check functions/complete-trip/index.ts
-deno check functions/demo-pay/index.ts
-supabase functions deploy complete-trip
-supabase functions deploy demo-pay
-cd ~/meet-n-go && git add -A
-git -c user.email=opencode@local -c user.name=opencode commit -m "feat(functions): complete-trip settlement and demo-pay"
+deno check functions/complete-trip/index.ts functions/complete-trip/handler.ts \
+          functions/demo-pay/index.ts functions/demo-pay/handler.ts
+deno test --allow-env --allow-read=functions/ functions/_tests/
+deno lint functions/
 ```
 
-- [ ] **Step 8: Write the failing receipt test**
+**Both permission flags are required and are the same ones CI passes.** Two pre-existing
+suites — `clients_wiring.test.ts` and `cancel_clients_wiring.test.ts` — are static text
+assertions over `functions/` source, and without `--allow-read` they fail with an uncaught
+error rather than a clean skip. Omitting the flags looks like a product failure and is not
+one.
+
+Expected: every Deno test passes and both tools exit 0. There is deliberately **no `dart format` and no `deno fmt` step** — this repo has no formatting standard and CI runs neither.
+
+- [ ] **Step 9: Deploy both functions**
+
+```bash
+cd ~/meet-n-go/supabase
+supabase functions deploy complete-trip
+supabase functions deploy demo-pay
+```
+
+**This step cannot run on the build host** — `supabase login` and `functions deploy` need interactive browser auth against a real project. Run it when a project is linked, and until then record the deploy as unverified rather than claiming it passed. A live round trip for all four Edge Functions is unverified for the same reason; Task 18's runbook owns it.
+
+- [ ] **Step 10: Write the failing receipt test**
 
 `apps/rider/test/trip/receipt_screen_test.dart`:
 
@@ -9108,6 +9343,15 @@ import 'package:flutter_screenutil/flutter_screenutil.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:meetngo_rider/src/trip/receipt_screen.dart';
 import 'package:mng_core/mng_core.dart';
+
+// The default flutter_test surface is 800x600, where ScreenUtil scales .w by
+// 2.05 and .h by 0.525, so a widget that fits 390x844 can land off-screen and a
+// tap can hit nothing. Pin the surface to the design size.
+void useDesignSurface(WidgetTester tester) {
+  tester.view.physicalSize = const Size(1170, 2532);
+  tester.view.devicePixelRatio = 3.0;
+  addTearDown(tester.view.reset);
+}
 
 Trip completedTrip() => Trip(
       id: 't1',
@@ -9129,7 +9373,7 @@ Widget wrap({
 }) =>
     ScreenUtilInit(
       designSize: const Size(390, 844),
-      builder: (_, __) => MaterialApp(
+      builder: (_, _) => MaterialApp(
         theme: MngTheme.light,
         home: ReceiptScreen(
           trip: completedTrip(),
@@ -9139,34 +9383,67 @@ Widget wrap({
             driverPayoutGhs: 17.34,
           ),
           paymentState: state,
-          onRated: onRated ?? (_, __) {},
+          onRated: onRated ?? (_, _) {},
         ),
       ),
     );
 
 void main() {
   testWidgets('total is the settled fare', (tester) async {
+    useDesignSurface(tester);
     await tester.pumpWidget(wrap());
     expect(find.byKey(const Key('receiptTotal')), findsOneWidget);
-    expect(find.text('GHS 20.40'), findsWidgets);
+    expect(
+      tester.widget<Text>(find.byKey(const Key('receiptTotal'))).data,
+      'GHS 20.40',
+    );
   });
 
   testWidgets('receipt states the money was demo', (tester) async {
+    useDesignSurface(tester);
     await tester.pumpWidget(wrap());
     expect(find.text('Demo payment — no real money moved'), findsOneWidget);
   });
 
-  testWidgets('rating stars are shown and tappable', (tester) async {
-    int? stars;
-    await tester.pumpWidget(wrap(onRated: (s, c) => stars = s));
+  testWidgets('choosing a star highlights it and only the stars below',
+      (tester) async {
+    useDesignSurface(tester);
+    await tester.pumpWidget(wrap());
     expect(find.byKey(const Key('ratingStars')), findsOneWidget);
-    await tester.tap(find.byKey(const Key('ratingStars')));
+    Icon iconIn(String key) => tester.widget<Icon>(
+          find.descendant(
+            of: find.byKey(Key(key)),
+            matching: find.byType(Icon),
+          ),
+        );
+    expect(iconIn('star-1').icon, Icons.star_border);
+    await tester.tap(find.byKey(const Key('star-4')));
     await tester.pump();
-    expect(stars, isNotNull);
-    expect(stars, inInclusiveRange(1, 5));
+    expect(iconIn('star-4').icon, Icons.star);
+    expect(iconIn('star-3').icon, Icons.star);
+    expect(iconIn('star-5').icon, Icons.star_border);
+  });
+
+  testWidgets('submitting sends the chosen stars and the comment',
+      (tester) async {
+    useDesignSurface(tester);
+    int? stars;
+    String? comment;
+    await tester.pumpWidget(wrap(onRated: (s, c) {
+      stars = s;
+      comment = c;
+    }));
+    await tester.tap(find.byKey(const Key('star-4')));
+    await tester.pump();
+    await tester.enterText(find.byKey(const Key('ratingComment')), 'Great');
+    await tester.tap(find.byKey(const Key('submitRatingButton')));
+    await tester.pump();
+    expect(stars, 4);
+    expect(comment, 'Great');
   });
 
   testWidgets('driver payout is itemised on the receipt', (tester) async {
+    useDesignSurface(tester);
     await tester.pumpWidget(wrap());
     expect(find.text('Driver payout'), findsOneWidget);
     expect(find.text('GHS 17.34'), findsOneWidget);
@@ -9174,13 +9451,28 @@ void main() {
 
   testWidgets('a voided payment shows the void notice instead of a total',
       (tester) async {
+    useDesignSurface(tester);
     await tester.pumpWidget(wrap(state: PaymentState.voided));
     expect(find.text('This trip was not charged'), findsOneWidget);
+    expect(
+      tester.widget<Text>(find.byKey(const Key('receiptTotal'))).data,
+      'GHS 0.00',
+    );
+  });
+
+  testWidgets('no overflow at 200% text scale', (tester) async {
+    useDesignSurface(tester);
+    tester.platformDispatcher.textScaleFactorTestValue = 2.0;
+    addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
+    await tester.pumpWidget(wrap());
+    await tester.pump();
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets('submitting without a star selection is blocked', (tester) async {
     bool called = false;
-    await tester.pumpWidget(wrap(onRated: (_, __) => called = true));
+    useDesignSurface(tester);
+    await tester.pumpWidget(wrap(onRated: (_, _) => called = true));
     await tester.tap(find.byKey(const Key('submitRatingButton')));
     await tester.pump();
     expect(called, isFalse);
@@ -9189,7 +9481,7 @@ void main() {
 }
 ```
 
-- [ ] **Step 9: Run it and confirm it fails**
+- [ ] **Step 11: Run it and confirm it fails**
 
 ```bash
 cd ~/meet-n-go/apps/rider && flutter test test/trip/
@@ -9197,7 +9489,7 @@ cd ~/meet-n-go/apps/rider && flutter test test/trip/
 
 Expected: FAIL — `ReceiptScreen` is not defined.
 
-- [ ] **Step 10: Write `rating_sheet.dart`**
+- [ ] **Step 12: Write `rating_sheet.dart`**
 
 `apps/rider/lib/src/trip/rating_sheet.dart`:
 
@@ -9249,8 +9541,10 @@ class _RatingSheetState extends State<RatingSheet> {
                     padding: EdgeInsets.symmetric(horizontal: 4.w),
                     child: Icon(
                       i <= (_stars ?? 0) ? Icons.star : Icons.star_border,
-                      size: 36,
-                      color: MngColors.primary,
+                      size: 36.w,
+                      color: i <= (_stars ?? 0)
+                          ? MngColors.primary
+                          : MngColors.textSub,
                     ),
                   ),
                 ),
@@ -9265,7 +9559,8 @@ class _RatingSheetState extends State<RatingSheet> {
           ),
           SizedBox(height: 16.h),
           if (_errorShown) ...[
-            Text('Pick a rating first',
+            Text(
+              'Pick a rating first',
                 style: const TextStyle(color: MngColors.error)),
             SizedBox(height: 8.h),
           ],
@@ -9289,7 +9584,7 @@ class _RatingSheetState extends State<RatingSheet> {
 }
 ```
 
-- [ ] **Step 11: Write `receipt_screen.dart`**
+- [ ] **Step 13: Write `receipt_screen.dart`**
 
 `apps/rider/lib/src/trip/receipt_screen.dart`:
 
@@ -9356,16 +9651,27 @@ class ReceiptScreen extends StatelessWidget {
                     _row('Driver payout', 'GHS ${settlement.driverPayoutGhs.toStringAsFixed(2)}'),
                     Divider(color: MngColors.divider, height: 24.h),
                     Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        Text('Total',
-                            style: MngTheme.light.textTheme.titleMedium),
-                        Text(
-                          voided
-                              ? 'GHS 0.00'
-                              : 'GHS ${settlement.fareGhs.toStringAsFixed(2)}',
-                          key: const Key('receiptTotal'),
-                          style: MngTheme.light.textTheme.titleLarge,
+                        Flexible(
+                          child: Text(
+                            'Total',
+                            overflow: TextOverflow.ellipsis,
+                            style: MngTheme.light.textTheme.titleMedium,
+                          ),
+                        ),
+                        SizedBox(width: 12.w),
+                        Flexible(
+                          child: FittedBox(
+                            fit: BoxFit.scaleDown,
+                            alignment: Alignment.centerRight,
+                            child: Text(
+                              voided
+                                  ? 'GHS 0.00'
+                                  : 'GHS ${settlement.fareGhs.toStringAsFixed(2)}',
+                              key: const Key('receiptTotal'),
+                              style: MngTheme.light.textTheme.titleLarge,
+                            ),
+                          ),
                         ),
                       ],
                     ),
@@ -9405,30 +9711,89 @@ class ReceiptScreen extends StatelessWidget {
   Widget _row(String label, String value) => Padding(
         padding: EdgeInsets.symmetric(vertical: 6.h),
         child: Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
-            Text(label, style: MngTheme.light.textTheme.bodySmall),
-            Text(value, style: MngTheme.light.textTheme.bodyMedium),
+            Flexible(
+              child: Text(
+                label,
+                overflow: TextOverflow.ellipsis,
+                style: MngTheme.light.textTheme.bodySmall,
+              ),
+            ),
+            SizedBox(width: 12.w),
+            Flexible(
+              child: FittedBox(
+                fit: BoxFit.scaleDown,
+                alignment: Alignment.centerRight,
+                child: Text(value, style: MngTheme.light.textTheme.bodyMedium),
+              ),
+            ),
           ],
         ),
       );
 }
 ```
 
-- [ ] **Step 12: Run the receipt tests and confirm they pass**
+- [ ] **Step 14: Run the receipt tests and confirm they pass**
 
 ```bash
-cd ~/meet-n-go/apps/rider && flutter test test/trip/ && flutter analyze
+cd ~/meet-n-go/apps/rider && flutter test test/trip/ && flutter analyze --fatal-infos
 ```
 
-Expected: 6 tests pass.
+Expected: 8 tests pass and the analyser reports no issues. Bare `flutter analyze` also exits 1 on an info-severity diagnostic here, so `--fatal-infos` is for parity with CI rather than because bare would pass. **Count the tests by reading the runner's own final total, not by `grep -c "testWidgets("`**, which returns 0 for a file whose tests use plain `test(` and is not affected by indentation.
 
-- [ ] **Step 13: Commit**
+- [ ] **Step 15: Write the failing `trip_controller_test.dart`**
+
+`apps/rider/test/trip/trip_controller_test.dart`, against a `FakeTripRepository` that
+carries no Supabase client. Cover, each with a mutation that removes the behaviour:
+
+| behaviour | what the mutation is |
+|---|---|
+| `complete()` invokes the `complete-trip` function with the trip id and stores the returned settlement | never store it |
+| `complete(stars: 0)` is refused client-side and never reaches the function | send it anyway |
+| `complete(stars: 4, comment: 'Great')` forwards both | drop the comment |
+| a failed `complete` sets `error` and leaves `settlement` untouched | clear `settlement` |
+| a failed `pay` sets `error` | swallow it |
+| `busy` is true for the duration of a call and false after | leave it true forever |
+| `pay(method: PayMethod.cash)` forwards the method | hardcode momo |
+
+Then run it and confirm it fails: `ReceiptScreen` and `RatingSheet` exist by now, but
+`TripController` does not.
+
+- [ ] **Step 16: Write `trip_controller.dart`**
+
+`apps/rider/lib/src/trip/trip_controller.dart`. A `ChangeNotifier` over `TripRepository`,
+plus the two Edge Function invocations. It owns:
+
+- `Trip? trip`, `bool busy`, `String? error`, `Settlement? settlement`;
+- `Future<void> complete({int? stars, String comment})` — calls `complete-trip` with
+  `{tripId, rating: stars == null ? undefined : {stars, comment}}`; a client-side
+  `stars` outside 1..5 sets `error` and returns without a network call, using
+  `Rating.isValidStars`;
+- `Future<void> pay({required PayMethod method})` — calls `demo-pay`;
+- **every** failure path catches and sets `error`, and **none** of them clears
+  `settlement` or flips `busy` off without notifying. This is the discipline Task 10
+  applied to `sosRaised`: a screen that optimistically claims success and then fails
+  silently is worse than one that says nothing.
+
+Invoke the functions with `supabase.functions.invoke`, which **throws** on a non-2xx and
+whose `FunctionResponse` carries only `data` and `status` — there is no `error` field to
+read. Route every failure through `describeFunctionFailure(FunctionException)` from
+`lib/src/data/function_failure.dart`, which already exists and already maps `details`,
+a string `details`, and the status-derived fallback. Add its two new call sites to that
+file's existing comment if the locator list needs it.
+
+- [ ] **Step 17: Run the whole suite and commit**
 
 ```bash
+cd ~/meet-n-go/apps/rider && flutter test && flutter analyze --fatal-infos
+cd ~/meet-n-go/packages/mng_core && flutter test
+cd ~/meet-n-go/supabase && deno test --allow-env --allow-read=functions/ functions/_tests/ \
+  && deno check && deno lint functions/
 cd ~/meet-n-go && git add -A
-git -c user.email=opencode@local -c user.name=opencode commit -m "feat(rider): receipt, demo payment and two-way rating sheet"
+git -c user.email=opencode@local -c user.name=opencode commit -m "feat(rider): settlement, demo payment, receipt and the rider half of the rating"
 ```
+
+Expected: every suite green and both analysers clean. **The rider suite's total is 97 pre-existing plus this task's, so read the runner's own line rather than predicting a number** — a prediction that has been wrong in this project more than once, including twice in the commit that corrects a brief for being wrong.
 
 ---
 
