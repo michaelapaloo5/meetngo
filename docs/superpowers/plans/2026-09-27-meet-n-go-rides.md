@@ -2426,13 +2426,57 @@ git commit -m "feat(db): schema, PostGIS, RLS, trip transition guard, accept_off
 - Create: `supabase/functions/_shared/cors.ts`
 - Create: `supabase/functions/request-ride/fare.ts`
 - Create: `supabase/functions/request-ride/match.ts`
+- Create: `supabase/functions/request-ride/request.ts`
+- Create: `supabase/functions/request-ride/compensate.ts`
 - Create: `supabase/functions/request-ride/index.ts`
 - Test: `supabase/functions/_tests/fare.test.ts`
 - Test: `supabase/functions/_tests/match.test.ts`
+- Test: `supabase/functions/_tests/request.test.ts`
+- Test: `supabase/functions/_tests/compensate.test.ts`
 
 **Interfaces:**
 - Consumes: RPCs `trip_distance_km` (callable by anyone) and `match_offers_for_trip` (Task 5, **service-role only**: the migration revokes EXECUTE from `public`, `anon` and `authenticated`, so it must be called with the service-role client and never with a user's own client or from a Flutter app), `FareCalculator` semantics (Task 2)
-- Produces: POST `request-ride` with body `{category, pickup, dropoff, promoCode?, surge?}` returning `{trip, quote, offerDriverIds}`. Exports `computeFare(input: FareInput): FareQuote` and `pickDrivers(candidates: Candidate[], max: number): string[]` for unit tests.
+- Produces: POST `request-ride` with body `{category, pickup, dropoff, promoCode?, surge?}` returning `{trip, quote, offerDriverIds}`. Exports `computeFare(input: FareInput): FareQuote`, `promoDiscountGhs(grossFareGhs, percentOff, maxDiscountGhs): number`, `pickDrivers(candidates: Candidate[], max: number): string[]`, `parseRideRequest(body: unknown): RideRequestResult` and `deleteTripAndFail(deleteTrip, tripId, message): Promise<CompensatedFailure>` for unit tests.
+
+**Shipped shape, and the reason each of these is not the obvious smaller version.** Every one of
+these was a live defect in the first draft of this task; the code comments carry the long form.
+
+- **The client is a pure service-role client and the caller is authenticated with
+  `service.auth.getUser(token)`.** Do not pair `SUPABASE_SERVICE_ROLE_KEY` with a forwarded
+  `Authorization`: supabase-js sets `Authorization` only when it is absent, so the user's bearer wins,
+  PostgREST resolves the role to `authenticated`, and three calls fail at once — there is no INSERT
+  policy on `trips`, none on `offers`, and `match_offers_for_trip` is revoked (`42501`). Strip the
+  `Bearer ` prefix before calling `getUser`. `rider_id` comes from the validated user and never from
+  the body. Bypassing RLS is safe here only because that check is what authorises the insert.
+- **Everything is validated before the first RPC and before the insert**: the body is a JSON object,
+  the category is one of the three, each pin carries finite numeric `lat`/`lng`, `lat` is within
+  [-90, 90], `lng` is within [-180, 180], and `surge` is finite. The range check is not optional
+  because PostGIS *coerces* an out-of-range coordinate instead of rejecting it:
+  `st_astext('POINT(-0.187 999)'::geography)` is `POINT(-0.187 -81)`, 9618 km away, so `lat: 999`
+  prices as a real ride in the thousands of GHS. And a non-finite number is not caught downstream
+  either: `'NaN'::numeric(10,2)` inserts, `sum()` over it is NaN, and `fare_ghs >= 0` still passes.
+- **The promo discount is two passes over the category's own gross fare**: `computeFare` with
+  `discountGhs: 0`, then `promoDiscountGhs(gross.fareGhs, percent_off, max_discount_ghs)`, then
+  `computeFare` again. `percent_off / 100 * distanceKm * 1.8` hard-codes the *standard* per-km rate,
+  so it under-discounts a premium ride and ignores the base fare, the booking fee and the surge.
+- **`expires_at` is compared in TypeScript, not in the query.** A PostgREST filter value is a
+  literal, not SQL: `expires_at.gt.now()` is not evaluable, and PostgREST's own reference answers a
+  `now()`-dependent filter with "create a new view, or use a function". Add `expires_at` to the
+  `select` and apply the predicate to the row. The seeded `RIDE30` has a null expiry, so nothing is
+  broken today either way.
+- **The offers insert, the match RPC and the promo read all have their errors checked.** A dropped
+  error returns a success that is indistinguishable from the truth: no offers written, or a rider
+  charged full price for a code they supplied.
+- **A failure after the trip insert deletes the trip row before the 500.** The insert and the
+  fan-out are separate calls, and Task 8's `activeTrip()` selects `requested` trips, so an orphan
+  pins the rider's active trip and blocks every later ride request. The delete is the whole fix: no
+  ledger entry, no retry, no Task 5 RPC, since the row never became a real trip, and
+  `offers.trip_id` is `references trips on delete cascade`. A delete that itself fails is returned as
+  `cleanupError` rather than hidden behind a clean 500.
+- **The stored `pickup`/`dropoff` jsonb is normalised to `{label, address, point:{lat, lng}}`.**
+  `TripStop.fromJson` casts `json['point'] as Map<String, dynamic>` with no null case, so a pin
+  stored in the documented request shape `{label, address, lat, lng}` makes the rider's own trip
+  unparseable. `label` and `address` are coerced to strings for the same reason.
 
 - [ ] **Step 1: Write the failing unit tests**
 
@@ -2440,7 +2484,7 @@ git commit -m "feat(db): schema, PostGIS, RLS, trip transition guard, accept_off
 
 ```ts
 import { assertEquals } from 'https://deno.land/std@0.224.0/testing/asserts.ts';
-import { computeFare } from '../request-ride/fare.ts';
+import { computeFare, promoDiscountGhs, type RideCategoryName } from '../request-ride/fare.ts';
 
 Deno.test('standard 8km fare matches the Dart calculator', () => {
   const q = computeFare({ category: 'standard', distanceKm: 8, surge: 1, discountGhs: 0 });
@@ -2486,6 +2530,40 @@ Deno.test('over-large discount never yields a negative fare', () => {
   const q = computeFare({ category: 'standard', distanceKm: 0, surge: 1, discountGhs: 999 });
   assertEquals(q.fareGhs, 0);
 });
+
+// The seven cases above are all exact in binary once clamping is applied, so a
+// round2 that does nothing passes every one of them. Measured on deno 2.9.7:
+// the raw total here is 16.158 (the double nearest it is 16.158000000000001),
+// and 16.158 === 16.16 is false, so this is the only case in the file that
+// discriminates rounding from no rounding. The Dart suite still has no
+// equivalent case; see task-6-report.md.
+Deno.test('fare is rounded to 2 decimal places, not left at 3', () => {
+  // (5.00 + 1.80 * 3.7) * 1.3 + 1.00 = 16.158 raw, so 16.16 rounded.
+  const q = computeFare({ category: 'standard', distanceKm: 3.7, surge: 1.3, discountGhs: 0 });
+  assertEquals(q.fareGhs, 16.16);
+  assertEquals(q.fareGhs === 16.158, false);
+});
+
+// The discount is a share of the fare actually quoted, not of a distance
+// multiplied by the standard per-km rate, so a premium ride is discounted at the
+// premium rate. Same trip, same promo, measured on deno 2.9.7:
+//   standard 10 km at surge 1.2 grosses 28.60, premium grosses 40.60,
+//   so RIDE30 (30% off, capped at 40.00) takes 8.58 off a standard ride and
+//   12.18 off a premium one. The category-blind 1.8-per-km formula the brief
+//   used returns 5.40 for both and is caught by the exact literals.
+Deno.test('the same promo takes more off a premium ride than a standard one', () => {
+  const distanceKm = 10;
+  const surge = 1.2;
+  const discountFor = (category: RideCategoryName) =>
+    promoDiscountGhs(
+      computeFare({ category, distanceKm, surge, discountGhs: 0 }).fareGhs,
+      30,
+      40,
+    );
+  assertEquals(discountFor('standard'), 8.58);
+  assertEquals(discountFor('premium'), 12.18);
+  assertEquals(discountFor('premium') > discountFor('standard'), true);
+});
 ```
 
 `supabase/functions/_tests/match.test.ts`:
@@ -2524,18 +2602,196 @@ Deno.test('does not mutate the input array', () => {
 });
 ```
 
+`supabase/functions/_tests/request.test.ts`:
+
+```ts
+import { assert, assertEquals } from 'https://deno.land/std@0.224.0/testing/asserts.ts';
+import { parseRideRequest, type Pin } from '../request-ride/request.ts';
+
+const pin = (over: Partial<Pin> = {}): Pin => ({
+  label: 'Pickup',
+  address: 'Osu, Accra',
+  lat: 5.6037,
+  lng: -0.187,
+  ...over,
+});
+
+const body = (over: Record<string, unknown> = {}) => ({
+  category: 'standard',
+  pickup: pin(),
+  dropoff: pin({ label: 'Dropoff', address: 'Airport Residential', lat: 5.62 }),
+  ...over,
+});
+
+const refuse = (raw: unknown): string => {
+  const result = parseRideRequest(raw);
+  assert(!result.ok, `expected a refusal, got ${JSON.stringify(result)}`);
+  return result.error;
+};
+
+Deno.test('a valid request yields the category, both pins and the surge', () => {
+  const result = parseRideRequest(body());
+  assert(result.ok, JSON.stringify(result));
+  assertEquals(result.value.category, 'standard');
+  assertEquals(result.value.pickup.lat, 5.6037);
+  assertEquals(result.value.dropoff.lat, 5.62);
+  assertEquals(result.value.surge, 1);
+  assertEquals(result.value.promoCode, null);
+});
+
+Deno.test('a promo code is uppercased and anything that is not one is dropped', () => {
+  const upper = parseRideRequest(body({ promoCode: 'ride30' }));
+  assert(upper.ok, JSON.stringify(upper));
+  assertEquals(upper.value.promoCode, 'RIDE30');
+  const empty = parseRideRequest(body({ promoCode: '' }));
+  assert(empty.ok, JSON.stringify(empty));
+  assertEquals(empty.value.promoCode, null);
+  const numeric = parseRideRequest(body({ promoCode: 30 }));
+  assert(numeric.ok, JSON.stringify(numeric));
+  assertEquals(numeric.value.promoCode, null);
+});
+
+Deno.test('an absent surge defaults to 1 and label and address are coerced to strings', () => {
+  const result = parseRideRequest(
+    body({ pickup: pin({ label: 7 as unknown as string, address: null as unknown as string }) }),
+  );
+  assert(result.ok, JSON.stringify(result));
+  assertEquals(result.value.surge, 1);
+  assertEquals(result.value.pickup.label, '');
+  assertEquals(result.value.pickup.address, '');
+});
+
+Deno.test('a body that is not a JSON object is refused', () => {
+  assertEquals(refuse([]), 'body must be a JSON object');
+  assertEquals(refuse(5), 'body must be a JSON object');
+  assertEquals(refuse(null), 'body must be a JSON object');
+});
+
+Deno.test('a category outside the three the schema allows is refused', () => {
+  assertEquals(
+    refuse(body({ category: 'deluxe' })),
+    'category must be one of standard, premium, van',
+  );
+});
+
+// PostGIS coerces an out-of-range coordinate instead of rejecting it, so
+// `lat: 999` would otherwise become a real point 9618 km away and a quote in
+// the thousands. Measured on this host: `select st_astext('POINT(-0.187 999)'
+// ::geography)` returns `POINT(-0.187 -81)`. These four pin both bounds of
+// both axes; a one-sided check would pass all four.
+Deno.test('a lat above 90 is refused', () => {
+  assertEquals(refuse(body({ pickup: pin({ lat: 999 }) })), 'pickup lat must be within [-90, 90], got 999');
+});
+
+Deno.test('a lat below -90 is refused', () => {
+  assertEquals(
+    refuse(body({ pickup: pin({ lat: -91 }) })),
+    'pickup lat must be within [-90, 90], got -91',
+  );
+});
+
+Deno.test('an lng above 180 is refused', () => {
+  assertEquals(
+    refuse(body({ dropoff: pin({ lng: 181 }) })),
+    'dropoff lng must be within [-180, 180], got 181',
+  );
+});
+
+Deno.test('an lng below -180 is refused', () => {
+  assertEquals(
+    refuse(body({ dropoff: pin({ lng: -180.5 }) })),
+    'dropoff lng must be within [-180, 180], got -180.5',
+  );
+});
+
+Deno.test('the poles and the antimeridian are inside the range', () => {
+  const result = parseRideRequest(
+    body({ pickup: pin({ lat: 90, lng: 180 }), dropoff: pin({ lat: -90, lng: -180 }) }),
+  );
+  assert(result.ok, JSON.stringify(result));
+  assertEquals(result.value.pickup.lat, 90);
+  assertEquals(result.value.pickup.lng, 180);
+  assertEquals(result.value.dropoff.lat, -90);
+  assertEquals(result.value.dropoff.lng, -180);
+});
+
+Deno.test('a pin that is not an object, or whose coordinates are not finite numbers, is refused', () => {
+  assertEquals(refuse(body({ pickup: 'Osu' })), 'pickup must be an object');
+  assertEquals(
+    refuse(body({ pickup: pin({ lat: '5.6037' as unknown as number }) })),
+    'pickup must carry finite numeric lat and lng',
+  );
+  assertEquals(
+    refuse(body({ dropoff: pin({ lng: NaN }) })),
+    'dropoff must carry finite numeric lat and lng',
+  );
+  assertEquals(
+    refuse(body({ dropoff: pin({ lng: Infinity }) })),
+    'dropoff must carry finite numeric lat and lng',
+  );
+});
+
+Deno.test('a surge that is not a finite number is refused', () => {
+  assertEquals(refuse(body({ surge: 'x' })), 'surge must be a finite number');
+  assertEquals(refuse(body({ surge: 1e999 })), 'surge must be a finite number');
+  assertEquals(refuse(body({ surge: true })), 'surge must be a finite number');
+  assertEquals(refuse(body({ surge: NaN })), 'surge must be a finite number');
+});
+```
+
+`supabase/functions/_tests/compensate.test.ts`:
+
+```ts
+import { assertEquals } from 'https://deno.land/std@0.224.0/testing/asserts.ts';
+import { deleteTripAndFail, type DeleteTrip } from '../request-ride/compensate.ts';
+
+Deno.test('a failure after the insert deletes the trip row that was inserted', async () => {
+  const deleted: string[] = [];
+  const deleteTrip: DeleteTrip = (tripId) => {
+    deleted.push(tripId);
+    return Promise.resolve({ error: null });
+  };
+
+  const failure = await deleteTripAndFail(deleteTrip, 'trip-0001', 'offer insert failed');
+
+  assertEquals(deleted, ['trip-0001']);
+  assertEquals(failure, { error: 'offer insert failed' });
+});
+
+Deno.test('the original failure is still reported when the delete itself fails', async () => {
+  const deleteTrip: DeleteTrip = () =>
+    Promise.resolve({ error: { message: 'permission denied for table trips' } });
+
+  const failure = await deleteTripAndFail(deleteTrip, 'trip-0001', 'match failed');
+
+  assertEquals(failure, {
+    error: 'match failed',
+    cleanupError: 'permission denied for table trips',
+  });
+});
+```
+
 - [ ] **Step 2: Run them and confirm they fail**
 
 ```bash
-cd ~/meet-n-go/supabase && deno test functions/_tests/fare.test.ts functions/_tests/match.test.ts
+cd ~/meet-n-go/supabase && deno test functions/_tests/
 ```
 
-Expected: FAIL — `fare.ts` and `match.ts` do not exist.
+Expected: FAIL — `fare.ts`, `match.ts`, `request.ts` and `compensate.ts` do not exist.
 
 - [ ] **Step 3: Write `fare.ts`, mirroring the Dart calculator exactly**
 
 ```ts
-export type RideCategoryName = 'standard' | 'premium' | 'van';
+// The TypeScript twin of `FareCalculator` in
+// `packages/mng_core/lib/src/fare/fare_calculator.dart`. The two must stay
+// numerically identical: the rider app quotes a fare locally and the backend
+// quotes the same one, and a divergence between them is a rider who is shown
+// one price and charged another. Every literal in the Dart test file has a
+// counterpart in `functions/_tests/fare.test.ts`.
+
+export const RIDE_CATEGORY_NAMES = ['standard', 'premium', 'van'] as const;
+
+export type RideCategoryName = (typeof RIDE_CATEGORY_NAMES)[number];
 
 export interface FareInput {
   category: RideCategoryName;
@@ -2576,6 +2832,25 @@ export function computeFare(input: FareInput): FareQuote {
     distanceKm: km,
   };
 }
+
+// A promo is a share of the fare actually quoted, so it takes the base fare,
+// the booking fee, the surge and the requested category's per-km rate into
+// account. `percent_off` of the distance at the standard per-km rate, which is
+// what this used to do, under-discounts every category and ignores the base and
+// booking fee entirely: on a 10 km standard ride at surge 1.2 it returns 5.40
+// against a gross of 28.60.
+//
+// Call it with the gross quote, that is the quote for the same trip with
+// `discountGhs: 0`, and feed the result back into a second `computeFare` call.
+// Both calls are pure, which is what makes the two-step pricing testable
+// without a database.
+export function promoDiscountGhs(
+  grossFareGhs: number,
+  percentOff: number,
+  maxDiscountGhs: number,
+): number {
+  return round2(Math.min((grossFareGhs * percentOff) / 100, maxDiscountGhs));
+}
 ```
 
 - [ ] **Step 4: Write `match.ts`**
@@ -2596,15 +2871,167 @@ export function pickDrivers(candidates: Candidate[], max: number): string[] {
 }
 ```
 
-- [ ] **Step 5: Run the unit tests and confirm they pass**
+- [ ] **Step 5: Write `request.ts` and `compensate.ts`**
 
-```bash
-cd ~/meet-n-go/supabase && deno test functions/_tests/fare.test.ts functions/_tests/match.test.ts
+`supabase/functions/request-ride/request.ts`:
+
+```ts
+import { RIDE_CATEGORY_NAMES, type RideCategoryName } from './fare.ts';
+
+export interface Pin {
+  label: string;
+  address: string;
+  lat: number;
+  lng: number;
+}
+
+export interface RideRequest {
+  category: RideCategoryName;
+  pickup: Pin;
+  dropoff: Pin;
+  surge: number;
+  promoCode: string | null;
+}
+
+export type RideRequestResult =
+  | { ok: true; value: RideRequest }
+  | { ok: false; error: string };
+
+type Checked<T> = { ok: true; value: T } | { ok: false; error: string };
+
+const refuse = (error: string): { ok: false; error: string } => ({ ok: false, error });
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+
+// A number, not a string that happens to parse, and not a boolean or a
+// one-element array, all of which `Number()` would happily accept. Postgres
+// `numeric` stores NaN, so a non-finite value does not fail on the way in: it
+// lands in `fare_ghs` and `surge` and is inherited by Task 11's settlement and
+// Task 15's payout. Measured on PostgreSQL 17.11: `'NaN'::numeric(10,2)`
+// inserts, `sum()` over such a row is NaN, and `fare_ghs >= 0` counts the row
+// as passing, so nothing downstream catches it either. The only place it can be
+// refused is here, before the insert.
+export const isFiniteNumber = (value: unknown): value is number =>
+  typeof value === 'number' && Number.isFinite(value);
+
+// The range check is not optional and is not what the database does for us.
+// PostGIS coerces an out-of-range coordinate into range with a NOTICE instead
+// of rejecting it: measured on this host, `st_astext('POINT(-0.187 999)'
+// ::geography)` is `POINT(-0.187 -81)`, 9618.25 km from the real pickup. A
+// `lat: 999` would therefore price as a real ride in the thousands of GHS, so
+// silent coordinate wrapping is not validation and the fare is money.
+const readPin = (value: unknown, which: 'pickup' | 'dropoff'): Checked<Pin> => {
+  if (!isRecord(value)) return refuse(`${which} must be an object`);
+  if (!isFiniteNumber(value.lat) || !isFiniteNumber(value.lng)) {
+    return refuse(`${which} must carry finite numeric lat and lng`);
+  }
+  if (value.lat < -90 || value.lat > 90) {
+    return refuse(`${which} lat must be within [-90, 90], got ${value.lat}`);
+  }
+  if (value.lng < -180 || value.lng > 180) {
+    return refuse(`${which} lng must be within [-180, 180], got ${value.lng}`);
+  }
+  return {
+    ok: true,
+    value: {
+      label: typeof value.label === 'string' ? value.label : '',
+      address: typeof value.address === 'string' ? value.address : '',
+      lat: value.lat,
+      lng: value.lng,
+    },
+  };
+};
+
+// Everything the fare depends on, checked before the function reads or writes
+// anything. `PER_KM['deluxe']` is `undefined`, so an unchecked category also
+// makes the fare NaN, and it does so before the `trips_category_check`
+// constraint ever sees the value, which is how an input bug becomes an opaque
+// 500. `label` and `address` are coerced to strings because `TripStop` casts
+// both when the stored trip is read back.
+export function parseRideRequest(body: unknown): RideRequestResult {
+  if (!isRecord(body)) return refuse('body must be a JSON object');
+
+  const category = body.category;
+  if (typeof category !== 'string' || !RIDE_CATEGORY_NAMES.includes(category as RideCategoryName)) {
+    return refuse(`category must be one of ${RIDE_CATEGORY_NAMES.join(', ')}`);
+  }
+
+  const pickup = readPin(body.pickup, 'pickup');
+  if (!pickup.ok) return pickup;
+  const dropoff = readPin(body.dropoff, 'dropoff');
+  if (!dropoff.ok) return dropoff;
+
+  const surge = body.surge ?? 1;
+  if (!isFiniteNumber(surge)) return refuse('surge must be a finite number');
+
+  // Only a non-empty string is a code. The plan's clients send `String?`, and
+  // stringifying anything else here would turn a client bug into a lookup for a
+  // code nobody typed.
+  const promoCode = typeof body.promoCode === 'string' && body.promoCode !== ''
+    ? body.promoCode.toUpperCase()
+    : null;
+
+  return {
+    ok: true,
+    value: {
+      category: category as RideCategoryName,
+      pickup: pickup.value,
+      dropoff: dropoff.value,
+      surge,
+      promoCode,
+    },
+  };
+}
 ```
 
-Expected: 11 tests pass, 0 fail.
+`supabase/functions/request-ride/compensate.ts`:
 
-- [ ] **Step 6: Write `_shared/cors.ts`**
+```ts
+// The trip insert and the offer fan-out are two separate calls, so a failure in
+// the second leaves a `requested` trip with no offers behind it. Task 8's
+// `activeTrip()` selects `requested` trips, so that orphan pins the rider's
+// active trip and blocks every later ride request until the row is removed by
+// hand. The compensation is safe in this window: the row was created moments
+// earlier, `offers.trip_id` is `references trips on delete cascade` so any
+// partially written offers go with it, and nothing can have come to depend on
+// it yet.
+//
+// A delete is the whole fix. No ledger entry, no retry, no Task 5 RPC: the row
+// never became a real trip.
+
+export type DeleteTrip = (tripId: string) => Promise<{ error: { message: string } | null }>;
+
+export type CompensatedFailure = {
+  error: string;
+  cleanupError?: string;
+};
+
+export async function deleteTripAndFail(
+  deleteTrip: DeleteTrip,
+  tripId: string,
+  message: string,
+): Promise<CompensatedFailure> {
+  const { error } = await deleteTrip(tripId);
+  // A delete that fails leaves the orphan in place, so the response says so
+  // rather than reporting a clean 500 and hiding a row nothing will clean up.
+  return error ? { error: message, cleanupError: error.message } : { error: message };
+}
+```
+
+- [ ] **Step 6: Run the unit tests and confirm they pass**
+
+```bash
+cd ~/meet-n-go/supabase && deno test functions/_tests/
+```
+
+Expected: **27** tests pass, 0 fail — 9 fare, 4 match, 12 request, 2 compensate. The fare file's
+other seven cases are byte-identical to the values the Dart suite asserts; the eighth and ninth are
+the 2-dp rounding case (3.7 km standard at surge 1.3, raw 16.158, exactly 16.16) and the
+premium-takes-more-off-than-standard case, neither of which the earlier six exact literals or the
+old 1.8-per-km discount could pin.
+
+- [ ] **Step 7: Write `_shared/cors.ts`**
 
 ```ts
 export const corsHeaders = {
@@ -2614,95 +3041,146 @@ export const corsHeaders = {
 };
 ```
 
-- [ ] **Step 7: Write `request-ride/index.ts`**
+- [ ] **Step 8: Write `request-ride/index.ts`**
 
 ```ts
 import { serve } from 'https://deno.land/std@0.224.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.45.4';
 import { corsHeaders } from '../_shared/cors.ts';
-import { computeFare, type RideCategoryName } from './fare.ts';
+import { deleteTripAndFail } from './compensate.ts';
+import { computeFare, promoDiscountGhs } from './fare.ts';
 import { MAX_OFFERS, pickDrivers } from './match.ts';
+import { isFiniteNumber, parseRideRequest, type Pin } from './request.ts';
 
 const OFFER_TTL_SECONDS = 20;
-const round2 = (v: number) => Math.round(v * 100) / 100;
 
-interface Pin {
-  label: string;
-  address: string;
-  lat: number;
-  lng: number;
-}
+const json = (status: number, payload: Record<string, unknown>) =>
+  new Response(JSON.stringify(payload), {
+    status,
+    headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+  });
+
+// The stored jsonb is the shape `TripStop.fromJson` reads, not the shape that
+// arrived. The Dart model casts `json['point'] as Map<String, dynamic>` with no
+// null case, so a pin stored as `{label, address, lat, lng}` makes the rider's
+// own trip unparseable in the rider app. Task 8 sends the flattened
+// `{...pickup.toJson(), ...pickup.point.toJson()}`, which carries `point` as
+// well and so happens to work today; normalising here means it stops depending
+// on the client sending the nested copy. `label` and `address` are coerced to
+// strings in `parseRideRequest` for the same reason: `TripStop` casts both.
+const stopJson = (pin: Pin) => ({
+  label: pin.label,
+  address: pin.address,
+  point: { lat: pin.lat, lng: pin.lng },
+});
 
 const wkt = (p: Pin) => `POINT(${p.lng} ${p.lat})`;
 
 serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
 
-  const supabase = createClient(
+  // Deliberately a pure service-role client, with no caller's `Authorization`
+  // header forwarded onto it. supabase-js only sets `Authorization` when it is
+  // absent, so pairing the service key with a forwarded bearer leaves the
+  // user's token as the effective credential: PostgREST resolves the role to
+  // `authenticated`, RLS applies, and this function then fails in three places
+  // at once, because the migration has no INSERT policy on `trips`, no INSERT
+  // policy on `offers`, and revokes EXECUTE on `match_offers_for_trip` from
+  // `anon` and `authenticated` (42501).
+  //
+  // Bypassing RLS is what makes the bare service client necessary, and the
+  // authorisation it removes is not replaced by the database here, so it is
+  // replaced by this function: the caller must present a token that
+  // `getUser` validates, and the trip's `rider_id` is that validated identity
+  // and never a field of the request body. No other part of the body can decide
+  // who the trip belongs to. The distance RPC, the promo read, the trip insert,
+  // `match_offers_for_trip`, the offers insert and the compensating delete all
+  // use this one client, because `match_offers_for_trip` is reachable by
+  // `service_role` alone and no role that can be impersonated by a client has an
+  // RLS path to the trip or the offer insert.
+  const service = createClient(
     Deno.env.get('SUPABASE_URL')!,
     Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
-    { global: { headers: { Authorization: req.headers.get('Authorization')! } } },
   );
 
-  const { data: userData, error: userError } = await supabase.auth.getUser();
-  if (userError || !userData.user) {
-    return new Response(JSON.stringify({ error: 'unauthenticated' }), {
-      status: 401,
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-    });
-  }
+  const header = req.headers.get('Authorization') ?? '';
+  const token = header.replace(/^Bearer\s+/i, '');
+  if (!token) return json(401, { error: 'unauthenticated' });
+
+  const { data: userData, error: userError } = await service.auth.getUser(token);
+  if (userError || !userData.user) return json(401, { error: 'unauthenticated' });
   const riderId = userData.user.id;
 
-  const body = await req.json();
-  const category = body.category as RideCategoryName;
-  const pickup = body.pickup as Pin;
-  const dropoff = body.dropoff as Pin;
-
-  const { data: distanceRow, error: distanceError } = await supabase.rpc(
-    'trip_distance_km',
-    { a: wkt(pickup), b: wkt(dropoff) },
-  );
-  if (distanceError) {
-    return new Response(JSON.stringify({ error: distanceError.message }), {
-      status: 500,
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-    });
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return json(400, { error: 'body must be JSON' });
   }
+  // Everything the fare depends on — the category, both pins and the surge,
+  // including the coordinate range — is checked here, before the first RPC and
+  // before the insert.
+  const parsed = parseRideRequest(body);
+  if (!parsed.ok) return json(400, { error: parsed.error });
+  const { category, pickup, dropoff, surge, promoCode } = parsed.value;
+
+  const { data: distanceRow, error: distanceError } = await service.rpc('trip_distance_km', {
+    a: wkt(pickup),
+    b: wkt(dropoff),
+  });
+  if (distanceError) return json(500, { error: distanceError.message });
   const distanceKm = Number(distanceRow ?? 0);
+  if (!Number.isFinite(distanceKm)) return json(500, { error: 'trip_distance_km was not finite' });
+
+  // Price the ride gross first, then take the promo off that gross. Discounting
+  // `percent_off / 100 * distanceKm * 1.8` instead, which is what this used to
+  // do, hard-codes the standard per-km rate, so a premium ride is discounted at
+  // the standard rate and the base and booking fee are ignored.
+  const gross = computeFare({ category, distanceKm, surge, discountGhs: 0 });
 
   let discountGhs = 0;
-  if (body.promoCode) {
-    const { data: promo } = await supabase
+  if (promoCode) {
+    const { data: promo, error: promoError } = await service
       .from('promos')
-      .select('percent_off,max_discount_ghs')
-      .eq('code', String(body.promoCode).toUpperCase())
+      .select('percent_off,max_discount_ghs,expires_at')
+      .eq('code', promoCode)
       .eq('active', true)
       .maybeSingle();
-    if (promo) {
-      discountGhs = round2(
-        Math.min(
-          (Number(promo.percent_off) / 100) * distanceKm * 1.8,
-          Number(promo.max_discount_ghs),
-        ),
-      );
+    // A dropped error here would leave discountGhs at 0 and quote the rider
+    // full price for a code they supplied, which is a worse outcome than
+    // failing: nothing in the response says the promo was not applied.
+    if (promoError) return json(500, { error: promoError.message });
+    // `expires_at` is filtered here rather than in the query because a
+    // PostgREST filter value is a literal, not SQL: `expires_at.gt.now()` is
+    // not something the API can evaluate, and its own documentation answers a
+    // `now()`-dependent filter with a view or an RPC. The seeded RIDE30 has a
+    // null expiry, so nothing is broken today either way.
+    const live = promo !== null &&
+      (promo.expires_at === null || new Date(promo.expires_at).getTime() > Date.now());
+    if (live) {
+      const percentOff = Number(promo.percent_off);
+      const maxDiscountGhs = Number(promo.max_discount_ghs);
+      // `percent_off` and `max_discount_ghs` are `numeric`, so a row written
+      // with NaN would pass the `percent_off > 0` check constraint and turn
+      // every fare that used the code into NaN. The rows are only writable by
+      // a privileged role, so this is a backstop, not an input check.
+      if (!isFiniteNumber(percentOff) || !isFiniteNumber(maxDiscountGhs)) {
+        return json(500, { error: 'promo row carries non-finite discount data' });
+      }
+      discountGhs = promoDiscountGhs(gross.fareGhs, percentOff, maxDiscountGhs);
     }
   }
 
-  const quote = computeFare({
-    category,
-    distanceKm,
-    surge: Number(body.surge ?? 1),
-    discountGhs,
-  });
+  const quote = computeFare({ category, distanceKm, surge, discountGhs });
 
-  const { data: trip, error: tripError } = await supabase
+  const { data: trip, error: tripError } = await service
     .from('trips')
     .insert({
       rider_id: riderId,
       category,
       state: 'requested',
-      pickup,
-      dropoff,
+      pickup: stopJson(pickup),
+      dropoff: stopJson(dropoff),
       pickup_point: wkt(pickup),
       dropoff_point: wkt(dropoff),
       distance_km: distanceKm,
@@ -2712,22 +3190,28 @@ serve(async (req) => {
     })
     .select()
     .single();
+  if (tripError) return json(500, { error: tripError.message });
 
-  if (tripError) {
-    return new Response(JSON.stringify({ error: tripError.message }), {
-      status: 500,
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-    });
-  }
+  // From here on the trip row exists, so every failure below has to take it
+  // out again: Task 8's `activeTrip()` selects `requested` trips, so an orphan
+  // pins the rider's active trip and blocks every later ride request.
+  const deleteTrip = async (tripId: string) => {
+    const { error } = await service.from('trips').delete().eq('id', tripId);
+    return { error };
+  };
 
-  // `match_offers_for_trip` is service-role only, EXECUTE revoked from public, anon
-  // and authenticated. The `supabase` client above is created with
-  // SUPABASE_SERVICE_ROLE_KEY, so this call is allowed; calling it with a user's
-  // client, or from a Flutter app, returns 42501. If the candidate list comes back
-  // empty on a live project, check the key before anything else.
-  const { data: candidates } = await supabase.rpc('match_offers_for_trip', {
+  // Service-role only: the migration revokes EXECUTE on this function from
+  // `public`, `anon` and `authenticated`, so a user client returns 42501 here
+  // and a Flutter app cannot call it at all. The error is checked rather than
+  // dropped, because a dropped one turns a failed match into an empty offer
+  // list that looks identical to "no drivers are online right now". If the
+  // candidates are empty on a live project, check the key before anything else.
+  const { data: candidates, error: matchError } = await service.rpc('match_offers_for_trip', {
     target_trip: trip.id,
   });
+  if (matchError) {
+    return json(500, await deleteTripAndFail(deleteTrip, trip.id, matchError.message));
+  }
 
   const rows = (candidates ?? []) as { driver_id: string; pickup_distance_km: number }[];
   const driverIds = pickDrivers(
@@ -2740,7 +3224,7 @@ serve(async (req) => {
 
   if (driverIds.length > 0) {
     const expiresAt = new Date(Date.now() + OFFER_TTL_SECONDS * 1000).toISOString();
-    await supabase.from('offers').insert(
+    const { error: offerError } = await service.from('offers').insert(
       driverIds.map((driverId) => ({
         trip_id: trip.id,
         driver_id: driverId,
@@ -2750,26 +3234,33 @@ serve(async (req) => {
         expires_at: expiresAt,
       })),
     );
+    // Checked, and this is the check the brief left out: reporting
+    // `offerDriverIds` for offers that were never written tells the rider the
+    // fan-out happened while no driver was ever told about the trip. The trip
+    // goes with them, since the offers cascade from it.
+    if (offerError) {
+      return json(500, await deleteTripAndFail(deleteTrip, trip.id, offerError.message));
+    }
   }
 
-  return new Response(JSON.stringify({ trip, quote, offerDriverIds: driverIds }), {
-    headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-  });
+  return json(200, { trip, quote, offerDriverIds: driverIds });
 });
 ```
 
-- [ ] **Step 8: Lint the functions**
+- [ ] **Step 9: Lint the functions**
 
 ```bash
 cd ~/meet-n-go/supabase
-deno check functions/request-ride/index.ts functions/request-ride/fare.ts functions/request-ride/match.ts
-deno fmt --check functions/
+deno check functions/request-ride/index.ts functions/request-ride/fare.ts functions/request-ride/match.ts \
+  functions/request-ride/request.ts functions/request-ride/compensate.ts
 deno lint functions/
 ```
 
-Expected: no diagnostics.
+Expected: no diagnostics. **There is deliberately no `deno fmt --check` step and no formatting
+standard in this repo.** CI has no `deno fmt` step, and Task 3's implementer already made the same
+call for Dart and the reviewer upheld it. Do not add one.
 
-- [ ] **Step 9: Deploy and smoke-test against the linked project**
+- [ ] **Step 10: Deploy and smoke-test against the linked project**
 
 ```bash
 cd ~/meet-n-go/supabase
@@ -2785,9 +3276,14 @@ curl -s -X POST "$SUPABASE_URL/functions/v1/request-ride" \
   -d '{"category":"standard","promoCode":"RIDE30","pickup":{"label":"Pickup","address":"Osu, Accra","lat":5.6037,"lng":-0.1870},"dropoff":{"label":"Dropoff","address":"Airport Residential","lat":5.6200,"lng":-0.1870}}'
 ```
 
-Expected: JSON with a `trip.id`, a `quote.fareGhs` lower than the undiscounted fare, and an `offerDriverIds` array (empty until a driver goes online, which is correct).
+Expected: JSON with a `trip.id`, a `quote.fareGhs` lower than the undiscounted fare, and an
+`offerDriverIds` array (empty until a driver goes online, which is correct). `trip.pickup` comes back
+as `{"label", "address", "point":{"lat", "lng"}}`, not as the flat pin that was sent.
 
-- [ ] **Step 10: Commit**
+This step needs `supabase login` and a linked project, so it is **not runnable on a host without
+interactive browser auth**; on such a host say it was not attempted and do not claim it passed.
+
+- [ ] **Step 11: Commit**
 
 ```bash
 cd ~/meet-n-go
@@ -2806,6 +3302,7 @@ git commit -m "feat(functions): request-ride with fare, promo discount, radius m
 **Interfaces:**
 - Consumes: RPC `accept_offer(uuid)` (Task 5), `kOfferTtl` and `OfferState` semantics (Task 4)
 - Produces: POST `offers` with `{action: 'accept'|'decline', offerId}` returning `{accepted, tripId, winnerDriverId}`. Exports `resolveAccept(input): AcceptResult` for unit tests. The driver app in Task 13 consumes this.
+- `accept_offer` must be called through a client carrying the **driver's** bearer token, never a service-role client: `offers.driver_id` is `not null` and the ownership test is the plain expression `v_offer.driver_id is distinct from auth.uid()`, which refuses every caller whose `auth.uid()` is not the driver, `service_role` included. So build **two** clients, exactly as Task 6 does — a service-role one for privileged reads, and a second one built with `SUPABASE_ANON_KEY` plus the request's `Authorization` header forwarded, used only for `accept` and `decline` — and never give that second client the service-role key, because supabase-js sets `Authorization` only when it is absent, so a service key on it would be silently ignored and `auth.uid()` would be null.
 
 - [ ] **Step 1: Write the failing test, including the Review Focus case**
 
