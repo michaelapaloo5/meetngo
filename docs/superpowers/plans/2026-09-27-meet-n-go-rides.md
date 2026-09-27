@@ -2467,12 +2467,45 @@ these was a live defect in the first draft of this task; the code comments carry
 - **The offers insert, the match RPC and the promo read all have their errors checked.** A dropped
   error returns a success that is indistinguishable from the truth: no offers written, or a rider
   charged full price for a code they supplied.
+  **Ruling:** the promo read 500ing a request that supplied a `promoCode` is correct, keep it. The
+  read only happens when a code is present, so a broken coupon table cannot block an ordinary ride
+  — it only refuses a ride where the rider was promised a discount and we cannot verify the
+  discount. Silently charging full price in that case is the worse failure. Cost if wrong: a
+  promo-table outage books no discounted rides, but no rider is ever overcharged.
 - **A failure after the trip insert deletes the trip row before the 500.** The insert and the
   fan-out are separate calls, and Task 8's `activeTrip()` selects `requested` trips, so an orphan
   pins the rider's active trip and blocks every later ride request. The delete is the whole fix: no
   ledger entry, no retry, no Task 5 RPC, since the row never became a real trip, and
   `offers.trip_id` is `references trips on delete cascade`. A delete that itself fails is returned as
   `cleanupError` rather than hidden behind a clean 500.
+- **`promoDiscountGhs` clamps, it does not trust.** `promos.max_discount_ghs` has no CHECK
+  constraint and a negative value there makes `min(gross * percent / 100, cap)` negative, which the
+  second `computeFare` call then *adds* to the total: a 40.60 premium ride stored at 80.60 while
+  `quote.discountGhs` reports 0. Gross, percent and cap are all clamped to their valid range, so the
+  function is total for every finite input. A non-finite argument is deliberately *not* clamped:
+  `Math.max(0, NaN)` is NaN, and quietly turning a corrupt row into "no discount" is the failure the
+  call-site check exists to prevent. The one column that can actually arrive non-finite is
+  `max_discount_ghs`; `percent_off` carries `check (percent_off > 0 and percent_off <= 100)`, and
+  because that is a conjunction it does reject NaN — measured, `'NaN'::numeric > 0` is true but
+  `'NaN'::numeric <= 100` is false.
+- **The promo read is `limit(1)` plus `data?.[0]`, not `maybeSingle()`.** `maybeSingle` requests
+  `application/vnd.pgrst.object+json`, so a 0-row read arrives as a 406, and the shipped client
+  clears that only by comparing the server's `details` against the substring `0 rows`
+  (`@supabase/postgrest-js@1.16.1/src/PostgrestBuilder.ts:162`). Whether a typo'd promo code is a
+  full-price quote or a 500 must not depend on an English string in someone else's API. The 500 on a
+  genuine read error stays; the ruling above says why.
+- **A `promoCode` that is present but is not a string is a 400.** Silently dropping it returned 200
+  at full price to a rider who supplied a code, which is the rider-visible outcome the 500 on a
+  failed promo read exists to prevent. `undefined`, `null` and `""` are all "no code" and are not
+  discards, so they are not errors.
+- **A null `trip_distance_km` result is a 500, not a 0 km ride.** `Number(distanceRow ?? 0)` turned a
+  broken RPC into a base-fare quote of 6.00 on a route nobody priced. The RPC cannot return null
+  today, which is exactly why the `?? 0` had to go: dead code that only hides a future break.
+- **Every failure after the trip insert is compensated, checked or thrown.** The post-insert region
+  runs inside `compensating()`, so an unchecked throw — the RPC client's own JSON parse failing, a
+  candidate payload that is not an array — takes the same compensating delete as a checked 42501,
+  instead of escaping to `serve`'s default `onError`, which returns a bare 500 and leaves the
+  `requested` row behind for Task 8's `activeTrip()` to keep serving.
 - **The stored `pickup`/`dropoff` jsonb is normalised to `{label, address, point:{lat, lng}}`.**
   `TripStop.fromJson` casts `json['point'] as Map<String, dynamic>` with no null case, so a pin
   stored in the documented request shape `{label, address, lat, lng}` makes the rider's own trip
@@ -2564,6 +2597,31 @@ Deno.test('the same promo takes more off a premium ride than a standard one', ()
   assertEquals(discountFor('premium'), 12.18);
   assertEquals(discountFor('premium') > discountFor('standard'), true);
 });
+
+// `promos.max_discount_ghs` has no CHECK constraint, and a negative value there
+// makes `min(gross * percent_off / 100, cap)` negative, which the second
+// `computeFare` call then *adds* to the total: a premium ride quoted at 40.60
+// is stored at 80.60 while `quote.discountGhs` reports 0. Measured on this
+// host: `insert into promos (code, percent_off, max_discount_ghs) values
+// ('NEG1', 30, -40.00, true)` is accepted. A percent outside 0..100 is refused
+// by the `percent_off` check constraint, so the sign hole is on the cap, but
+// this is the pure function and it is total for every finite input.
+Deno.test('a negative promo cap cannot raise the fare above the gross quote', () => {
+  const trip = { category: 'premium' as const, distanceKm: 10, surge: 1.2 };
+  const gross = computeFare({ ...trip, discountGhs: 0 });
+
+  const discount = promoDiscountGhs(gross.fareGhs, 30, -40);
+  const quote = computeFare({ ...trip, discountGhs: discount });
+
+  assertEquals(discount, 0);
+  assertEquals(quote.fareGhs, gross.fareGhs);
+});
+
+Deno.test('a promo percent outside 0 to 100 is clamped rather than applied', () => {
+  const gross = computeFare({ category: 'premium', distanceKm: 10, surge: 1.2, discountGhs: 0 });
+  assertEquals(promoDiscountGhs(gross.fareGhs, 250, 1000), 40.6);
+  assertEquals(promoDiscountGhs(gross.fareGhs, -30, 1000), 0);
+});
 ```
 
 `supabase/functions/_tests/match.test.ts`:
@@ -2639,16 +2697,27 @@ Deno.test('a valid request yields the category, both pins and the surge', () => 
   assertEquals(result.value.promoCode, null);
 });
 
-Deno.test('a promo code is uppercased and anything that is not one is dropped', () => {
+Deno.test('a promo code is uppercased, and an absent or empty one is no code', () => {
   const upper = parseRideRequest(body({ promoCode: 'ride30' }));
   assert(upper.ok, JSON.stringify(upper));
   assertEquals(upper.value.promoCode, 'RIDE30');
-  const empty = parseRideRequest(body({ promoCode: '' }));
-  assert(empty.ok, JSON.stringify(empty));
-  assertEquals(empty.value.promoCode, null);
-  const numeric = parseRideRequest(body({ promoCode: 30 }));
-  assert(numeric.ok, JSON.stringify(numeric));
-  assertEquals(numeric.value.promoCode, null);
+  for (const absent of [undefined, null, '']) {
+    const result = parseRideRequest(body({ promoCode: absent }));
+    assert(result.ok, JSON.stringify(result));
+    assertEquals(result.value.promoCode, null);
+  }
+});
+
+// A wrong-typed field is a 400 everywhere else in this function, and a promo
+// code is the one a rider is promised money off. Silently dropping a
+// present-but-non-string one returns 200 at full price, which is the same
+// rider-visible outcome as the promo-read failure the 500 on a promo read
+// exists to prevent.
+Deno.test('a promoCode that is present but not a string is refused', () => {
+  assertEquals(refuse(body({ promoCode: 30 })), 'promoCode must be a string');
+  assertEquals(refuse(body({ promoCode: true })), 'promoCode must be a string');
+  assertEquals(refuse(body({ promoCode: ['RIDE30'] })), 'promoCode must be a string');
+  assertEquals(refuse(body({ promoCode: { code: 'RIDE30' } })), 'promoCode must be a string');
 });
 
 Deno.test('an absent surge defaults to 1 and label and address are coerced to strings', () => {
@@ -2743,7 +2812,7 @@ Deno.test('a surge that is not a finite number is refused', () => {
 
 ```ts
 import { assertEquals } from 'https://deno.land/std@0.224.0/testing/asserts.ts';
-import { deleteTripAndFail, type DeleteTrip } from '../request-ride/compensate.ts';
+import { compensating, deleteTripAndFail, type DeleteTrip } from '../request-ride/compensate.ts';
 
 Deno.test('a failure after the insert deletes the trip row that was inserted', async () => {
   const deleted: string[] = [];
@@ -2766,6 +2835,71 @@ Deno.test('the original failure is still reported when the delete itself fails',
 
   assertEquals(failure, {
     error: 'match failed',
+    cleanupError: 'permission denied for table trips',
+  });
+});
+
+// The unchecked route to the same orphan: anything thrown between the trip
+// insert and the response used to escape to `serve`'s default onError, which
+// returns a bare 500 and leaves the `requested` row behind for Task 8's
+// `activeTrip()` to keep serving.
+Deno.test('a throw during the fan-out compensates the trip insert', async () => {
+  const deleted: string[] = [];
+  const deleteTrip: DeleteTrip = (tripId) => {
+    deleted.push(tripId);
+    return Promise.resolve({ error: null });
+  };
+
+  const outcome = await compensating(deleteTrip, 'trip-0001', () =>
+    Promise.reject(new Error('match_offers_for_trip: Unexpected token < in JSON at position 0'))
+  );
+
+  assertEquals(deleted, ['trip-0001']);
+  assertEquals(outcome, {
+    ok: false,
+    error: 'match_offers_for_trip: Unexpected token < in JSON at position 0',
+  });
+});
+
+Deno.test('a fan-out that throws something that is not an Error still compensates', async () => {
+  const deleted: string[] = [];
+  const deleteTrip: DeleteTrip = (tripId) => {
+    deleted.push(tripId);
+    return Promise.resolve({ error: null });
+  };
+
+  const outcome = await compensating(deleteTrip, 'trip-0001', () =>
+    Promise.reject('rows.map is not a function')
+  );
+
+  assertEquals(deleted, ['trip-0001']);
+  assertEquals(outcome, { ok: false, error: 'rows.map is not a function' });
+});
+
+Deno.test('a completed fan-out does not delete the trip', async () => {
+  const deleted: string[] = [];
+  const deleteTrip: DeleteTrip = (tripId) => {
+    deleted.push(tripId);
+    return Promise.resolve({ error: null });
+  };
+
+  const outcome = await compensating(deleteTrip, 'trip-0001', () => Promise.resolve(['d-1']));
+
+  assertEquals(deleted, []);
+  assertEquals(outcome, { ok: true, value: ['d-1'] });
+});
+
+Deno.test('a compensating delete that fails is reported through the fan-out too', async () => {
+  const deleteTrip: DeleteTrip = () =>
+    Promise.resolve({ error: { message: 'permission denied for table trips' } });
+
+  const outcome = await compensating(deleteTrip, 'trip-0001', () =>
+    Promise.reject(new Error('offers insert failed'))
+  );
+
+  assertEquals(outcome, {
+    ok: false,
+    error: 'offers insert failed',
     cleanupError: 'permission denied for table trips',
   });
 });
@@ -2844,12 +2978,31 @@ export function computeFare(input: FareInput): FareQuote {
 // `discountGhs: 0`, and feed the result back into a second `computeFare` call.
 // Both calls are pure, which is what makes the two-step pricing testable
 // without a database.
+//
+// All three arguments are clamped to their valid range rather than trusted, so
+// the function is total for every finite input and no caller can be talked into
+// a discount that is really a surcharge. The sign hole that made this necessary
+// is real: `promos.max_discount_ghs` has no CHECK constraint, and a negative
+// cap makes `min(gross * percent / 100, cap)` negative, which the second
+// `computeFare` call then *adds* to the total — a premium ride quoted at 40.60
+// stored at 80.60 while `quote.discountGhs` reports 0. `percent_off` is
+// constrained to (0, 100] by the schema, so the cap is the only column that can
+// arrive wrong; the percent is clamped anyway so the pure function does not
+// depend on a constraint in another file.
+//
+// A non-finite argument is not clamped here: `Math.max(0, NaN)` is NaN, and
+// quietly turning a corrupt row into "no discount" would be the silent-money
+// defect this whole function exists to avoid. `index.ts` refuses a non-finite
+// promo row with a 500 before it gets here.
 export function promoDiscountGhs(
   grossFareGhs: number,
   percentOff: number,
   maxDiscountGhs: number,
 ): number {
-  return round2(Math.min((grossFareGhs * percentOff) / 100, maxDiscountGhs));
+  const gross = Math.max(0, grossFareGhs);
+  const percent = Math.min(100, Math.max(0, percentOff));
+  const cap = Math.max(0, maxDiscountGhs);
+  return round2(Math.min((gross * percent) / 100, cap));
 }
 ```
 
@@ -2965,12 +3118,15 @@ export function parseRideRequest(body: unknown): RideRequestResult {
   const surge = body.surge ?? 1;
   if (!isFiniteNumber(surge)) return refuse('surge must be a finite number');
 
-  // Only a non-empty string is a code. The plan's clients send `String?`, and
-  // stringifying anything else here would turn a client bug into a lookup for a
-  // code nobody typed.
-  const promoCode = typeof body.promoCode === 'string' && body.promoCode !== ''
-    ? body.promoCode.toUpperCase()
-    : null;
+  // A present-but-non-string code is a client bug and is refused like every
+  // other wrong-typed field here, rather than dropped: dropping it returns 200
+  // at full price to a rider who was promised a discount, with nothing in the
+  // response saying the code was discarded. An absent code, `null` and an empty
+  // string are all "no code", which is not a discard and needs no signal.
+  const promoCode = body.promoCode;
+  if (promoCode !== undefined && promoCode !== null && typeof promoCode !== 'string') {
+    return refuse('promoCode must be a string');
+  }
 
   return {
     ok: true,
@@ -2979,7 +3135,7 @@ export function parseRideRequest(body: unknown): RideRequestResult {
       pickup: pickup.value,
       dropoff: dropoff.value,
       surge,
-      promoCode,
+      promoCode: promoCode ? promoCode.toUpperCase() : null,
     },
   };
 }
@@ -3007,6 +3163,8 @@ export type CompensatedFailure = {
   cleanupError?: string;
 };
 
+export type Outcome<T> = { ok: true; value: T } | ({ ok: false } & CompensatedFailure);
+
 export async function deleteTripAndFail(
   deleteTrip: DeleteTrip,
   tripId: string,
@@ -3017,6 +3175,26 @@ export async function deleteTripAndFail(
   // rather than reporting a clean 500 and hiding a row nothing will clean up.
   return error ? { error: message, cleanupError: error.message } : { error: message };
 }
+
+// Runs the offer fan-out, and compensates the trip insert if it does not
+// finish. A *checked* failure — a 42501 from the match RPC, a rejected offers
+// insert — is reported the same way as an *unchecked* one, because both mean the
+// same thing: a `requested` trip that no driver was ever offered and that Task
+// 8's `activeTrip()` will keep handing back. The unchecked route is the one
+// that needed guarding: it used to escape to `serve`'s default onError, which
+// returns a bare 500 and leaves the row behind.
+export async function compensating<T>(
+  deleteTrip: DeleteTrip,
+  tripId: string,
+  work: () => Promise<T>,
+): Promise<Outcome<T>> {
+  try {
+    return { ok: true, value: await work() };
+  } catch (thrown) {
+    const message = thrown instanceof Error ? thrown.message : String(thrown);
+    return { ok: false, ...(await deleteTripAndFail(deleteTrip, tripId, message)) };
+  }
+}
 ```
 
 - [ ] **Step 6: Run the unit tests and confirm they pass**
@@ -3025,11 +3203,14 @@ export async function deleteTripAndFail(
 cd ~/meet-n-go/supabase && deno test functions/_tests/
 ```
 
-Expected: **27** tests pass, 0 fail — 9 fare, 4 match, 12 request, 2 compensate. The fare file's
-other seven cases are byte-identical to the values the Dart suite asserts; the eighth and ninth are
-the 2-dp rounding case (3.7 km standard at surge 1.3, raw 16.158, exactly 16.16) and the
-premium-takes-more-off-than-standard case, neither of which the earlier six exact literals or the
-old 1.8-per-km discount could pin.
+Expected: **34** tests pass, 0 fail — 11 fare, 4 match, 12 request, 7 compensate. The fare file's
+first seven cases are the values the Dart suite asserts; the rest are the 2-dp rounding case
+(3.7 km standard at surge 1.3, raw 16.158, exactly 16.16), the
+premium-takes-more-off-than-standard case, the negative promo cap that would otherwise *raise* the
+fare, and an out-of-range percent. The compensate file covers both routes to the same orphan, a
+checked error and a throw. The rounding case has a twin in
+`packages/mng_core/test/fare_calculator_test.dart` with the same literal: change one, change the
+other in the same commit.
 
 - [ ] **Step 7: Write `_shared/cors.ts`**
 
@@ -3047,7 +3228,7 @@ export const corsHeaders = {
 import { serve } from 'https://deno.land/std@0.224.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.45.4';
 import { corsHeaders } from '../_shared/cors.ts';
-import { deleteTripAndFail } from './compensate.ts';
+import { compensating } from './compensate.ts';
 import { computeFare, promoDiscountGhs } from './fare.ts';
 import { MAX_OFFERS, pickDrivers } from './match.ts';
 import { isFiniteNumber, parseRideRequest, type Pin } from './request.ts';
@@ -3129,7 +3310,13 @@ serve(async (req) => {
     b: wkt(dropoff),
   });
   if (distanceError) return json(500, { error: distanceError.message });
-  const distanceKm = Number(distanceRow ?? 0);
+  // A null result is not a zero-kilometre ride. The RPC cannot return null
+  // today, so `?? 0` here would only be dead code that hides a future break as
+  // a base-fare quote: a 6.00 GHS ride on a route nobody priced.
+  if (distanceRow === null || distanceRow === undefined) {
+    return json(500, { error: 'trip_distance_km returned no distance' });
+  }
+  const distanceKm = Number(distanceRow);
   if (!Number.isFinite(distanceKm)) return json(500, { error: 'trip_distance_km was not finite' });
 
   // Price the ride gross first, then take the promo off that gross. Discounting
@@ -3140,16 +3327,26 @@ serve(async (req) => {
 
   let discountGhs = 0;
   if (promoCode) {
-    const { data: promo, error: promoError } = await service
+    const { data: promoRows, error: promoError } = await service
       .from('promos')
       .select('percent_off,max_discount_ghs,expires_at')
       .eq('code', promoCode)
       .eq('active', true)
-      .maybeSingle();
+      .limit(1);
     // A dropped error here would leave discountGhs at 0 and quote the rider
     // full price for a code they supplied, which is a worse outcome than
     // failing: nothing in the response says the promo was not applied.
     if (promoError) return json(500, { error: promoError.message });
+    // `promoRows?.[0]` rather than `maybeSingle()`. `maybeSingle` sets
+    // `Accept: application/vnd.pgrst.object+json`, so a 0-row read comes back as
+    // a 406, and the shipped client clears that only by comparing the server's
+    // `details` against the substring `0 rows`
+    // (`@supabase/postgrest-js@1.16.1/src/PostgrestBuilder.ts:162`, the
+    // version supabase-js 2.45.4 resolves). So whether a typo'd promo code is a
+    // full-price quote or a 500 depends on an English string in someone else's
+    // API. `limit(1)` never asks for the single-object media type, so a 0-row
+    // read is a 200 with `[]` and we index it ourselves.
+    const promo = promoRows?.[0] ?? null;
     // `expires_at` is filtered here rather than in the query because a
     // PostgREST filter value is a literal, not SQL: `expires_at.gt.now()` is
     // not something the API can evaluate, and its own documentation answers a
@@ -3160,10 +3357,17 @@ serve(async (req) => {
     if (live) {
       const percentOff = Number(promo.percent_off);
       const maxDiscountGhs = Number(promo.max_discount_ghs);
-      // `percent_off` and `max_discount_ghs` are `numeric`, so a row written
-      // with NaN would pass the `percent_off > 0` check constraint and turn
-      // every fare that used the code into NaN. The rows are only writable by
-      // a privileged role, so this is a backstop, not an input check.
+      // This is a backstop on `max_discount_ghs`, and only that column.
+      // `promos.percent_off` carries `check (percent_off > 0 and percent_off
+      // <= 100)`, and because that is a conjunction it does reject NaN: on this
+      // host `'NaN'::numeric > 0` is true but `'NaN'::numeric <= 100` is false,
+      // so an insert of a NaN percent is refused (measured). `max_discount_ghs`
+      // has no CHECK at all, and PostgREST serialises a numeric NaN as the JSON
+      // string `"NaN"`, so `Number("NaN")` is NaN and that is the one column
+      // that can arrive non-finite. `promoDiscountGhs` does not clamp a
+      // non-finite argument, deliberately: `Math.max(0, NaN)` is NaN, and
+      // turning a corrupt row into a silent no-discount is the failure this
+      // check exists to prevent.
       if (!isFiniteNumber(percentOff) || !isFiniteNumber(maxDiscountGhs)) {
         return json(500, { error: 'promo row carries non-finite discount data' });
       }
@@ -3200,63 +3404,78 @@ serve(async (req) => {
     return { error };
   };
 
-  // Service-role only: the migration revokes EXECUTE on this function from
-  // `public`, `anon` and `authenticated`, so a user client returns 42501 here
-  // and a Flutter app cannot call it at all. The error is checked rather than
-  // dropped, because a dropped one turns a failed match into an empty offer
-  // list that looks identical to "no drivers are online right now". If the
-  // candidates are empty on a live project, check the key before anything else.
-  const { data: candidates, error: matchError } = await service.rpc('match_offers_for_trip', {
-    target_trip: trip.id,
-  });
-  if (matchError) {
-    return json(500, await deleteTripAndFail(deleteTrip, trip.id, matchError.message));
-  }
+  // The whole post-insert region runs inside `compensating`, so an *unchecked*
+  // failure takes the same compensating delete as a checked one. That route is
+  // the one that needed guarding: it used to escape to `serve`'s default
+  // onError, which returns a bare 500 and leaves the trip row behind, which is
+  // the same orphan the delete exists to prevent.
+  const outcome = await compensating(deleteTrip, trip.id, async () => {
+    // Service-role only: the migration revokes EXECUTE on this function from
+    // `public`, `anon` and `authenticated`, so a user client returns 42501 here
+    // and a Flutter app cannot call it at all. The error is checked rather than
+    // dropped, because a dropped one turns a failed match into an empty offer
+    // list that looks identical to "no drivers are online right now". If the
+    // candidates are empty on a live project, check the key before anything else.
+    const { data: candidates, error: matchError } = await service.rpc('match_offers_for_trip', {
+      target_trip: trip.id,
+    });
+    if (matchError) throw new Error(matchError.message);
 
-  const rows = (candidates ?? []) as { driver_id: string; pickup_distance_km: number }[];
-  const driverIds = pickDrivers(
-    rows.map((r) => ({ id: r.driver_id, pickupDistanceKm: Number(r.pickup_distance_km) })),
-    MAX_OFFERS,
-  );
-  const distanceById = new Map(
-    rows.map((r) => [r.driver_id, Number(r.pickup_distance_km)] as const),
-  );
-
-  if (driverIds.length > 0) {
-    const expiresAt = new Date(Date.now() + OFFER_TTL_SECONDS * 1000).toISOString();
-    const { error: offerError } = await service.from('offers').insert(
-      driverIds.map((driverId) => ({
-        trip_id: trip.id,
-        driver_id: driverId,
-        fare_ghs: quote.fareGhs,
-        pickup_distance_km: distanceById.get(driverId) ?? 0,
-        state: 'pending',
-        expires_at: expiresAt,
-      })),
+    const rows = (candidates ?? []) as { driver_id: string; pickup_distance_km: number }[];
+    const driverIds = pickDrivers(
+      rows.map((r) => ({ id: r.driver_id, pickupDistanceKm: Number(r.pickup_distance_km) })),
+      MAX_OFFERS,
     );
-    // Checked, and this is the check the brief left out: reporting
-    // `offerDriverIds` for offers that were never written tells the rider the
-    // fan-out happened while no driver was ever told about the trip. The trip
-    // goes with them, since the offers cascade from it.
-    if (offerError) {
-      return json(500, await deleteTripAndFail(deleteTrip, trip.id, offerError.message));
+    const distanceById = new Map(
+      rows.map((r) => [r.driver_id, Number(r.pickup_distance_km)] as const),
+    );
+
+    if (driverIds.length > 0) {
+      const expiresAt = new Date(Date.now() + OFFER_TTL_SECONDS * 1000).toISOString();
+      const { error: offerError } = await service.from('offers').insert(
+        driverIds.map((driverId) => ({
+          trip_id: trip.id,
+          driver_id: driverId,
+          fare_ghs: quote.fareGhs,
+          pickup_distance_km: distanceById.get(driverId) ?? 0,
+          state: 'pending',
+          expires_at: expiresAt,
+        })),
+      );
+      // Checked, and this is the check the brief left out: reporting
+      // `offerDriverIds` for offers that were never written tells the rider the
+      // fan-out happened while no driver was ever told about the trip. The trip
+      // goes with them, since the offers cascade from it.
+      if (offerError) throw new Error(offerError.message);
     }
+
+    return driverIds;
+  });
+
+  if (!outcome.ok) {
+    return json(500, { error: outcome.error, cleanupError: outcome.cleanupError });
   }
 
-  return json(200, { trip, quote, offerDriverIds: driverIds });
+  return json(200, { trip, quote, offerDriverIds: outcome.value });
 });
 ```
 
-- [ ] **Step 9: Lint the functions**
+- [ ] **Step 9: Run the Dart half of the rounding case, then lint**
 
 ```bash
+cd ~/meet-n-go/packages/mng_core && flutter test && flutter analyze --fatal-infos
 cd ~/meet-n-go/supabase
 deno check functions/request-ride/index.ts functions/request-ride/fare.ts functions/request-ride/match.ts \
   functions/request-ride/request.ts functions/request-ride/compensate.ts
 deno lint functions/
 ```
 
-Expected: no diagnostics. **There is deliberately no `deno fmt --check` step and no formatting
+The 2-dp rounding case exists in both languages on purpose: it is the only assertion in either
+suite that can tell a client-side and a server-side fare apart. Both pin 3.7 km standard at surge
+1.3 to exactly 16.16, with exact equality rather than `closeTo`, because every other expected fare
+in both suites is exact in binary and a `round2` that did nothing would pass all of them.
+
+Expected: no diagnostics from `deno check` or `deno lint`. **There is deliberately no `deno fmt --check` step and no formatting
 standard in this repo.** CI has no `deno fmt` step, and Task 3's implementer already made the same
 call for Dart and the reviewer upheld it. Do not add one.
 
@@ -3302,7 +3521,7 @@ git commit -m "feat(functions): request-ride with fare, promo discount, radius m
 **Interfaces:**
 - Consumes: RPC `accept_offer(uuid)` (Task 5), `kOfferTtl` and `OfferState` semantics (Task 4)
 - Produces: POST `offers` with `{action: 'accept'|'decline', offerId}` returning `{accepted, tripId, winnerDriverId}`. Exports `resolveAccept(input): AcceptResult` for unit tests. The driver app in Task 13 consumes this.
-- `accept_offer` must be called through a client carrying the **driver's** bearer token, never a service-role client: `offers.driver_id` is `not null` and the ownership test is the plain expression `v_offer.driver_id is distinct from auth.uid()`, which refuses every caller whose `auth.uid()` is not the driver, `service_role` included. So build **two** clients, exactly as Task 6 does — a service-role one for privileged reads, and a second one built with `SUPABASE_ANON_KEY` plus the request's `Authorization` header forwarded, used only for `accept` and `decline` — and never give that second client the service-role key, because supabase-js sets `Authorization` only when it is absent, so a service key on it would be silently ignored and `auth.uid()` would be null.
+- **Two clients, and each has exactly one job — `accept` on the driver's own token, `decline` on the service key.** `accept_offer`'s ownership test is the plain expression `v_offer.driver_id is distinct from auth.uid()`, `offers.driver_id` is `not null`, and only the driver's own token makes `auth.uid()` the driver: a service-role request has a NULL `auth.uid()` and is refused outright (measured on this host — as `service_role`, `auth.uid()` is NULL and `accept_offer` returns `accepted = f` with both ids null). So `accept` and the ownership read go on a client built with `SUPABASE_ANON_KEY` plus the request's `Authorization` header forwarded, which is what resolves the role to `authenticated`; a service key placed on that client is ignored for `Authorization` precisely *because* the forwarded bearer is present, so the two keys do not conflict and `auth.uid()` is the driver, not NULL. **The `decline` `UPDATE` must NOT go on that client:** `offers` carries only two SELECT policies and no UPDATE policy, so as `authenticated` the update matches zero rows and the plan's decline answers `{declined: true}` having changed nothing (measured on this host — `UPDATE 0` as `authenticated` against `UPDATE 1` as `service_role`, with the same driver able to SELECT the same row). Use a separate service-role client for that write, or replace the decline with a `SECURITY DEFINER` RPC that mirrors `accept_offer`'s ownership check, which is the cleaner fix and needs a Task 5 migration. Note that Task 6's single service-role client is **not** the pattern to copy here: Task 6 has no user-scoped operation at all, so it has nothing to be the second client for.
 
 - [ ] **Step 1: Write the failing test, including the Review Focus case**
 
@@ -11055,7 +11274,7 @@ void main() => runApp(const RideNGoApp());
 
 `apps/driver/lib/main.dart` becomes the same with `DriverNGoApp` and `SplashScreen` from the driver app's own `src/onboarding`. The `home` parameter exists so tests can inject `RiderShell`/`DriverShell` directly.
 
-- [ ] **Step 12: Commit**
+- [ ] **Step 11: Commit**
 
 ```bash
 cd ~/meet-n-go && git add -A
