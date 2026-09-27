@@ -50,8 +50,14 @@ Deno.test('over-large discount never yields a negative fare', () => {
 // round2 that does nothing passes every one of them. Measured on deno 2.9.7:
 // the raw total here is 16.158 (the double nearest it is 16.158000000000001),
 // and 16.158 === 16.16 is false, so this is the only case in the file that
-// discriminates rounding from no rounding. The Dart suite still has no
-// equivalent case; see task-6-report.md.
+// discriminates rounding from no rounding.
+//
+// The twin of this case is `fare is rounded to 2 decimal places, not left at 3`
+// in `packages/mng_core/test/fare_calculator_test.dart`, with the same
+// 3.7 km / surge 1.3 / 16.16. It exists in both languages on purpose: a client
+// that quotes 16.158 and a backend that stores 16.16 disagree by a third of a
+// cedi and neither suite would notice on its own. The two literals are the same
+// value in both files — change one, change the other in the same commit.
 Deno.test('fare is rounded to 2 decimal places, not left at 3', () => {
   // (5.00 + 1.80 * 3.7) * 1.3 + 1.00 = 16.158 raw, so 16.16 rounded.
   const q = computeFare({ category: 'standard', distanceKm: 3.7, surge: 1.3, discountGhs: 0 });
