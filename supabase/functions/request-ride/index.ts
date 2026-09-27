@@ -1,54 +1,18 @@
 import { serve } from 'https://deno.land/std@0.224.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.45.4';
 import { corsHeaders } from '../_shared/cors.ts';
-import {
-  computeFare,
-  promoDiscountGhs,
-  RIDE_CATEGORY_NAMES,
-  type RideCategoryName,
-} from './fare.ts';
+import { deleteTripAndFail } from './compensate.ts';
+import { computeFare, promoDiscountGhs } from './fare.ts';
 import { MAX_OFFERS, pickDrivers } from './match.ts';
+import { isFiniteNumber, parseRideRequest, type Pin } from './request.ts';
 
 const OFFER_TTL_SECONDS = 20;
-
-interface Pin {
-  label: string;
-  address: string;
-  lat: number;
-  lng: number;
-}
 
 const json = (status: number, payload: Record<string, unknown>) =>
   new Response(JSON.stringify(payload), {
     status,
     headers: { ...corsHeaders, 'Content-Type': 'application/json' },
   });
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null && !Array.isArray(value);
-
-// A number, not a string that happens to parse, and not a boolean or a
-// one-element array, all of which `Number()` would happily accept. Postgres
-// `numeric` stores NaN, so a non-finite value here does not fail on the way in:
-// it lands in `fare_ghs` and `surge` and is inherited by Task 11's settlement
-// and Task 15's payout. Measured on PostgreSQL 17.11: `select
-// 'NaN'::numeric(10,2)` succeeds, `sum()` over such a row is NaN, and
-// `fare_ghs >= 0` counts the row as passing, so nothing downstream catches it
-// either. The only place it can be refused is here, before the insert.
-const isFiniteNumber = (value: unknown): value is number =>
-  typeof value === 'number' && Number.isFinite(value);
-
-// Validated, and narrowed on the way in rather than on the way to the database.
-const readPin = (value: unknown): Pin | null => {
-  if (!isRecord(value)) return null;
-  if (!isFiniteNumber(value.lat) || !isFiniteNumber(value.lng)) return null;
-  return {
-    label: typeof value.label === 'string' ? value.label : '',
-    address: typeof value.address === 'string' ? value.address : '',
-    lat: value.lat,
-    lng: value.lng,
-  };
-};
 
 // The stored jsonb is the shape `TripStop.fromJson` reads, not the shape that
 // arrived. The Dart model casts `json['point'] as Map<String, dynamic>` with no
@@ -57,7 +21,7 @@ const readPin = (value: unknown): Pin | null => {
 // `{...pickup.toJson(), ...pickup.point.toJson()}`, which carries `point` as
 // well and so happens to work today; normalising here means it stops depending
 // on the client sending the nested copy. `label` and `address` are coerced to
-// strings above for the same reason: `TripStop` casts both.
+// strings in `parseRideRequest` for the same reason: `TripStop` casts both.
 const stopJson = (pin: Pin) => ({
   label: pin.label,
   address: pin.address,
@@ -84,10 +48,10 @@ serve(async (req) => {
   // `getUser` validates, and the trip's `rider_id` is that validated identity
   // and never a field of the request body. No other part of the body can decide
   // who the trip belongs to. The distance RPC, the promo read, the trip insert,
-  // `match_offers_for_trip` and the offers insert all use this one client,
-  // because `match_offers_for_trip` is reachable by `service_role` alone and no
-  // role that can be impersonated by a client has an RLS path to the trip or
-  // the offer insert.
+  // `match_offers_for_trip`, the offers insert and the compensating delete all
+  // use this one client, because `match_offers_for_trip` is reachable by
+  // `service_role` alone and no role that can be impersonated by a client has an
+  // RLS path to the trip or the offer insert.
   const service = createClient(
     Deno.env.get('SUPABASE_URL')!,
     Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
@@ -107,26 +71,12 @@ serve(async (req) => {
   } catch {
     return json(400, { error: 'body must be JSON' });
   }
-  if (!isRecord(body)) return json(400, { error: 'body must be a JSON object' });
-
-  // Every field the fare depends on is checked before anything is read or
-  // written. `PER_KM['deluxe']` is `undefined`, so an unchecked category also
-  // makes the fare NaN, and it does so before the `trips_category_check`
-  // constraint ever sees the value, which is how an input bug turns into an
-  // opaque 500.
-  const category = body.category;
-  if (typeof category !== 'string' || !RIDE_CATEGORY_NAMES.includes(category as RideCategoryName)) {
-    return json(400, { error: `category must be one of ${RIDE_CATEGORY_NAMES.join(', ')}` });
-  }
-  const rideCategory = category as RideCategoryName;
-
-  const pickup = readPin(body.pickup);
-  if (!pickup) return json(400, { error: 'pickup must carry finite numeric lat and lng' });
-  const dropoff = readPin(body.dropoff);
-  if (!dropoff) return json(400, { error: 'dropoff must carry finite numeric lat and lng' });
-
-  const surge = body.surge ?? 1;
-  if (!isFiniteNumber(surge)) return json(400, { error: 'surge must be a finite number' });
+  // Everything the fare depends on — the category, both pins and the surge,
+  // including the coordinate range — is checked here, before the first RPC and
+  // before the insert.
+  const parsed = parseRideRequest(body);
+  if (!parsed.ok) return json(400, { error: parsed.error });
+  const { category, pickup, dropoff, surge, promoCode } = parsed.value;
 
   const { data: distanceRow, error: distanceError } = await service.rpc('trip_distance_km', {
     a: wkt(pickup),
@@ -140,14 +90,14 @@ serve(async (req) => {
   // `percent_off / 100 * distanceKm * 1.8` instead, which is what this used to
   // do, hard-codes the standard per-km rate, so a premium ride is discounted at
   // the standard rate and the base and booking fee are ignored.
-  const gross = computeFare({ category: rideCategory, distanceKm, surge, discountGhs: 0 });
+  const gross = computeFare({ category, distanceKm, surge, discountGhs: 0 });
 
   let discountGhs = 0;
-  if (body.promoCode) {
+  if (promoCode) {
     const { data: promo, error: promoError } = await service
       .from('promos')
       .select('percent_off,max_discount_ghs,expires_at')
-      .eq('code', String(body.promoCode).toUpperCase())
+      .eq('code', promoCode)
       .eq('active', true)
       .maybeSingle();
     // A dropped error here would leave discountGhs at 0 and quote the rider
@@ -175,13 +125,13 @@ serve(async (req) => {
     }
   }
 
-  const quote = computeFare({ category: rideCategory, distanceKm, surge, discountGhs });
+  const quote = computeFare({ category, distanceKm, surge, discountGhs });
 
   const { data: trip, error: tripError } = await service
     .from('trips')
     .insert({
       rider_id: riderId,
-      category: rideCategory,
+      category,
       state: 'requested',
       pickup: stopJson(pickup),
       dropoff: stopJson(dropoff),
@@ -196,6 +146,14 @@ serve(async (req) => {
     .single();
   if (tripError) return json(500, { error: tripError.message });
 
+  // From here on the trip row exists, so every failure below has to take it
+  // out again: Task 8's `activeTrip()` selects `requested` trips, so an orphan
+  // pins the rider's active trip and blocks every later ride request.
+  const deleteTrip = async (tripId: string) => {
+    const { error } = await service.from('trips').delete().eq('id', tripId);
+    return { error };
+  };
+
   // Service-role only: the migration revokes EXECUTE on this function from
   // `public`, `anon` and `authenticated`, so a user client returns 42501 here
   // and a Flutter app cannot call it at all. The error is checked rather than
@@ -205,7 +163,9 @@ serve(async (req) => {
   const { data: candidates, error: matchError } = await service.rpc('match_offers_for_trip', {
     target_trip: trip.id,
   });
-  if (matchError) return json(500, { error: matchError.message });
+  if (matchError) {
+    return json(500, await deleteTripAndFail(deleteTrip, trip.id, matchError.message));
+  }
 
   const rows = (candidates ?? []) as { driver_id: string; pickup_distance_km: number }[];
   const driverIds = pickDrivers(
@@ -230,8 +190,11 @@ serve(async (req) => {
     );
     // Checked, and this is the check the brief left out: reporting
     // `offerDriverIds` for offers that were never written tells the rider the
-    // fan-out happened while no driver was ever told about the trip.
-    if (offerError) return json(500, { error: offerError.message });
+    // fan-out happened while no driver was ever told about the trip. The trip
+    // goes with them, since the offers cascade from it.
+    if (offerError) {
+      return json(500, await deleteTripAndFail(deleteTrip, trip.id, offerError.message));
+    }
   }
 
   return json(200, { trip, quote, offerDriverIds: driverIds });
