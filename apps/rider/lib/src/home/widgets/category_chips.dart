@@ -8,8 +8,8 @@ import 'package:mng_core/mng_core.dart';
 /// and `MngColors.textPrimary`, so a selected Premium chip rendered with
 /// `onPrimary` is dark-on-dark and reads as an empty box. Measured luminance on
 /// this host: `standard` 0.5165, `van` 0.3560, `premium` 0.0103, `onPrimary`
-/// 0.0103, `page` 1.0. The `0.5` threshold therefore leaves `standard` and
-/// `van` on `onPrimary` exactly as before and flips only `premium` to `page`.
+/// 0.0103, `page` 1.0. The `0.5` threshold therefore leaves `standard` on
+/// `onPrimary` and maps both `van` and `premium` to `page`.
 Color onCategoryColor(RideCategory category) =>
     category.color.computeLuminance() > 0.5 ? MngColors.onPrimary : MngColors.page;
 

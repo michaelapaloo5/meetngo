@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
 import 'package:mng_core/mng_core.dart';
-import '../home/widgets/category_chips.dart';
 import 'vehicle_card.dart';
 
 class ChooseCarScreen extends StatefulWidget {
@@ -94,7 +93,7 @@ class _ChooseCarScreenState extends State<ChooseCarScreen> {
                               style: TextStyle(
                                 fontSize: 13.sp,
                                 color: c == _category
-                                    ? onCategoryColor(c)
+                                    ? MngColors.onPrimary
                                     : MngColors.textSub,
                               ),
                             ),

@@ -100,6 +100,23 @@ void main() {
     expect(find.text('Honda Hiace'), findsOneWidget);
   });
 
+  testWidgets('a selected tab label is legible on the amber pill',
+      (tester) async {
+    useDesignSurface(tester);
+    await tester.pumpWidget(wrap(
+      vehicles: [vehicle('1', RideCategory.standard, 4)],
+    ));
+    await tester.tap(find.byKey(const Key('tab-van')));
+    await tester.pump();
+    final label = tester.widget<Text>(
+      find.descendant(
+        of: find.byKey(const Key('tab-van')),
+        matching: find.text('Van'),
+      ),
+    );
+    expect(label.style!.color, MngColors.onPrimary);
+  });
+
   testWidgets('van fare uses the van per-km rate', (tester) async {
     useDesignSurface(tester);
     await tester.pumpWidget(wrap(
