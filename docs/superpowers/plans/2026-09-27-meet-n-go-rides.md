@@ -7121,11 +7121,18 @@ git -c user.email=opencode@local -c user.name=opencode commit -m "feat(functions
 import 'package:flutter/material.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:meetngo_rider/src/data/trip_repository.dart';
 import 'package:meetngo_rider/src/tracking/finding_driver_screen.dart';
 import 'package:meetngo_rider/src/tracking/tracking_controller.dart';
 import 'package:meetngo_rider/src/tracking/tracking_screen.dart';
 import 'package:mng_core/mng_core.dart';
 import 'package:provider/provider.dart';
+
+void useDesignSurface(WidgetTester tester) {
+  tester.view.physicalSize = const Size(1170, 2532);
+  tester.view.devicePixelRatio = 3.0;
+  addTearDown(tester.view.reset);
+}
 
 Trip tripInState(TripState state) => Trip(
       id: 't1',
@@ -7154,11 +7161,16 @@ class FakeTripRepository implements TripRepository {
   Stream<Trip> watchTrip(String tripId) => const Stream<Trip>.empty();
 
   @override
-  Future<void> requestRide({
+  Future<Trip> requestRide({
     required TripStop pickup,
     required TripStop dropoff,
     required RideCategory category,
-  }) async {}
+    String? promoCode,
+  }) async =>
+      tripInState(TripState.requested);
+
+  @override
+  Future<GeoPoint?> currentLocation() async => null;
 
   @override
   Future<void> cancelTrip(String tripId) async {
@@ -7196,7 +7208,7 @@ class FakeTrackingController extends TrackingController {
 
 Widget wrapTracking(TrackingController c) => ScreenUtilInit(
       designSize: const Size(390, 844),
-      builder: (_, __) => ChangeNotifierProvider<TrackingController>.value(
+      builder: (_, _) => ChangeNotifierProvider<TrackingController>.value(
         value: c,
         child: MaterialApp(theme: MngTheme.light, home: const TrackingScreen()),
       ),
@@ -7204,11 +7216,13 @@ Widget wrapTracking(TrackingController c) => ScreenUtilInit(
 
 void main() {
   testWidgets('matched state shows the ride-confirmed headline', (tester) async {
+    useDesignSurface(tester);
     await tester.pumpWidget(wrapTracking(FakeTrackingController(TripState.matched)));
     expect(find.text('Ride confirmed'), findsOneWidget);
   });
 
   testWidgets('arriving state shows the ETA badge with minutes', (tester) async {
+    useDesignSurface(tester);
     final c = FakeTrackingController(TripState.arriving)..etaMinutes = 4;
     await tester.pumpWidget(wrapTracking(c));
     expect(find.text('Arriving soon'), findsOneWidget);
@@ -7217,12 +7231,14 @@ void main() {
   });
 
   testWidgets('driver name, rating and car are summarised', (tester) async {
+    useDesignSurface(tester);
     await tester.pumpWidget(wrapTracking(FakeTrackingController(TripState.arriving)));
     expect(find.text('Jane Cooper'), findsOneWidget);
     expect(find.text('4.8'), findsOneWidget);
   });
 
   testWidgets('call, message and cancel actions are all present', (tester) async {
+    useDesignSurface(tester);
     await tester.pumpWidget(wrapTracking(FakeTrackingController(TripState.arriving)));
     expect(find.byKey(const Key('callButton')), findsOneWidget);
     expect(find.byKey(const Key('messageButton')), findsOneWidget);
@@ -7230,6 +7246,7 @@ void main() {
   });
 
   testWidgets('cancel delegates to the repository with the trip id', (tester) async {
+    useDesignSurface(tester);
     final c = FakeTrackingController(TripState.arriving);
     await tester.pumpWidget(wrapTracking(c));
     await tester.tap(find.byKey(const Key('cancelButton')));
@@ -7239,11 +7256,13 @@ void main() {
   });
 
   testWidgets('ongoing state hides the cancel action', (tester) async {
+    useDesignSurface(tester);
     await tester.pumpWidget(wrapTracking(FakeTrackingController(TripState.ongoing)));
     expect(find.byKey(const Key('cancelButton')), findsNothing);
   });
 
   testWidgets('SOS raises once and shows the confirmation copy', (tester) async {
+    useDesignSurface(tester);
     final c = FakeTrackingController(TripState.arriving);
     await tester.pumpWidget(wrapTracking(c));
     await tester.tap(find.byKey(const Key('sosButton')));
@@ -7258,6 +7277,7 @@ void main() {
   });
 
   testWidgets('a second SOS tap does not raise another event', (tester) async {
+    useDesignSurface(tester);
     final c = FakeTrackingController(TripState.arriving);
     await tester.pumpWidget(wrapTracking(c));
     await tester.tap(find.byKey(const Key('sosButton')));
@@ -7268,6 +7288,7 @@ void main() {
   });
 
   testWidgets('driver car and plate render when a vehicle is attached', (tester) async {
+    useDesignSurface(tester);
     final c = FakeTrackingController(TripState.arriving)
       ..driverVehicle = const Vehicle(
         id: 'v1',
@@ -7286,10 +7307,11 @@ void main() {
   });
 
   testWidgets('finding-driver screen shows the search copy and cancel', (tester) async {
+    useDesignSurface(tester);
     bool cancelled = false;
     await tester.pumpWidget(ScreenUtilInit(
       designSize: const Size(390, 844),
-      builder: (_, __) => MaterialApp(
+      builder: (_, _) => MaterialApp(
         theme: MngTheme.light,
         home: FindingDriverScreen(
           trip: tripInState(TripState.requested),
@@ -7462,20 +7484,35 @@ class DriverSummary extends StatelessWidget {
                 Text(driver.fullName,
                     style: MngTheme.light.textTheme.titleMedium),
                 SizedBox(height: 2.h),
-                Row(
+                Wrap(
+                  spacing: 10.w,
+                  runSpacing: 2.h,
+                  crossAxisAlignment: WrapCrossAlignment.center,
                   children: [
-                    const Icon(Icons.star, size: 14, color: MngColors.primary),
-                    SizedBox(width: 2.w),
-                    Text(driver.rating.toStringAsFixed(1),
-                        style: MngTheme.light.textTheme.bodySmall),
-                    if (vehicle != null) ...[
-                      SizedBox(width: 10.w),
-                      Text(vehicle!.displayName,
-                          style: MngTheme.light.textTheme.bodySmall),
-                      SizedBox(width: 6.w),
-                      Text(vehicle!.plate,
-                          style: MngTheme.light.textTheme.bodySmall),
-                    ],
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(Icons.star,
+                            size: 14, color: MngColors.primary),
+                        SizedBox(width: 2.w),
+                        Text(driver.rating.toStringAsFixed(1),
+                            style: MngTheme.light.textTheme.bodySmall),
+                      ],
+                    ),
+                    if (vehicle != null)
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Flexible(
+                            child: Text(vehicle!.displayName,
+                                overflow: TextOverflow.ellipsis,
+                                style: MngTheme.light.textTheme.bodySmall),
+                          ),
+                          SizedBox(width: 6.w),
+                          Text(vehicle!.plate,
+                              style: MngTheme.light.textTheme.bodySmall),
+                        ],
+                      ),
                   ],
                 ),
               ],
@@ -7551,14 +7588,18 @@ class TrackingScreen extends StatelessWidget {
             Padding(
               padding: EdgeInsets.symmetric(horizontal: 20.w),
               child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  Text(
-                    _headlines[trip.state] ?? 'Your ride',
-                    style: MngTheme.light.textTheme.titleLarge,
+                  Expanded(
+                    child: Text(
+                      _headlines[trip.state] ?? 'Your ride',
+                      overflow: TextOverflow.ellipsis,
+                      style: MngTheme.light.textTheme.titleLarge,
+                    ),
                   ),
-                  if (c.etaMinutes != null)
+                  if (c.etaMinutes != null) ...[
+                    SizedBox(width: 10.w),
                     EtaBadge(minutes: c.etaMinutes!),
+                  ],
                 ],
               ),
             ),
@@ -7757,46 +7798,86 @@ class FindingDriverScreen extends StatelessWidget {
 }
 ```
 
-- [ ] **Step 13: Add `raiseSos` to the trip repository contract**
+- [ ] **Step 13: `raiseSos` already exists — do not add it again**
 
-In `apps/rider/lib/src/data/trip_repository.dart` add the method to the abstract class:
+`TripRepository.raiseSos` and `SupabaseTripRepository.raiseSos` both shipped in
+Task 8. **This task must not modify either file.** A previous draft of this step
+proposed adding both, and doing so would have replaced a correct implementation
+with a worse one in four separate ways:
 
-```dart
-  Future<void> raiseSos(String tripId, String note);
-```
+- Task 8's version reads `currentUser` into a local and throws
+  `TripRequestFailure('Not signed in')` when it is null. The draft used
+  `currentUser!`, and the null-assertion throws a `TypeError` that
+  `on PostgrestException` cannot catch, so the SOS vanishes with no row in
+  `sos_events` and no message for the rider. Task 8's shipped comment at
+  `supabase_trip_repository.dart:116` documents that this was a real bug.
+- Task 8's version populates `point` from `currentLocation()`. `sos_events.point`
+  is `geography(Point,4326)` and the draft omitted it, so a dispatched team would
+  have no location for the emergency.
+- Task 8's version catches `PostgrestException` and rethrows as
+  `TripRequestFailure`. The draft read `res.error` off an awaited postgrest
+  builder, which has no `error` member and does not compile.
+- The draft threw `AuthFailure`, which is the auth layer's type, from a
+  trip-layer method.
 
-In `apps/rider/lib/src/data/supabase_trip_repository.dart` implement it by inserting directly into `sos_events`. The migration's `raise sos on a trip you are party to` policy is what makes this work: it requires `raised_by = auth.uid()` and that the trip's `rider_id` or `driver_id` is the caller. Without that policy the insert returns 42501, so do not replace it with a select-only policy on `sos_events`.
+`sos_events.status` has `default 'open'` in the migration, so the draft's
+explicit `'status': 'open'` was also redundant.
 
-That policy carries **no state clause**, on purpose, and it must stay that way. `activeTrip()` above includes `requested`, and `TrackingController.raiseSos` fires whenever the trip is non-null while setting `sosRaised = true` *before* awaiting the insert. So a rider who presses the button while still waiting for a driver is in a `requested` trip, and a gate of `state in ('matched','arriving','ongoing')` would turn a working safety button into a 42501 that surfaces as an uncaught exception on a screen already reading "Help is on the way", with no row in `sos_events`. The symmetry argument is the same one that makes the `chat_messages` INSERT policy ungated: the SOS SELECT policy is ungated, so the write policy is too. Never narrow this button to fit a policy; if a state restriction is ever genuinely wanted, change `raiseSos` deliberately and write the test with it.
+What Task 10 *does* own is the caller: `TrackingController.raiseSos` is new here,
+and `TrackingScreen`'s SOS button is new here. Both go through the existing
+repository method.
 
-```dart
-  @override
-  Future<void> raiseSos(String tripId, String note) async {
-    final res = await _client.from('sos_events').insert({
-      'trip_id': tripId,
-      'raised_by': _client.auth.currentUser!.id,
-      'note': note,
-      'status': 'open',
-    });
-    if (res.error != null) throw AuthFailure(res.error!.message);
-  }
-```
+The migration's `raise sos on a trip you are party to` policy is what makes the
+insert work: it requires `raised_by = auth.uid()` and that the trip's `rider_id`
+or `driver_id` is the caller. Without that policy the insert returns 42501, so
+never replace it with a select-only policy on `sos_events`.
 
-- [ ] **Step 14: Run the tracking tests and confirm they pass**
+That policy carries **no state clause**, on purpose, and it must stay that way.
+`activeTrip()` includes `requested`, and `TrackingController.raiseSos` fires
+whenever the trip is non-null while setting `sosRaised = true` *before* awaiting
+the insert. So a rider who presses the button while still waiting for a driver is
+in a `requested` trip, and a gate of `state in ('matched','arriving','ongoing')`
+would turn a working safety button into a 42501 on a screen already reading
+"Help is on the way", with no row in `sos_events`. The symmetry argument is the
+same one that makes the `chat_messages` INSERT policy ungated: the SOS SELECT
+policy is ungated, so the write policy is too. Never narrow this button to fit a
+policy; if a state restriction is ever genuinely wanted, change `raiseSos`
+deliberately and write the test with it.
+
+- [ ] **Step 14: Run the tracking and cancellation-policy tests and confirm they pass**
 
 ```bash
-cd ~/meet-n-go/apps/rider && flutter test test/tracking/ && flutter analyze
+export PATH="$HOME/.deno/bin:$PATH"
+cd ~/meet-n-go && deno test --allow-env supabase/functions/_tests/cancel_policy.test.ts
+deno check supabase/functions/cancel-trip/index.ts
+deno lint supabase/functions/cancel-trip/
+cd ~/meet-n-go/apps/rider && flutter test test/tracking/ && flutter analyze --fatal-infos
 ```
 
-Expected: 10 tests pass.
+Expected: 8 Deno tests pass, including `cancel_after_arriving_compensates_driver_test`,
+which is one of the plan's seven Review Focus tests. `deno check` and `deno lint` are
+silent. 10 widget tests pass. `flutter analyze` reports `No issues found!`.
+
+The repo has no `deno fmt` step in CI, so do not add one.
 
 - [ ] **Step 15: Run the full rider suite and commit**
 
 ```bash
-cd ~/meet-n-go/apps/rider && flutter test && flutter analyze
+cd ~/meet-n-go/apps/rider && flutter test && flutter analyze --fatal-infos
 cd ~/meet-n-go && git add -A
 git -c user.email=opencode@local -c user.name=opencode commit -m "feat(rider): live tracking, SOS and cancellation compensation"
 ```
+
+Expected: 80 rider tests pass. Measured per file on this host, so the breakdown is
+`grep -c` output and not an addition you should trust blindly: 1 skeleton, 9 login,
+7 reset, 4 forgot-password, 15 home, 15 choose-car, 7 route-entry-sheet, 9 data-layer
+(plain `test(`), 3 trip-json (plain `test(`), 10 tracking. That is 70 pre-existing plus
+10 new. Read the runner's own total as the authority. Counting by hand matters:
+`grep -c 'testWidgets('` returns 0 for `data_layer_test.dart` and `trip_json_test.dart`
+because they use plain `test(`, and the 4-space indentation inside Task 9's `group()`
+bodies is **not** a cause of a zero count — a 4-space-indented `testWidgets(` counts
+and returns 1. The earlier explanation in this section blaming indentation was wrong and
+is corrected here.
 
 ---
 
