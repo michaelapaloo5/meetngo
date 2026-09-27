@@ -3519,37 +3519,48 @@ git commit -m "feat(functions): request-ride with fare, promo discount, radius m
 ---
 ### Task 7: Edge Function — offers accept/decline with the single-winner rule
 
-**Status: shipped.** 84 Deno tests pass, `deno check` and `deno lint` clean. The deployed HTTP round trip of Step 7 is **not** verified; see Step 7.
+**Status: shipped, fix round 1 applied.** 91 Deno tests pass, `deno check` and `deno lint` clean, 13/13 authorization probes pass. The deployed HTTP round trip of Step 7 is **not** verified; see Step 7.
 
 **Files:**
 - Create: `supabase/functions/offers/command.ts` — `parseOfferCommand`
 - Create: `supabase/functions/offers/resolve.ts` — `resolveAccept`, `declineRefusal`, `confirmDecline`
 - Create: `supabase/functions/offers/handler.ts` — `handleOfferRequest(req, deps)`, no client and no supabase-js import
-- Create: `supabase/functions/offers/clients.ts` — the two clients and the four ports
+- Create: `supabase/functions/offers/clients.ts` — the two clients and the five ports
 - Create: `supabase/functions/offers/index.ts` — `serve`, six lines
-- Create: `supabase/tests/verify_offer_authz.sql` — the 10 authorization facts the comments rely on
-- Test: `supabase/functions/_tests/accept_offer.test.ts` — 50 tests
+- Create: `supabase/tests/verify_offer_authz.sql` — the 13 authorization facts the comments rely on
+- Test: `supabase/functions/_tests/accept_offer.test.ts` — 57 tests
 
 **Interfaces:**
 - Consumes: RPC `accept_offer(uuid)` (Task 5), `kOfferTtl` and `OfferState` semantics (Task 4)
 - Produces: POST `offers` with `{action: 'accept'|'decline', offerId}` returning `{accepted, tripId, winnerDriverId}` or `{declined: true}`. The driver app in Task 13 consumes this.
-- The **request** contract is stricter than the brief's. `parseOfferCommand` refuses with 400 anything that is not exactly `{action: 'accept' | 'decline', offerId: <uuid>}`, in this order: body not a JSON object, `action` not one of the two strings, `offerId` not a string, `offerId` not a uuid. Testing only `action === 'decline'` sent every other value down the accept path, so a client that sent `'Accept'`, `'delete'`, or no action at all had its offer accepted on the caller's behalf — by then the trip is `matched` and no one can undo it. The uuid check is not fussiness: `offers.id` is `uuid primary key` (migration:78) and the id goes straight into a PostgREST equality filter, so a non-uuid comes back 400 and the handler would report a client typo as a 500. Unknown *extra* fields are left alone — a field this function does not read cannot change what it does.
-- The **response** contract is: 401 unauthenticated, 400 bad body, 404 `{accepted:false|'declined':false, reason:'offer not found'}`, 409 on a terminal offer (`offer is already <state>`) and on a zero-row decline write, 500 on a client or database error, else 200. An `accept_offer` that answers `accepted = false` is a **200**, not a 500.
-- `resolveAccept` is a **mirror** of the RPC's rules, not a gate, and the handler never consults it before calling the RPC: the RPC decides under a lock on the trip row, so any answer computed beforehand would be stale. It exists so the rules are pinned by tests, and `supabase/tests/verify_concurrency.sql` pins the locking against the real RPC from two live `dblink` backends.
+- The **request** contract: `parseOfferCommand` refuses with 400 anything that is not `{action: 'accept' | 'decline', offerId: <uuid>}`, in this order: body not a JSON object, `action` not one of the two strings, `offerId` not a string, `offerId` not a uuid. Testing only `action === 'decline'` sent every other value down the accept path, so a client that sent `'Accept'`, `'delete'`, or no action at all had its offer accepted on the caller's behalf — by then the trip is `matched` and no one can undo it. The uuid check is not fussiness: `offers.id` is `uuid primary key` (migration:78) and the id goes straight into a PostgREST equality filter, so a non-uuid comes back 400 and the handler would report a client typo as a 500. **Unrecognised extra fields are left alone**, deliberately: a field this function does not read cannot change what it does, and refusing unknown keys would break a client the moment it adds one.
+- The **response** contract: 401 unauthenticated, 400 bad body, 404 `{accepted:false | declined:false, reason:'offer not found'}`, 409 on a terminal offer (`offer already <state>`), an expired offer (`offer expired`) and a trip that has left `requested` (`trip is no longer awaiting a driver`), 409 on a zero-row decline write (`offer is no longer pending`), 500 on a client or database error, else 200. **An `accept_offer` that answers `accepted = false` is a 200, not a 500.**
 
-**Two clients, and each has exactly one job — `accept` on the driver's own token, `decline` on the service key.** `accept_offer`'s ownership test is the plain expression `v_offer.driver_id is distinct from auth.uid()` (migration:324) inside a `security definer` function, so it is evaluated for every caller and `bypassrls` is no exemption. `offers.driver_id` is `not null` (migration:80), so a caller with no `sub` claim — whose `auth.uid()` is NULL — fails it. Measured: as `anon` and as `service_role` with no `sub` claim, `accept_offer` answers `false / NULL / NULL` and writes nothing (`verify_offer_authz.sql` probes 1 and 2), and as the offer's own driver it answers `true` and the trip goes to `matched` with the sibling `released` (probe 3). So the accept must go out on the driver's own token.
+**`resolveAccept` is a classifier in front of the RPC, not a gate, and it classifies refusals only.** A refusal it returns is one the RPC would have made too, so the call is skipped and the driver is told which of the four reasons applied instead of getting a blanket 404. A pass still calls `accept_offer` and reports **that answer verbatim, including a `false`** — the pre-check can never promote an accept, and nothing it returns reaches the driver as an outcome.
 
-The decline is the other way round. `offers` carries two SELECT policies and no UPDATE policy (migration:530 and :532 are its only two), so the decline `UPDATE` must not go on the caller's client. Measured: the same driver SELECTs 1 row and UPDATEs 0 as `authenticated`, and the identical UPDATE matches 1 row as `service_role` (probes 6 and 7). A `SECURITY DEFINER` RPC mirroring `accept_offer` would be the cleaner fix and needs a Task 5 migration; it was ruled out of scope for this task.
+That asymmetry is sound because every fact the classifier tests is **monotone**, so an accept it refuses was already invalid and cannot become valid again: an offer's state only ever leaves `pending` (migration:376, :381, :391), `expires_at` only approaches as the clock advances, and no trip transition returns a trip to `requested` — the legality predicate at migration:192-197 contains no `new.state` of `requested`, and probe 13 measures all six states refusing the move. The other direction is ordinary: a rival accept landing between the read and the RPC, which the RPC reports as `false` and the handler passes on. The lock behaviour is not pinned here; `supabase/tests/verify_concurrency.sql` pins it against the real RPC from two live `dblink` backends.
 
-**supabase-js only sets `Authorization` when the request has none** (`@supabase/supabase-js@2.45.4/dist/module/lib/fetch.js`), so a service key paired with a forwarded bearer leaves the *bearer* as the effective credential. Measured by driving the shipped client with a stub fetch: a service key plus `Authorization: Bearer DRIVER-JWT` puts `Bearer DRIVER-JWT` on the wire, with the service key only in `apikey`. That construction is what the brief's Step 5 comment claimed the opposite of, and it is the one Task 6's brief shipped and had to be unpicked from. The service client here therefore carries no forwarded header at all, and `authenticate` passes the token to `getUser(token)` explicitly instead — measured to put `Authorization: Bearer <token>` on the wire from a client with no header of its own.
+**Two clients, and each has exactly one job — `accept` on the driver's own token, `decline` on the service key.** `accept_offer`'s ownership test is the plain expression `v_offer.driver_id is distinct from auth.uid()` (migration:324) inside a `security definer` function, so it is evaluated for every caller and `bypassrls` is no exemption. `offers.driver_id` is `not null` (migration:80), so a caller with no `sub` claim — whose `auth.uid()` is NULL — fails it. Measured: as `anon` and as `service_role` with no `sub` claim, `accept_offer` answers `false / NULL / NULL` and writes nothing (probes 1 and 2); as the offer's own driver it answers `true` and the trip goes to `matched` with the sibling `released` (probe 3). So the accept must go out on the driver's own token.
 
-**The decline is the only thing enforcing three invariants RLS was otherwise providing**, and it establishes all three before the write: read the offer on the **caller's bearer** (the `driver reads own offers` policy is what makes that read evidence about this driver), then refuse unless the row exists, is `pending`, and `driver_id` is the caller. The read alone is not enough — `rider reads offers on own trip` (migration:532) also lets the trip's own rider read every offer on it, which probe 5 measures, so the `driver_id` comparison is the only thing that proves ownership. Then the write goes out on the service client filtered by `id` **and** `driver_id` **and** `state = 'pending'` (all three reach the wire; probe 8 measures each refusing on its own), and **the affected row count is checked, not only `error`**. `.select('id,state')` is what makes the count readable: measured, without it the same write returns `data = null` and `count = null` with `error = null` whatever happened. A zero-row match answers **409 `{declined:false}`**, because a decline that changed no row is not a decline.
+The decline is the other way round. `offers` carries two SELECT policies and no UPDATE policy (migration:530 and :532 are its only two), so the decline `UPDATE` must not go on the caller's client. Measured: the same driver SELECTs 1 row and UPDATEs 0 as `authenticated`, and the identical UPDATE matches 1 row as `service_role` (probes 6 and 7).
+
+**supabase-js only sets `Authorization` when the request has none** (`@supabase/supabase-js@2.45.4/dist/module/lib/fetch.js`), so a service key paired with a forwarded bearer leaves the *bearer* as the effective credential. Measured by driving the shipped client with a stub fetch: a service key plus `Authorization: Bearer DRIVER-JWT` puts `Bearer DRIVER-JWT` on the wire, with the service key only in `apikey`. That is the construction the brief's Step 5 comment claimed the opposite of, and the one Task 6's brief shipped and had to be unpicked from. The service client here therefore carries no forwarded header at all, and `authenticate` passes the token to `getUser(token)` explicitly instead — measured to put `Authorization: Bearer <token>` on the wire from a client with no header of its own. **`service_role` can never accept an offer.**
+
+**Three reads, on two clients, and the split is forced by the policies rather than chosen.** The offer row (`state`, `expires_at`, `driver_id`, `trip_id`) comes from the **caller's bearer**, where `driver reads own offers` (migration:530) makes the row evidence about this driver. That policy is not sufficient alone — `rider reads offers on own trip` (migration:532) also lets the trip's rider read every offer on it, which probe 5 measures — so the `driver_id` comparison is what proves ownership, and `accept_offer` checks it again under the trip lock (migration:368).
+
+The **trip state** comes from the **service client**, because the caller's own bearer cannot get it: `driver reads assigned trips` (migration:520) is `using (driver_id = auth.uid())` and a trip's `driver_id` is NULL until `accept_offer` matches it. Probe 11 measures the driver reading their own offer and **0** trip rows at that moment; probe 12 measures the same read returning 1 row after the accept. So no role this function can put a caller's token on has an RLS path to the trip the offer belongs to. This is a privileged read of **one column** of a fact the driver is entitled to anyway — the state of the trip their own offer is on — and `select('state')` rather than `select('*')` is load bearing: the trip row also carries the rider's `pickup`, `dropoff` and `fare_ghs`, and a read that bypasses RLS should not widen because it was easier. The decision it feeds is still the RPC's.
+
+**The decline is the only thing enforcing three invariants RLS was otherwise providing**, and it establishes all three before the write: read the offer on the caller's bearer, refuse unless the row exists, is `pending`, and `driver_id` is the caller, then write on the service client filtered by `id` **and** `driver_id` **and** `state = 'pending'` (all three reach the wire; probe 8 measures each refusing on its own), and **check the affected row count, not only `error`**. `.select('id,state')` is what makes the count readable: measured, without it the same write returns `data = null` and `count = null` with `error = null` whatever happened. A zero-row match answers **409 `{declined:false}`**, because a decline that changed no row is not a decline.
+
+**On `maybeSingle()` versus `limit(1)`, corrected.** The rationale this plan and Task 6's code originally carried was wrong, and it is worth writing down correctly because a comment a future implementer copies as fact is the defect class that cost Task 5 five fix rounds. Measured with the shipped client: on a **GET**, `maybeSingle()` sends `Accept: application/json`, not `application/vnd.pgrst.object+json` (`@supabase/postgrest-js@1.16.1/src/PostgrestTransformBuilder.ts:209-210`), so a zero-row read is a 200 with `[]` that the client turns into `data = null` with no error itself (`PostgrestBuilder.ts:118-134`). The `error.details.includes('0 rows')` comparison at `:162` is a **different** branch, reached only when the server answers with an error, and it is a substring test: forced with `details: "0 rows"` or `"Results contain 0 rows, ..."` a 406 is cleared, and forced with `"JSON object requested, multiple (or no) rows returned"` it is not. None of that is the zero-row GET path. **So the two are behaviourally equivalent for a zero-row read on this version, and the reason to write `limit(1)` is that it never asks the client to interpret a row count at all** — the answer is `data` and we index it, so the shape of a zero-row read cannot change under us if that client-side coercion is ever revised, and every read in the function is then the same shape. That is the rationale the code comments carry. The same false rationale still sits in **Task 6's section** of this plan, at the `limit(1)` bullet in Interfaces and in the Step 5 code block; correcting it there is a Task 6 fix and was left alone rather than edited from this task.
 
 - [x] **Step 1: the test file**
 
-`supabase/functions/_tests/accept_offer.test.ts`, 50 tests. Every one of them was checked against a mutation; 19 of 21 mutations are killed. The mutation battery is `/tmp`-scratch and is not committed, but the mutations are listed at the end of this section so they can be re-run.
+`supabase/functions/_tests/accept_offer.test.ts`, 57 tests. Every one checked against a mutation: **28 of 29 mutations are killed**, and the single survivor is characterised rather than ignored.
 
-  Coverage of the cases this task has to get right: the accept path; `accepted = false` from the RPC as a 200; an empty RPC answer as a 500 rather than a lost race; a non-boolean `accepted` as a 500; a decline against a nonexistent offer, another driver's offer, and each of the four terminal states, none of which reach the write; **a decline whose write matched zero rows is not reported as declined**; and every `parseOfferCommand` refusal, with the bad-action cases also asserting that *no query runs at all*, which is what distinguishes them from the brief's fall-through.
+  Both directions of the classifier are covered, because the second is the one most likely to be got wrong. `a pre-check pass whose RPC answers false is reported as false` pins that a pass followed by a `false` from the RPC answers `accepted: false` and never `true`. `a classified refusal answers its own reason and never reaches the RPC` pins that each of the three refusals answers its own status and reason *and* that `acceptOffer` was never called. `the winner is the RPC's driver, not the one the classifier read` pins the winner with the two ids deliberately different, which is the offer-reassignment window migration:368 exists to guard.
+
+  Also covered: the accept path and its exact call order; a decline against a nonexistent offer, another driver's offer and each of the four terminal states, none of which reach the write; **a decline whose write matched zero rows is not reported as declined**; a trip row that is missing or in any of the five non-`requested` states; an offer state the build does not name; every `parseOfferCommand` refusal, with the bad-action cases also asserting that *no query runs at all*.
 
 - [x] **Step 2: run it and confirm it fails**
 
@@ -3557,39 +3568,35 @@ Expected and observed: `../offers/resolve.ts` did not exist.
 
 - [x] **Step 3: the decision module**
 
-`resolve.ts`, no I/O. Two deliberate differences from the brief's version, both from C9:
+`resolve.ts`, no I/O. Three deliberate differences from the brief's version.
 
-  **The trip state is read from the chosen offer's own row, and the separate `input.tripState` parameter is gone.** The brief passed it in separately, never read the authoritative `chosen.tripState` sitting in the row, and then had the "trip is no longer awaiting a driver" check trust the caller-supplied value. The RPC reads the trip under `for update` and tests that row (migration:373), so the mirror reads the same row. `nextTripState` is therefore `TripStateName | null`, and null only when the offer was not found — there is no trip to have a state, and inventing one would be the same caller-supplied-value problem. A test pins that a sibling offer still reading `requested` cannot talk the check out of rejecting.
+  **The trip state is read from the chosen offer's own row, and the separate `input.tripState` parameter is gone.** The brief passed it in separately, never read the authoritative `chosen.tripState` sitting in the row, and had the "trip is no longer awaiting a driver" check trust the caller-supplied value. The RPC reads the trip under `for update` and tests that row (migration:373), so the classifier reads the same row. `nextTripState` is therefore `TripStateName | null`, null only when the offer was not found.
 
-  That removal also makes the brief's check *order* inexpressible rather than wrong. The brief tested the trip state before the offer's existence, which is only possible if the trip state is available when the offer is not found. `accept_offer` tests existence first (migration:304-307), and the mirror now does too: an unknown id reports `offer not found` whatever the trip is doing. The one ordering the surface *can* observe — a terminal offer on a matched trip — is pinned to report the trip.
+  That removal also makes the brief's check *order* inexpressible rather than wrong. The brief tested the trip state before the offer's existence, which is only possible if the trip state is available when the offer is not found. `accept_offer` tests existence first (migration:304-307) and the classifier does too. The one ordering the surface *can* observe — a terminal offer on a matched trip — is pinned to report the trip.
 
-  The expiry comparison stays `<=` exactly as the brief had it, because the brief is right and Task 4 is wrong. `accept_offer` uses `v_offer.expires_at <= now()` (migration:375) and probe 9 measures it refusing an offer whose `expires_at` is exactly `now()`. `Offer.isExpired` is written `DateTime.now().isAfter(expiresAt)` (offer.dart:35), which is the strict comparison, so the two disagree at exactly `expiresAt`. Both sides carry a comment saying so, and Dart is a later task's fix.
+  **`AcceptResult` carries `refusalStatus: number | null`**, null when the offer is acceptable. The status is chosen where the reason is produced rather than by matching the reason string in the handler, because a string match on an English message is exactly the coupling that breaks silently when one side is reworded.
+
+  The expiry comparison stays `<=` exactly as the brief had it, because the brief is right and Task 4 is wrong. `accept_offer` uses `v_offer.expires_at <= now()` (migration:375) and probe 9 measures it refusing an offer whose `expires_at` is exactly `now()`. `Offer.isExpired` is written `DateTime.now().isAfter(expiresAt)` (offer.dart:35), which is the strict comparison, so the two disagree at exactly `expiresAt`. Both sides carry a comment saying so, and Dart is a later task's fix. The test pins the boundary with a frozen clock, because a test that reads `Date.now()` a moment before the call cannot tell `<=` from `<`.
 
 - [x] **Step 4: run the tests and confirm they pass**
 
 ```
 $ cd ~/meet-n-go/supabase && deno test --allow-env functions/_tests/accept_offer.test.ts
-running 50 tests from ./functions/_tests/accept_offer.test.ts
-ok | 50 passed | 0 failed
+running 57 tests from ./functions/_tests/accept_offer.test.ts
+ok | 57 passed | 0 failed
 ```
 
 - [x] **Step 5: the function**
 
-Five files rather than the brief's one, and the split is what makes the security-critical parts testable without a network:
+Five files rather than the brief's one, and the split is what makes the security-critical parts testable without a network: `command.ts` parses, `resolve.ts` decides, `handler.ts` routes and holds every status code and takes five injected ports, `clients.ts` is the only file that constructs anything, and `index.ts` is `serve((req) => handleOfferRequest(req, buildDeps(buildClients(req))))`.
 
-  `command.ts` parses. `resolve.ts` decides. `handler.ts` routes and holds every status code, and takes four injected ports, so it has no client and no supabase-js import and is tested against fakes. `clients.ts` is the only file that constructs anything, and the only one that has to be believed rather than executed. `index.ts` is `serve((req) => handleOfferRequest(req, buildDeps(buildClients(req))))`.
-
-  `getUser(token)` with the token passed explicitly, not `getUser()` with no argument: there is no persisted session in a Deno Edge Function, so the argumentless form has nothing to read and 401s every request. Measured on this host before writing: `user: null`, `error: Auth session missing!`. `userError` is checked as well as `!userData.user`, since `getUser` answers a bad token with a null user *and* an error, and either alone is enough to refuse.
-
-  `req.json()` is inside a `try`. Unguarded it throws on a truncated body, escapes to `serve`'s default `onError`, and returns a bare 500 that says the request failed rather than that the body was wrong.
-
-  A body that is present but null is a 400 from `parseOfferCommand`, not a 500 from a null dereference.
+  `getUser(token)` with the token passed explicitly, not `getUser()` with no argument: there is no persisted session in a Deno Edge Function, so the argumentless form has nothing to read and 401s every request. `userError` is checked as well as `!userData.user`. `req.json()` is inside a `try`, or a truncated body escapes to `serve`'s default `onError` and returns a bare 500 that says the request failed rather than that the body was wrong.
 
 - [x] **Step 6: check, lint, test**
 
 ```bash
 cd ~/meet-n-go/supabase
-deno check functions/offers/index.ts functions/offers/resolve.ts functions/offers/handler.ts functions/offers/clients.ts functions/offers/command.ts
+deno check functions/offers/*.ts
 deno lint functions/
 deno test --allow-env functions/_tests/
 ```
@@ -3597,69 +3604,76 @@ deno test --allow-env functions/_tests/
 Observed:
 
 ```
-Check functions/offers/index.ts
-Check functions/offers/resolve.ts
-Check functions/offers/handler.ts
-Check functions/offers/clients.ts
-Check functions/offers/command.ts
-
-Checked 16 files
-
-running 50 tests from ./functions/_tests/accept_offer.test.ts
+running 57 tests from ./functions/_tests/accept_offer.test.ts
 running  6 tests from ./functions/_tests/compensate.test.ts
 running 11 tests from ./functions/_tests/fare.test.ts
 running  4 tests from ./functions/_tests/match.test.ts
 running 13 tests from ./functions/_tests/request.test.ts
-ok | 84 passed | 0 failed (1s)
+ok | 91 passed | 0 failed (1s)
+
+Checked 16 files
 ```
 
-`deno fmt --check` is **not** run and is not in this project: there is deliberately no formatting standard, CI has no format step, and the brief's line would either fail or smuggle in a standard the project has declined four times. The brief's "all 17 Deno tests pass" was stale in both directions — the suite was 34 before this task and is 84 after, 50 of them new.
+`deno check` reports nothing for all five files. `deno fmt --check` is **not** run and is not in this project: there is deliberately no formatting standard, CI has no format step, and the brief's line would either fail or smuggle in a standard the project has declined four times. `supabase functions deploy offers` was **not run**: it needs interactive browser auth, and there is no Docker on this host. Not attempted, and not claimed.
 
-  `supabase functions deploy offers` was **not run**: it needs interactive browser auth, and there is no Docker on this host, so there is no local Supabase stack either. Not attempted, and not claimed.
+  `supabase/tests/verify_offer_authz.sql`, run against the real migration on local Postgres 17.11:
+
+```
+$ sudo -n -u postgres psql -d mng_test -v ON_ERROR_STOP=1 -f supabase/tests/verify_offer_authz.sql
+ probes | passed | failed
+--------+--------+--------
+     13 |     13 |      0
+```
+
+  Re-runnable and idempotent. The tally counts `passed is true` and `passed is not true`, not `passed` and `not passed`, because a probe whose verdict is SQL NULL — which is what a comparison against a NULL column produces — must be a failure and not a silence. An earlier version of that line reported `0 failed` while one probe had no verdict at all.
 
 - [ ] **Step 7: the deployed round trip — NOT RUN, and why**
 
-`supabase functions deploy`, `supabase login` and `supabase link` all require an interactive browser login and there is no local stack, so the brief's two-curl race against a deployed URL cannot be executed here. **The deployed HTTP round trip is therefore unverified.** What is verified instead:
-
-  The locking is not re-verified by this step. It is already proven at the database layer by `supabase/tests/verify_concurrency.sql` (Task 5), which fires two accepts at two different offers of one trip from two live `dblink` backends against the real `accept_offer` and asserts exactly one winner, the loser receiving `false`, the siblings released, and no SQLSTATE 40P01. What that file cannot cover is the wiring in front of the RPC, so this task added `supabase/tests/verify_offer_authz.sql`: 10 probes over the real migration on local Postgres 17.11, all passing, each returning a row rather than a `RAISE NOTICE` (which a `dblink` backend discards). It measures the identity rules, the rider-can-read case, the two decline row counts, the three filters, the inclusive expiry boundary and the unknown-id path.
-
-  Still unverified after all of that: the deployed `POST /functions/v1/offers` round trip, and the "one `accepted` plus four `released`" observation, which assumes a five-offer fan-out and so also assumes `MAX_OFFERS = 5` and five approved online drivers within range. Do that on a linked project with two real driver tokens before trusting the function in the app.
+`supabase functions deploy`, `supabase login` and `supabase link` all require an interactive browser login and there is no local stack, so the brief's two-curl race against a deployed URL cannot be executed here. **The deployed HTTP round trip is unverified, and the two-curl race on a linked project belongs in Task 18's runbook as the first thing a pilot runs.** What is verified instead: the locking, by `verify_concurrency.sql` (Task 5), against the real RPC from two live `dblink` backends; and the authorization and the response shapes, by the 13 probes above. What neither covers is an actual `POST /functions/v1/offers` from two tokens at once. The "one `accepted` plus four `released`" observation also assumes a five-offer fan-out, and so assumes `MAX_OFFERS = 5` and five approved online drivers within range.
 
 - [x] **Step 8: commit**
 
 ```bash
 cd ~/meet-n-go
-git add supabase/functions/offers supabase/functions/_tests/accept_offer.test.ts supabase/tests/verify_offer_authz.sql
+git add -A supabase/functions supabase/tests
 git commit -m "feat(functions): single-winner offer acceptance with released siblings"
 ```
 
-**Mutations the test file kills.** 21 attempted, 19 killed, 2 survive and both survivors are characterised rather than ignored:
+**Mutations the test file kills.** 29 attempted, 28 killed. Re-run the whole set, including the decline and parser mutations, after any change to this function: a fix round that repairs the accept path must not be able to undo the decline invariants unnoticed.
 
 | # | Mutation | Result |
 |---|---|---|
-| M1 | `confirmDecline` reports any count as a decline | killed |
-| M2 | `declineRefusal` drops the ownership test | killed |
-| M3 | `declineRefusal` drops the pending test | killed |
-| M4 | `declineRefusal` drops the existence test | killed |
-| M5 | handler checks only `!userId`, not the auth error | killed |
-| M6 | handler does not guard `req.json()` | killed |
-| M7 | handler treats an empty RPC answer as a lost race | killed |
-| M8 | handler does not check `accepted` is a boolean | killed |
-| M9 | handler ignores the decline outcome | killed |
-| M10 | `parseOfferCommand` drops the action allow-list | killed |
-| M11 | `parseOfferCommand` drops the uuid check | killed |
-| M12 | `parseOfferCommand` drops the `offerId` type check | killed |
-| M13 | re-adds an **optional** `input.tripState` | **survives** — see below |
-| M13b | ...and prefers the supplied value when one is given | killed |
-| M14 | expiry uses `<` instead of `<=` | killed |
-| M15 | accept path drops the ownership comparison | killed |
-| M16 | `released` drops the `state = 'pending'` filter | killed |
-| M17 | tests the trip before the offer's existence | **survives** — see below |
-| M18 | tests the offer state before the trip state | killed |
-| M19 | `confirmDecline` reports any nonzero count as a decline | killed |
-| M20 | runs the decline write before the refusal checks | killed |
+| N1 | handler calls the RPC even after a classified refusal | killed |
+| N2 | handler reports the classifier's verdict instead of the RPC's | killed |
+| N3 | handler reports the classifier's winner instead of the RPC's | killed |
+| N4 | a missing trip row is treated as `requested` | killed |
+| N5 | handler ignores the trip state read and assumes `requested` | killed |
+| N6 | classifier drops the expiry check | killed |
+| N7 | classifier drops the terminal-offer check | killed |
+| N8 | classifier drops the trip-state check | killed |
+| N9 | `refusalStatus` is always null, so the handler's 409 fallback carries it | killed |
+| N9b | ...and drops it from the result | killed |
+| N10 | the handler stops comparing `driver_id` on the accept path | killed |
+| R1 | `confirmDecline` reports any count as a decline | killed |
+| R2 | `declineRefusal` drops the ownership test | killed |
+| R3 | `declineRefusal` drops the pending test | killed |
+| R4 | `declineRefusal` drops the existence test | killed |
+| R5 | handler ignores the decline outcome | killed |
+| R6 | the decline write happens before the refusal checks | killed |
+| R7 | `parseOfferCommand` drops the action allow-list | killed |
+| R8 | `parseOfferCommand` drops the uuid check | killed |
+| R9 | `parseOfferCommand` drops the `offerId` type check | killed |
+| R10 | handler checks only `!userId`, not the auth error | killed |
+| R11 | handler does not guard `req.json()` | killed |
+| R12 | handler treats an empty RPC answer as a lost race | killed |
+| R13 | handler does not check that `accepted` is a boolean | killed |
+| R14 | expiry uses `<` instead of `<=` | killed |
+| R15 | `released` drops the `state = 'pending'` filter | killed |
+| R16 | the classifier tests the offer state before the trip state | killed |
+| R17 | the classifier takes the trip state from a caller again | **survives** — see below |
+| R18 | ...and prefers it when given | killed |
 
-M13 surviving is a no-op mutation and not a gap: an optional parameter that no test supplies cannot change any answer, and the half that *would* matter — a supplied value overriding the row — is M13b and is killed. M17 surviving is the point of the C9 change rather than a hole: with no offer there is no row carrying a trip state, so "report the offer" and "report the trip" cannot both be expressed from the row alone, which is exactly why the brief needed the extra parameter to state its order. The observable part of the ordering is pinned by M18 and its test.
+R17 surviving is a no-op mutation and not a gap: an optional parameter that no test supplies cannot change any answer, and the half that *would* matter — a supplied value overriding the row — is R18 and is killed. It was also the sole survivor in the pre-review battery, so the two agree.
 
 ---
 ### Task 8: Rider app — data layer and auth screens
