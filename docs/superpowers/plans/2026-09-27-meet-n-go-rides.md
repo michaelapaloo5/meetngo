@@ -3809,7 +3809,11 @@ Widget wrap(FakeAuthRepository repo) => ScreenUtilInit(
       minTextAdapt: true,
       builder: (_, _) => ChangeNotifierProvider<AuthController>.value(
         value: AuthController(repo),
-        child: const MaterialApp(home: LoginScreen()),
+        // The app theme is what paints the login button amber, so the harness
+        // has to carry it. A bare `MaterialApp` leaves the button on the
+        // Material default and any colour assertion in here is vacuous. Not
+        // `const`: `MngTheme.light` is a `static final` getter, not a constant.
+        child: MaterialApp(theme: MngTheme.light, home: const LoginScreen()),
       ),
     );
 
@@ -3831,7 +3835,13 @@ void main() {
   testWidgets('login button uses the amber primary', (tester) async {
     await tester.pumpWidget(wrap(repo));
     final button = tester.widget<FilledButton>(find.byKey(const Key('loginButton')));
-    expect(button.style?.backgroundColor?.resolve({}), MngColors.primary);
+    // `FilledButton.style` is the constructor argument and nothing else
+    // (`button_style_button.dart:139`), and `LoginScreen` passes none: the
+    // amber comes from `MngTheme.light.filledButtonTheme`. So the effective
+    // style is the widget's own, else the theme above it.
+    final element = tester.element(find.byKey(const Key('loginButton')));
+    final style = button.style ?? Theme.of(element).filledButtonTheme.style!;
+    expect(style.backgroundColor?.resolve({}), MngColors.primary);
   });
 
   testWidgets('empty email shows validation and does not call the repository', (tester) async {
@@ -3926,9 +3936,12 @@ class RecordingAuthRepository implements AuthRepository {
   Future<void> sendResetOtp(String email) async {}
 }
 
+// `Provider`, not `ChangeNotifierProvider`: `AuthRepository` is not a
+// `ChangeNotifier` (`ChangeNotifierProvider<T extends ChangeNotifier?>`), and
+// the screen only ever does `context.read<AuthRepository>()`.
 Widget wrap(RecordingAuthRepository repo) => ScreenUtilInit(
       designSize: const Size(390, 844),
-      builder: (_, _) => ChangeNotifierProvider<AuthRepository>.value(
+      builder: (_, _) => Provider<AuthRepository>.value(
         value: repo,
         child: const MaterialApp(home: ResetPasswordScreen(email: 'rider@example.com')),
       ),
@@ -4053,9 +4066,12 @@ class SpyAuthRepository implements AuthRepository {
   Future<void> verifyOtpAndSetPassword(String email, String code, String password) async {}
 }
 
+// `Provider`, not `ChangeNotifierProvider`: `AuthRepository` is not a
+// `ChangeNotifier` (`ChangeNotifierProvider<T extends ChangeNotifier?>`), and
+// the screen only ever does `context.read<AuthRepository>()`.
 Widget wrap(SpyAuthRepository repo) => ScreenUtilInit(
       designSize: const Size(390, 844),
-      builder: (_, _) => ChangeNotifierProvider<AuthRepository>.value(
+      builder: (_, _) => Provider<AuthRepository>.value(
         value: repo,
         child: const MaterialApp(home: ForgotPasswordScreen()),
       ),
@@ -4339,8 +4355,14 @@ class SupabaseAuthRepository implements AuthRepository {
       }
     } on AuthException catch (e) {
       throw AuthFailure(e.message);
+    } finally {
+      // Every exit signs out, the refusal above included. The client is signed
+      // in on the server-issued temporary password at this point, so signing
+      // out is not only the tidy-up after a successful reset: skipping it on
+      // one path leaves the rider holding a session on a password they never
+      // chose and never saw.
+      await _client.auth.signOut();
     }
-    await _client.auth.signOut();
   }
 }
 ```
@@ -4363,15 +4385,23 @@ class SupabaseTripRepository implements TripRepository {
     // No `rider_id` filter on purpose: the `rider reads own trips` RLS policy
     // is `using (rider_id = auth.uid())`, so the anon key cannot widen this to
     // another rider's trip even with the filter removed.
-    final res = await _client
+    //
+    // `rows` is the row list itself, not a `PostgrestResponse`: awaiting a
+    // postgrest builder yields `T`, and `T` is `PostgrestList` for a `select`
+    // (`postgrest_builder.dart:150`, and the `return converted as T` at
+    // `:549`). A failed read therefore throws `PostgrestException` instead of
+    // handing back an error field, so there is nothing to check here.
+    final rows = await _client
         .from('trips')
         .select()
-        .in('state', ['requested', 'matched', 'arriving', 'ongoing'])
+        // `inFilter`, not `in`: `in` is a reserved word, so `.in(...)` does not
+        // parse, and postgrest 2.9.1 spells the filter `inFilter`
+        // (`postgrest_filter_builder.dart:239`).
+        .inFilter('state', ['requested', 'matched', 'arriving', 'ongoing'])
         .order('created_at', ascending: false)
         .limit(1);
-    final rows = res.data;
-    if (rows == null || rows.isEmpty) return null;
-    return Trip.fromJson(rows.first as Map<String, dynamic>);
+    if (rows.isEmpty) return null;
+    return Trip.fromJson(rows.first);
   }
 
   @override
@@ -4379,7 +4409,7 @@ class SupabaseTripRepository implements TripRepository {
       .from('trips')
       .stream(primaryKey: ['id'])
       .eq('id', tripId)
-      .map((rows) => Trip.fromJson(rows.first as Map<String, dynamic>));
+      .map((rows) => Trip.fromJson(rows.first));
 
   @override
   Future<Trip> requestRide({
@@ -4444,14 +4474,19 @@ class SupabaseTripRepository implements TripRepository {
   @override
   Future<void> raiseSos(String tripId, String note) async {
     final here = await currentLocation();
-    final res = await _client.from('sos_events').insert({
-      'trip_id': tripId,
-      'raised_by': _client.auth.currentUser!.id,
-      'note': note,
-      if (here != null) 'point': 'POINT(${here.lng} ${here.lat})',
-    });
-    final error = res.error;
-    if (error != null) throw TripRequestFailure(error.message);
+    // Same shape as `activeTrip`: the insert yields the written rows and a
+    // refused write throws, so the failure arrives as `PostgrestException` and
+    // not as an error field on a response.
+    try {
+      await _client.from('sos_events').insert({
+        'trip_id': tripId,
+        'raised_by': _client.auth.currentUser!.id,
+        'note': note,
+        if (here != null) 'point': 'POINT(${here.lng} ${here.lat})',
+      });
+    } on PostgrestException catch (e) {
+      throw TripRequestFailure(e.message);
+    }
   }
 }
 ```
@@ -4891,7 +4926,13 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
               Center(
                 child: TextButton(
                   key: const Key('resendButton'),
-                  onPressed: _resendSeconds == 0 || _busy ? null : _send,
+                  // `_resendSeconds > 0`, not `_resendSeconds == 0`: the guard
+                  // has to switch the button off *while the countdown runs*,
+                  // and `== 0` switches it off only when the countdown is over
+                  // and nothing else is true. With `== 0` the rider can tap
+                  // resend through all 30 seconds and call `otp-mail` once per
+                  // tap, which is the thing the countdown is there to stop.
+                  onPressed: _resendSeconds > 0 || _busy ? null : _send,
                   child: Text(
                     _resendSeconds == 0
                         ? "Didn't get it? Resend"
@@ -4902,7 +4943,13 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
               ),
               if (_sent)
                 Expanded(
-                  child: Padding(
+                  // Scrollable, because this panel is the one part of the
+                  // screen with no `SizedBox` slack in it: on a short surface,
+                  // or at a large text scale, the icon, the two lines of copy
+                  // and the button add up to more than the space left under
+                  // the form, and a bare `Column` there overflows and takes
+                  // the "Check your email" copy off screen with it.
+                  child: SingleChildScrollView(
                     padding: EdgeInsets.only(top: 24.h),
                     child: Column(
                       children: [
