@@ -8777,7 +8777,7 @@ that gap is ledgered against a later round, so it is pinned from this side inste
   - `ReceiptScreen({required Trip trip, required Settlement settlement, required PaymentState paymentState, required void Function(int stars, String comment) onRated})` — keys `receiptTotal`, `ratingStars`, `submitRatingButton`.
   - `RatingSheet({required void Function(int stars, String comment) onSubmit, String? headline})` — keys `ratingStars`, `ratingComment`, `submitRatingButton`, `star-1`..`star-5`, 1-5 star row, optional comment field.
   - `Rating.isValidStars` already exists from Task 4; the handler **uses** it, so a 0 or 6 stars is a 400 and never reaches the `ratings` table.
-- Widget keys this task owns: `receiptTotal`, `ratingStars`, `ratingComment`, `submitRatingButton`, `star-1`..`star-5`, `payButton`, `cashButton`, `momoButton`. **`payButton`, `cashButton` and `momoButton` have no deliverable in this task: the Files list has no pay-method surface, `ReceiptScreen` and `RatingSheet` carry none of the three, and `TripController.pay` is the only pay path. They are declared here and not built here, because inventing a pay surface with no specified copy is a worse guess than leaving the keys for the task that owns the pay screen.**
+- Widget keys this task owns: `receiptTotal`, `ratingStars`, `ratingComment`, `submitRatingButton`, `star-1`..`star-5`. **`payButton`, `cashButton` and `momoButton` were declared here and are not built here; they moved to Task 16's section, which owns the route table and the shells.**
 
 **Three requirements this task's previous draft did not deliver at all.** Each is a named deliverable below, not an improvement:
 1. `trip_controller.dart` was in the Files list and in the Interfaces, and **no step wrote it**. Step 14 writes it.
@@ -9851,18 +9851,64 @@ removed, and the mutation battery is in
    `offers/handler.ts:24`) were checked and are correct, as are the two other
    `request-ride/index.ts` citations in the tree
    (`offers/resolve.ts:168`, `offers/clients.ts:87`).
-10. **The 200% text-scale pin measures what it claims, and only half of it.**
-    Removing `Flexible` + `FittedBox` from the receipt's total row reproduces
-    `A RenderFlex overflowed by 58 pixels on the right` at 200%, which is the
-    number this task's brief quotes. The same wrapper on `_row` is **not**
-    exercised by any value the receipt renders, so it is insurance rather than a
-    fix, and the mutation battery reports it as a survivor rather than pretending
-    otherwise.
+10. **The 200% text-scale pin, measured on both money rows.** Removing
+    `Flexible` + `FittedBox` from the receipt's total row reproduces
+    `A RenderFlex overflowed by 58 pixels on the right` at `GHS 20.40`. The
+    itemised rows were the case the first round got wrong, in both directions: the
+    round-0 battery reported a survivor there, and the survivor was the *fixture*,
+    not the mutation. At `GHS 20.40` the itemised money rows have slack at 200%
+    and the guards can be deleted with nothing going red; at `GHS 112221.00` the
+    same deletion overflows the card by 63 and 35 pixels, and at
+    `GHS 99999999.99` by 120 and 120 — all inside `numeric(10,2)`
+    (`init.sql:61`). The receipt test now pins a nine-digit fare, and the pin is
+    a kill. Which half of the wrapper does the work is also measured, by deleting
+    each half in turn: on both rows it is `FittedBox`. `Flexible` alone keeps the
+    value inside the `Row` by **clipping** it — no overflow, a wrong amount on
+    screen — so it is pinned structurally, and the comment above the wrapper says
+    which half it is.
 11. **`MngColors.error` as 14px body text is 3.91:1 on the page**, below the 4.5:1
     WCAG AA floor for text. It is the palette's error token
     (`tokens.dart`), it is used by `'Pick a rating first'` and
     `'This trip was not charged'`, and this task does not change the palette, so
     it is reported rather than fixed.
+12. **Round-1 review findings, all fixed and all pinned.** The six Important
+    and four Minor findings, and what changed:
+    * `demo-pay`'s reused and newly written `state` come from the row, pinned
+      against a row whose state is not the literal the code could have written.
+      The fixtures carried `pending`, so the old assertions could not tell an echo
+      from a hardcoded string.
+    * `ok()` and `first()` moved to `supabase/functions/_shared/rows.ts` and are
+      pinned **behaviourally** in `_tests/rows.test.ts`. Both routes this review
+      offered were measured first: a test importing `complete-trip/clients.ts`
+      resolves `https://esm.sh/@supabase/supabase-js@2.45.4`, which with an empty
+      `DENO_DIR` under `--cached-only` answers
+      `Specifier not found in cache: "https://esm.sh/@supabase/supabase-js@2.45.4"`.
+      To be exact: the test job already resolves `deno.land/std` remotely,
+      because every test file imports `asserts.ts` from there, so this is not
+      "the test job needs a network" — it is that nothing in the test job needs
+      that host today, `deno check` is the only step that resolves it, and two
+      existing static suites have already recorded rejecting a supabase-js import
+      on those grounds. The shared module therefore beats the static-text route
+      the ruling named, and a static assertion in
+      `settlement_clients_wiring.test.ts` stops either builder re-declaring a copy
+      that the behavioural pin would not see.
+    * The receipt's money rows are pinned at `GHS 99999999.99`; see item 10.
+    * `TripController` catches on `Object` rather than on `Exception` and reads
+      the money before the trip row. A 200 whose `trip` lacks a column threw a
+      `TypeError` out of `complete()` with `error == null` — measured — which is
+      the unreadable failure the class document claimed to prevent. A response
+      this app cannot read is now reported as unreadable rather than as the
+      server being down, and the row costs the row and not the total.
+    * Both ledger writes take their kinds from `decision.ledgerKinds` instead of a
+      second hand-written list, and an unknown kind is refused rather than guessed
+      at with a zero row.
+    * The `authenticate` comment no longer claims both halves of its answer are
+      checked — only `userId` is — while the port keeps the `error` field for the
+      house shape, and the never-set `authError` fixture option is gone.
+    * `payButton`, `cashButton` and `momoButton` move to Task 16's section, which
+      owns the route table and the shells. Declared here and built by nothing is
+      the one state a key must not be left in; a deliberate deferral, recorded
+      rather than invented.
 
 ### Task 12: Driver app — onboarding and KYC
 
@@ -13663,6 +13709,16 @@ git -c user.email=opencode@local -c user.name=opencode commit -m "feat: chat, bo
 ```
 
 ---
+
+- **Widget keys Task 11 declared and did not build, owned here from Task 11's
+  fix round 1:** `payButton`, `cashButton`, `momoButton`. Task 11's Files list has
+  no pay-method surface and neither `ReceiptScreen` nor `RatingSheet` carries any
+  of the three; `TripController.pay({required PayMethod method})` is the whole
+  pay path and it has no UI. This section owns the route table and the shells, so
+  the method-selection sheet belongs here: build it against the
+  `TripRepository` this build already has, and wire the buttons to `pay`. Until it
+  exists those three keys are declared and unowned, which is the state the
+  deferral was supposed to end.
 
 ### Task 17: Full trip-lifecycle integration test
 
