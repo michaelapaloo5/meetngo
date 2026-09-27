@@ -2568,8 +2568,14 @@ Deno.test('over-large discount never yields a negative fare', () => {
 // round2 that does nothing passes every one of them. Measured on deno 2.9.7:
 // the raw total here is 16.158 (the double nearest it is 16.158000000000001),
 // and 16.158 === 16.16 is false, so this is the only case in the file that
-// discriminates rounding from no rounding. The Dart suite still has no
-// equivalent case; see task-6-report.md.
+// discriminates rounding from no rounding.
+//
+// The twin of this case is `fare is rounded to 2 decimal places, not left at 3`
+// in `packages/mng_core/test/fare_calculator_test.dart`, with the same
+// 3.7 km / surge 1.3 / 16.16. It exists in both languages on purpose: a client
+// that quotes 16.158 and a backend that stores 16.16 disagree by a third of a
+// cedi and neither suite would notice on its own. The two literals are the same
+// value in both files — change one, change the other in the same commit.
 Deno.test('fare is rounded to 2 decimal places, not left at 3', () => {
   // (5.00 + 1.80 * 3.7) * 1.3 + 1.00 = 16.158 raw, so 16.16 rounded.
   const q = computeFare({ category: 'standard', distanceKm: 3.7, surge: 1.3, discountGhs: 0 });
@@ -3203,7 +3209,7 @@ export async function compensating<T>(
 cd ~/meet-n-go/supabase && deno test functions/_tests/
 ```
 
-Expected: **34** tests pass, 0 fail — 11 fare, 4 match, 12 request, 7 compensate. The fare file's
+Expected: **34** tests pass, 0 fail — 11 fare, 4 match, 13 request, 6 compensate (counted with `grep -c '^Deno.test('` per file, not by hand). The fare file's
 first seven cases are the values the Dart suite asserts; the rest are the 2-dp rounding case
 (3.7 km standard at surge 1.3, raw 16.158, exactly 16.16), the
 premium-takes-more-off-than-standard case, the negative promo cap that would otherwise *raise* the
@@ -11274,7 +11280,7 @@ void main() => runApp(const RideNGoApp());
 
 `apps/driver/lib/main.dart` becomes the same with `DriverNGoApp` and `SplashScreen` from the driver app's own `src/onboarding`. The `home` parameter exists so tests can inject `RiderShell`/`DriverShell` directly.
 
-- [ ] **Step 11: Commit**
+- [ ] **Step 12: Commit**
 
 ```bash
 cd ~/meet-n-go && git add -A
