@@ -5423,9 +5423,10 @@ git commit -m "feat(rider): auth screens, OTP reset flow, data layer interfaces"
   - `CategoryChips({required RideCategory selected, required ValueChanged<RideCategory> onSelected})` and, from the same file, `Color onCategoryColor(RideCategory category)` — the only correct foreground on a `RideCategory.color` surface. Import it wherever a chip or avatar is tinted by the category colour. The counter-example is the choose-car tab pill: it paints its selected background `MngColors.primary` for *every* category, so its label takes `MngColors.onPrimary` unconditionally — the same pair `app_theme.dart` uses for the amber button. Inlining `MngColors.onPrimary` is therefore scoped, not banned: it is the bug on a category-coloured surface and the fix everywhere else.
   - `PromoBanner({required String code})`
   - `RouteEntrySheet({required FareCalculator calc, required void Function(RouteDraft) onSubmit})` — a `showRouteEntrySheet(BuildContext, {required FareCalculator calc, required void Function(RouteDraft) onSubmit})` helper plus `RouteDraft({required TripStop pickup, required TripStop dropoff, required RideCategory category})` and the constants `kDefaultPickup` (Osu, `GeoPoint(5.6037, -0.1870)`) and `kDefaultDropoff` (Airport Residential, `GeoPoint(5.6052, -0.1660)`), which are 2.3299 km apart.
-  - `ChooseCarScreen({required List<Vehicle> vehicles, required RideCategory selected, required ValueChanged<RideCategory> onCategory, required FareCalculator calc, required void Function(Vehicle) onConfirm, double distanceKm = 8.0})`
+  - `ChooseCarScreen({required List<Vehicle> vehicles, required RideCategory selected, required ValueChanged<RideCategory> onCategory, required void Function(Vehicle) onSelect, required FareCalculator calc, required void Function(Vehicle) onConfirm, double distanceKm = 8.0})` — a card tap fires `onSelect` and only marks the selection; `onConfirm` belongs to the `Find driver` button alone, so a parent can tell a selection from a confirmation
+  - `HomeScreen` carries no route-entry widgets for the pilot: `kDefaultPickup` and `kDefaultDropoff` stay `final` display constants and the sheet collects nothing
   - `VehicleCard({required Vehicle vehicle, required double fareGhs, required VoidCallback onTap, double rating = 4.9, bool selected = false})` — root key `Key('vehicleCard-${vehicle.id}')`
-- Widget keys this task owns: `emailField`-style keys `searchField`, `chip-standard`, `chip-premium`, `chip-van`, `vehicleCard-<id>`, `findDriverButton`, `confirmRouteButton`
+- Widget keys this task owns: `emailField`-style keys `searchField`, `chip-standard`, `chip-premium`, `chip-van`, `tab-<category>`, `vehicleCard-<id>`, `findDriverButton`, `confirmRouteButton`
 
 - [ ] **Step 1: Write the failing home-screen test**
 
@@ -5502,6 +5503,15 @@ void main() {
     expect(find.byKey(const Key('chip-premium')), findsOneWidget);
     expect(find.byKey(const Key('chip-van')), findsOneWidget);
     expect(find.text('Moto'), findsNothing);
+    final unselected = tester.widget<Text>(
+      find.descendant(
+        of: find.byKey(const Key('chip-van')),
+        matching: find.text('Van'),
+      ),
+    );
+    // `textSub` on `muted` measures 3.16:1, under the 4.5:1 WCAG AA minimum
+    // for text this size. The tokens are Task 1's, so this pins the value.
+    expect(unselected.style!.color, MngColors.textSub);
   });
 
   testWidgets('tapping a category chip moves the selection', (tester) async {
@@ -5533,6 +5543,13 @@ void main() {
     );
     expect(find.text('Toyota Corolla'), findsOneWidget);
     expect(find.text('Standard · 4 seats'), findsOneWidget);
+    final avatar = tester.widget<Icon>(
+      find.descendant(
+        of: find.byType(CircleAvatar),
+        matching: find.byIcon(Icons.directions_car),
+      ),
+    );
+    expect(avatar.color, MngColors.onPrimary);
   });
 
   testWidgets('promo banner paints the 20px radius on the dark surface',
@@ -5572,6 +5589,62 @@ void main() {
     );
     expect(icon.color, MngColors.page);
     expect(label.style!.color, MngColors.page);
+  });
+
+  testWidgets('a selected Van chip is legible against its own colour',
+      (tester) async {
+    useDesignSurface(tester);
+    await tester.pumpWidget(wrap());
+    await tester.tap(find.byKey(const Key('chip-van')));
+    await tester.pump();
+    final chip = find.byKey(const Key('chip-van'));
+    final icon = tester.widget<Icon>(
+      find.descendant(of: chip, matching: find.byIcon(Icons.airport_shuttle)),
+    );
+    final label = tester.widget<Text>(
+      find.descendant(of: chip, matching: find.text('Van')),
+    );
+    expect(icon.color, MngColors.onPrimary);
+    expect(label.style!.color, MngColors.onPrimary);
+  });
+
+  testWidgets('a Van nearby avatar is legible against its own colour',
+      (tester) async {
+    useDesignSurface(tester);
+    await tester.pumpWidget(wrap(nearby: [vehicle('v1', RideCategory.van, 7)]));
+    final icon = tester.widget<Icon>(
+      find.descendant(
+        of: find.byType(CircleAvatar),
+        matching: find.byIcon(Icons.directions_car),
+      ),
+    );
+    expect(icon.color, MngColors.onPrimary);
+  });
+
+  testWidgets('a Premium nearby avatar is legible against its own colour',
+      (tester) async {
+    useDesignSurface(tester);
+    await tester.pumpWidget(
+      wrap(nearby: [vehicle('v1', RideCategory.premium, 4)]),
+    );
+    final icon = tester.widget<Icon>(
+      find.descendant(
+        of: find.byType(CircleAvatar),
+        matching: find.byIcon(Icons.directions_car),
+      ),
+    );
+    expect(icon.color, MngColors.page);
+  });
+
+  testWidgets('the home screen has no overflow at 200% text scale',
+      (tester) async {
+    useDesignSurface(tester);
+    tester.platformDispatcher.textScaleFactorTestValue = 2.0;
+    addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
+    await tester.pumpWidget(wrap(
+      nearby: [vehicle('v1', RideCategory.van, 7)],
+    ));
+    expect(tester.takeException(), isNull);
   });
 }
 ```
@@ -5665,10 +5738,11 @@ import 'package:mng_core/mng_core.dart';
 /// and `MngColors.textPrimary`, so a selected Premium chip rendered with
 /// `onPrimary` is dark-on-dark and reads as an empty box. Measured luminance on
 /// this host: `standard` 0.5165, `van` 0.3560, `premium` 0.0103, `onPrimary`
-/// 0.0103, `page` 1.0. The `0.5` threshold therefore leaves `standard` on
-/// `onPrimary` and maps both `van` and `premium` to `page`.
+/// 0.0103, `page` 1.0. A `0.5` threshold clears `standard` alone, so it sent
+/// `van` to `page` at 2.59:1. The `0.2` threshold keeps `standard` and `van`
+/// on `onPrimary` and sends only `premium` to `page`.
 Color onCategoryColor(RideCategory category) =>
-    category.color.computeLuminance() > 0.5 ? MngColors.onPrimary : MngColors.page;
+    category.color.computeLuminance() > 0.2 ? MngColors.onPrimary : MngColors.page;
 
 class CategoryChips extends StatelessWidget {
   const CategoryChips({
@@ -5688,50 +5762,51 @@ class CategoryChips extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return SizedBox(
-      height: 76.h,
-      child: ListView.separated(
-        scrollDirection: Axis.horizontal,
-        itemCount: RideCategory.values.length,
-        separatorBuilder: (_, _) => SizedBox(width: 10.w),
-        itemBuilder: (context, i) {
-          final category = RideCategory.values[i];
-          final isSelected = category == selected;
-          return GestureDetector(
-            key: Key('chip-${category.name}'),
-            onTap: () => onSelected(category),
-            child: Container(
-              width: 64.w,
-              padding: EdgeInsets.symmetric(vertical: 10.h),
-              decoration: BoxDecoration(
-                color: isSelected ? category.color : MngColors.muted,
-                borderRadius: BorderRadius.circular(MngRadius.small),
-              ),
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Icon(
-                    _icons[category],
-                    size: 20,
-                    color: isSelected
-                        ? onCategoryColor(category)
-                        : MngColors.textPrimary,
-                  ),
-                  SizedBox(height: 4.h),
-                  Text(
-                    category.label,
-                    style: TextStyle(
-                      fontSize: 11.sp,
-                      color: isSelected
-                          ? onCategoryColor(category)
-                          : MngColors.textSub,
-                    ),
-                  ),
-                ],
+    return SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          for (final category in RideCategory.values) _chip(category),
+        ],
+      ),
+    );
+  }
+
+  Widget _chip(RideCategory category) {
+    final isSelected = category == selected;
+    return GestureDetector(
+      key: Key('chip-${category.name}'),
+      onTap: () => onSelected(category),
+      child: Container(
+        constraints: BoxConstraints(minHeight: 76.h),
+        alignment: Alignment.center,
+        margin: EdgeInsets.only(right: 10.w),
+        padding: EdgeInsets.symmetric(vertical: 10.h),
+        decoration: BoxDecoration(
+          color: isSelected ? category.color : MngColors.muted,
+          borderRadius: BorderRadius.circular(MngRadius.small),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(
+              _icons[category],
+              size: 20,
+              color:
+                  isSelected ? onCategoryColor(category) : MngColors.textPrimary,
+            ),
+            SizedBox(height: 4.h),
+            Text(
+              category.label,
+              style: TextStyle(
+                fontSize: 11.sp,
+                color: isSelected ? onCategoryColor(category) : MngColors.textSub,
               ),
             ),
-          );
-        },
+          ],
+        ),
       ),
     );
   }
@@ -5806,8 +5881,9 @@ class _HomeScreenState extends State<HomeScreen> {
                 key: const Key('searchField'),
                 onTap: () => widget.onSearchTap?.call(context),
                 child: Container(
-                  height: 52.h,
-                  padding: EdgeInsets.symmetric(horizontal: 16.w),
+                  constraints: BoxConstraints(minHeight: 52.h),
+                  padding: EdgeInsets.symmetric(
+                      horizontal: 16.w, vertical: 14.h),
                   decoration: BoxDecoration(
                     color: MngColors.muted,
                     borderRadius: BorderRadius.circular(26),
@@ -5816,10 +5892,13 @@ class _HomeScreenState extends State<HomeScreen> {
                     children: [
                       const Icon(Icons.search, color: MngColors.textSub),
                       SizedBox(width: 10.w),
-                      Text(
-                        'Where would you go?',
-                        style: MngTheme.light.textTheme.bodyMedium
-                            ?.copyWith(color: MngColors.textSub),
+                      Expanded(
+                        child: Text(
+                          'Where would you go?',
+                          overflow: TextOverflow.ellipsis,
+                          style: MngTheme.light.textTheme.bodyMedium
+                              ?.copyWith(color: MngColors.textSub),
+                        ),
                       ),
                     ],
                   ),
@@ -5834,9 +5913,13 @@ class _HomeScreenState extends State<HomeScreen> {
               PromoBanner(code: widget.promoCode),
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text('Available cars',
-                      style: MngTheme.light.textTheme.titleMedium),
+                  Flexible(
+                    child: Text('Available cars',
+                        style: MngTheme.light.textTheme.titleMedium),
+                  ),
+                  SizedBox(width: 8.w),
                   Text('See all', style: MngTheme.light.textTheme.bodySmall),
                 ],
               ),
@@ -5860,7 +5943,6 @@ class _HomeScreenState extends State<HomeScreen> {
                     ),
                     title: Text(v.displayName),
                     subtitle: Text('${v.rideCategory.label} · ${v.seats} seats'),
-                    trailing: const Icon(Icons.chevron_right),
                   ),
             ],
           ),
@@ -5877,7 +5959,9 @@ class _HomeScreenState extends State<HomeScreen> {
 cd ~/meet-n-go/apps/rider && flutter test test/home/ && flutter analyze --fatal-infos
 ```
 
-Expected: 11 tests pass, `flutter analyze --fatal-infos` clean.
+Expected: 15 tests pass, `flutter analyze --fatal-infos` clean. Four are the new
+pins: the 200% text-scale check, and the Van-chip, Van-avatar and Premium-avatar
+foreground checks.
 
 - [ ] **Step 7: Write the failing choose-car test**
 
@@ -5904,10 +5988,25 @@ Vehicle vehicle(String id, RideCategory category, int seats,
       rideCategory: category,
     );
 
+Vehicle vehicleWithPhoto(
+        String id, RideCategory category, int seats, String photoUrl) =>
+    Vehicle(
+      id: id,
+      ownerId: 'owner-$id',
+      category: VehicleCategory.sedan,
+      make: 'Honda',
+      model: 'Civic',
+      plate: 'GR-$id',
+      seats: seats,
+      photoUrl: photoUrl,
+      rideCategory: category,
+    );
+
 Widget wrap({
   required List<Vehicle> vehicles,
   RideCategory selected = RideCategory.standard,
   void Function(Vehicle)? onConfirm,
+  void Function(Vehicle)? onSelect,
   void Function(RideCategory)? onCategory,
 }) =>
     ScreenUtilInit(
@@ -5920,6 +6019,7 @@ Widget wrap({
           vehicles: vehicles,
           selected: selected,
           onCategory: onCategory ?? (_) {},
+          onSelect: onSelect ?? (_) {},
           calc: FareCalculator(),
           onConfirm: onConfirm ?? (_) {},
         ),
@@ -5953,19 +6053,22 @@ void main() {
     expect(find.text('GHS 20.40'), findsOneWidget);
   });
 
-  testWidgets('tapping a card selects it and reports the vehicle', (tester) async {
+  testWidgets('tapping a card selects it and does not confirm', (tester) async {
     useDesignSurface(tester);
-    Vehicle? chosen;
+    Vehicle? selected;
+    Vehicle? confirmed;
     await tester.pumpWidget(wrap(
       vehicles: [
         vehicle('1', RideCategory.standard, 4),
         vehicle('2', RideCategory.standard, 4),
       ],
-      onConfirm: (v) => chosen = v,
+      onSelect: (v) => selected = v,
+      onConfirm: (v) => confirmed = v,
     ));
     await tester.tap(find.byKey(const Key('vehicleCard-2')));
     await tester.pump();
-    expect(chosen?.id, '2');
+    expect(selected?.id, '2');
+    expect(confirmed, isNull);
   });
 
   testWidgets('switching category filters the list and notifies the parent',
@@ -6000,6 +6103,15 @@ void main() {
         matching: find.text('Van'),
       ),
     );
+    final pill = tester.widget<Container>(
+      find
+          .descendant(
+            of: find.byKey(const Key('tab-van')),
+            matching: find.byType(Container),
+          )
+          .first,
+    );
+    expect((pill.decoration! as BoxDecoration).color, MngColors.primary);
     expect(label.style!.color, MngColors.onPrimary);
   });
 
@@ -6062,6 +6174,66 @@ void main() {
         .border! as Border;
     expect(borderColorOf('2').top.color, MngColors.primary);
     expect(borderColorOf('1').top.color, MngColors.divider);
+  });
+
+  testWidgets('find-driver confirms the card that was tapped', (tester) async {
+    useDesignSurface(tester);
+    Vehicle? confirmed;
+    await tester.pumpWidget(wrap(
+      vehicles: [
+        vehicle('1', RideCategory.standard, 4),
+        vehicle('2', RideCategory.standard, 4),
+      ],
+      onConfirm: (v) => confirmed = v,
+    ));
+    await tester.tap(find.byKey(const Key('vehicleCard-2')));
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('findDriverButton')));
+    await tester.pump();
+    expect(confirmed?.id, '2');
+  });
+
+  testWidgets('a parent change to the selected category moves the tab',
+      (tester) async {
+    useDesignSurface(tester);
+    final vehicles = [
+      vehicle('1', RideCategory.standard, 4),
+      vehicle('2', RideCategory.van, 7, model: 'Hiace'),
+    ];
+    await tester.pumpWidget(wrap(vehicles: vehicles));
+    expect(find.text('Honda Civic'), findsOneWidget);
+    await tester.pumpWidget(wrap(vehicles: vehicles, selected: RideCategory.van));
+    await tester.pump();
+    expect(find.text('Honda Civic'), findsNothing);
+    expect(find.text('Honda Hiace'), findsOneWidget);
+  });
+
+  testWidgets('a photo that fails to load falls back to the car icon',
+      (tester) async {
+    useDesignSurface(tester);
+    await tester.pumpWidget(wrap(vehicles: [
+      vehicleWithPhoto('1', RideCategory.standard, 4, 'https://example.test/no.png'),
+    ]));
+    await tester.pump();
+    expect(
+      find.descendant(
+        of: find.byKey(const Key('vehicleCard-1')),
+        matching: find.byIcon(Icons.directions_car),
+      ),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('the choose-car screen has no overflow at 200% text scale',
+      (tester) async {
+    useDesignSurface(tester);
+    tester.platformDispatcher.textScaleFactorTestValue = 2.0;
+    addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
+    await tester.pumpWidget(wrap(vehicles: [
+      vehicle('1', RideCategory.standard, 4),
+      vehicle('2', RideCategory.van, 7, model: 'Hiace'),
+    ]));
+    expect(tester.takeException(), isNull);
   });
 }
 ```
@@ -6127,7 +6299,14 @@ class VehicleCard extends StatelessWidget {
               child: vehicle.photoUrl.isEmpty
                   ? Icon(Icons.directions_car,
                       color: vehicle.rideCategory.color, size: 28)
-                  : Image.network(vehicle.photoUrl),
+                  : Image.network(
+                      vehicle.photoUrl,
+                      errorBuilder: (_, _, _) => Icon(
+                        Icons.directions_car,
+                        color: vehicle.rideCategory.color,
+                        size: 28,
+                      ),
+                    ),
             ),
             SizedBox(width: 12.w),
             Expanded(
@@ -6155,12 +6334,12 @@ class VehicleCard extends StatelessWidget {
                               style: MngTheme.light.textTheme.bodySmall),
                         ],
                       ),
-                      Row(
-                        mainAxisSize: MainAxisSize.min,
+                      Wrap(
+                        spacing: 2.w,
+                        crossAxisAlignment: WrapCrossAlignment.center,
                         children: [
                           const Icon(Icons.person,
                               size: 14, color: MngColors.textSub),
-                          SizedBox(width: 2.w),
                           Text('${vehicle.seats} seats',
                               style: MngTheme.light.textTheme.bodySmall),
                         ],
@@ -6223,6 +6402,7 @@ Future<void> showRouteEntrySheet(
   return showModalBottomSheet<void>(
     context: context,
     isScrollControlled: true,
+    useSafeArea: true,
     builder: (_) => RouteEntrySheet(calc: calc, onSubmit: onSubmit),
   );
 }
@@ -6253,77 +6433,82 @@ class _RouteEntrySheetState extends State<RouteEntrySheet> {
   @override
   Widget build(BuildContext context) {
     final quote = widget.calc.quote(category: _category, distanceKm: _distanceKm);
-    return Padding(
-      padding: EdgeInsets.fromLTRB(20.w, 8.h, 20.w, 20.h),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Container(
-            padding: EdgeInsets.all(12.w),
-            decoration: BoxDecoration(
-              color: MngColors.muted,
-              borderRadius: BorderRadius.circular(MngRadius.small),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    const Icon(Icons.circle,
-                        size: 10, color: MngColors.success),
-                    SizedBox(width: 8.w),
-                    Expanded(
-                      child: Text(_pickup.address,
-                          style: MngTheme.light.textTheme.bodyMedium),
-                    ),
-                  ],
-                ),
-                SizedBox(height: 8.h),
-                Row(
-                  children: [
-                    const Icon(Icons.circle, size: 10, color: MngColors.error),
-                    SizedBox(width: 8.w),
-                    Expanded(
-                      child: Text(_dropoff.address,
-                          style: MngTheme.light.textTheme.bodyMedium),
-                    ),
-                  ],
-                ),
-                SizedBox(height: 10.h),
-                Row(
-                  children: [
-                    Expanded(
-                      child: Text(
-                        '${_distanceKm.toStringAsFixed(1)} km  ·  ~$_driveMinutes min drive',
-                        overflow: TextOverflow.ellipsis,
-                        style: MngTheme.light.textTheme.titleMedium,
+    // `useSafeArea` on the modal covers the top only: it wraps the sheet in
+    // `SafeArea(bottom: false)`, so the bottom inset is this widget's job.
+    return SafeArea(
+      top: false,
+      child: Padding(
+        padding: EdgeInsets.fromLTRB(20.w, 8.h, 20.w, 20.h),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Container(
+              padding: EdgeInsets.all(12.w),
+              decoration: BoxDecoration(
+                color: MngColors.muted,
+                borderRadius: BorderRadius.circular(MngRadius.small),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      const Icon(Icons.circle,
+                          size: 10, color: MngColors.success),
+                      SizedBox(width: 8.w),
+                      Expanded(
+                        child: Text(_pickup.address,
+                            style: MngTheme.light.textTheme.bodyMedium),
                       ),
-                    ),
-                    SizedBox(width: 8.w),
-                    Text('GHS ${quote.fareGhs.toStringAsFixed(2)}',
-                        style: MngTheme.light.textTheme.titleMedium),
-                  ],
-                ),
-              ],
+                    ],
+                  ),
+                  SizedBox(height: 8.h),
+                  Row(
+                    children: [
+                      const Icon(Icons.circle, size: 10, color: MngColors.error),
+                      SizedBox(width: 8.w),
+                      Expanded(
+                        child: Text(_dropoff.address,
+                            style: MngTheme.light.textTheme.bodyMedium),
+                      ),
+                    ],
+                  ),
+                  SizedBox(height: 10.h),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          '${_distanceKm.toStringAsFixed(1)} km  ·  ~$_driveMinutes min drive',
+                          overflow: TextOverflow.ellipsis,
+                          style: MngTheme.light.textTheme.titleMedium,
+                        ),
+                      ),
+                      SizedBox(width: 8.w),
+                      Text('GHS ${quote.fareGhs.toStringAsFixed(2)}',
+                          style: MngTheme.light.textTheme.titleMedium),
+                    ],
+                  ),
+                ],
+              ),
             ),
-          ),
-          SizedBox(height: 16.h),
-          CategoryChips(
-            selected: _category,
-            onSelected: (c) => setState(() => _category = c),
-          ),
-          SizedBox(height: 20.h),
-          FilledButton(
-            key: const Key('confirmRouteButton'),
-            onPressed: () => widget.onSubmit(RouteDraft(
-              pickup: _pickup,
-              dropoff: _dropoff,
-              category: _category,
-            )),
-            child: const Text('Search for a ride'),
-          ),
-        ],
+            SizedBox(height: 16.h),
+            CategoryChips(
+              selected: _category,
+              onSelected: (c) => setState(() => _category = c),
+            ),
+            SizedBox(height: 20.h),
+            FilledButton(
+              key: const Key('confirmRouteButton'),
+              onPressed: () => widget.onSubmit(RouteDraft(
+                pickup: _pickup,
+                dropoff: _dropoff,
+                category: _category,
+              )),
+              child: const Text('Search for a ride'),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -6349,6 +6534,29 @@ Widget wrap({void Function(RouteDraft draft)? onSubmit}) => ScreenUtilInit(
         theme: MngTheme.light,
         home: Scaffold(
           body: RouteEntrySheet(calc: FareCalculator(), onSubmit: onSubmit ?? (_) {}),
+        ),
+      ),
+    );
+
+Widget openHarness({void Function(RouteDraft draft)? onSubmit}) => ScreenUtilInit(
+      designSize: const Size(390, 844),
+      minTextAdapt: true,
+      splitScreenMode: true,
+      builder: (_, _) => MaterialApp(
+        theme: MngTheme.light,
+        home: Scaffold(
+          body: Builder(
+            builder: (context) => Center(
+              child: ElevatedButton(
+                onPressed: () => showRouteEntrySheet(
+                  context,
+                  calc: FareCalculator(),
+                  onSubmit: onSubmit ?? (_) {},
+                ),
+                child: const Text('open'),
+              ),
+            ),
+          ),
         ),
       ),
     );
@@ -6401,6 +6609,42 @@ void main() {
     expect(draft!.dropoff.address, kDefaultDropoff.address);
     expect(draft!.category, RideCategory.van);
   });
+
+  testWidgets('the sheet keeps its button clear of the bottom inset',
+      (tester) async {
+    useDesignSurface(tester);
+    tester.view.padding = const FakeViewPadding(bottom: 102);
+    await tester.pumpWidget(openHarness());
+    await tester.tap(find.text('open'));
+    await tester.pumpAndSettle();
+    final button =
+        tester.getBottomRight(find.byKey(const Key('confirmRouteButton')));
+    expect(button.dy, lessThanOrEqualTo(844 - 34));
+  });
+
+  testWidgets('showRouteEntrySheet opens the sheet and submits its draft',
+      (tester) async {
+    useDesignSurface(tester);
+    RouteDraft? draft;
+    await tester.pumpWidget(openHarness(onSubmit: (d) => draft = d));
+    await tester.tap(find.text('open'));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('confirmRouteButton')), findsOneWidget);
+    await tester.tap(find.byKey(const Key('confirmRouteButton')));
+    await tester.pumpAndSettle();
+    expect(draft, isNotNull);
+    expect(draft!.pickup.address, kDefaultPickup.address);
+    expect(draft!.dropoff.address, kDefaultDropoff.address);
+  });
+
+  testWidgets('the route sheet has no overflow at 200% text scale',
+      (tester) async {
+    useDesignSurface(tester);
+    tester.platformDispatcher.textScaleFactorTestValue = 2.0;
+    addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
+    await tester.pumpWidget(wrap());
+    expect(tester.takeException(), isNull);
+  });
 }
 ```
 
@@ -6430,6 +6674,7 @@ class ChooseCarScreen extends StatefulWidget {
     required this.vehicles,
     required this.selected,
     required this.onCategory,
+    required this.onSelect,
     required this.calc,
     required this.onConfirm,
     this.distanceKm = 8.0,
@@ -6438,7 +6683,12 @@ class ChooseCarScreen extends StatefulWidget {
   final List<Vehicle> vehicles;
   final RideCategory selected;
   final ValueChanged<RideCategory> onCategory;
+
+  /// A card was tapped. Selection only; it commits nothing.
+  final void Function(Vehicle vehicle) onSelect;
   final FareCalculator calc;
+
+  /// `Find driver` was pressed. The only path that creates a trip.
   final void Function(Vehicle vehicle) onConfirm;
   final double distanceKm;
 
@@ -6449,6 +6699,17 @@ class ChooseCarScreen extends StatefulWidget {
 class _ChooseCarScreenState extends State<ChooseCarScreen> {
   late RideCategory _category = widget.selected;
   String? _chosenId;
+
+  @override
+  void didUpdateWidget(covariant ChooseCarScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.selected != oldWidget.selected) {
+      setState(() {
+        _category = widget.selected;
+        _chosenId = null;
+      });
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -6485,9 +6746,10 @@ class _ChooseCarScreenState extends State<ChooseCarScreen> {
             ),
             Padding(
               padding: EdgeInsets.symmetric(horizontal: 20.w),
-              child: SizedBox(
-                height: 40.h,
+              child: SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
                 child: Row(
+                  mainAxisSize: MainAxisSize.min,
                   children: [
                     for (final c in RideCategory.values)
                       Padding(
@@ -6500,6 +6762,8 @@ class _ChooseCarScreenState extends State<ChooseCarScreen> {
                             widget.onCategory(c);
                           }),
                           child: Container(
+                            constraints: BoxConstraints(minHeight: 40.h),
+                            alignment: Alignment.center,
                             padding: EdgeInsets.symmetric(
                                 horizontal: 14.w, vertical: 8.h),
                             decoration: BoxDecoration(
@@ -6541,7 +6805,7 @@ class _ChooseCarScreenState extends State<ChooseCarScreen> {
                       selected: _chosenId == v.id,
                       onTap: () {
                         setState(() => _chosenId = v.id);
-                        widget.onConfirm(v);
+                        widget.onSelect(v);
                       },
                     ),
                   if (matching.isEmpty)
@@ -6587,8 +6851,9 @@ class _ChooseCarScreenState extends State<ChooseCarScreen> {
 cd ~/meet-n-go/apps/rider && flutter test test/booking/ && flutter analyze --fatal-infos
 ```
 
-Expected: 15 tests pass — 11 choose-car + 4 route-entry-sheet, because step 11
-already added the route sheet's four to this directory.
+Expected: 22 tests pass — 15 choose-car + 7 route-entry-sheet, because step 11
+already added the route sheet's four to this directory, and the 200% text-scale
+pin, the `showRouteEntrySheet` call-site test and the bottom-inset test.
 
 - [ ] **Step 15: Run the whole rider suite and commit**
 
@@ -6598,9 +6863,9 @@ cd ~/meet-n-go && git add -A
 git -c user.email=opencode@local -c user.name=opencode commit -m "feat(rider): home, route entry sheet and choose-car screens"
 ```
 
-Expected: 59 tests pass across the rider app — 33 pre-existing (1 skeleton +
-9 login + 7 reset + 4 forgot-password + 3 trip-json + 9 data-layer) + 11 home +
-11 choose-car + 4 route-entry-sheet. Read the runner's own total instead of
+Expected: 70 tests pass across the rider app — 33 pre-existing (1 skeleton +
+9 login + 7 reset + 4 forgot-password + 3 trip-json + 9 data-layer) + 15 home +
+15 choose-car + 7 route-entry-sheet. Read the runner's own total instead of
 adding these up: `grep -c "testWidgets("` is not a test count. It matches the
 literal string at any indentation, so a `testWidgets(` sitting 4 spaces deep
 inside a `group()` is counted and returns 1; it returns 0 on a file whose tests
