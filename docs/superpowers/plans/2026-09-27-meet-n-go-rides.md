@@ -3519,319 +3519,149 @@ git commit -m "feat(functions): request-ride with fare, promo discount, radius m
 ---
 ### Task 7: Edge Function — offers accept/decline with the single-winner rule
 
+**Status: shipped.** 84 Deno tests pass, `deno check` and `deno lint` clean. The deployed HTTP round trip of Step 7 is **not** verified; see Step 7.
+
 **Files:**
-- Create: `supabase/functions/offers/resolve.ts`
-- Create: `supabase/functions/offers/index.ts`
-- Test: `supabase/functions/_tests/accept_offer.test.ts`
+- Create: `supabase/functions/offers/command.ts` — `parseOfferCommand`
+- Create: `supabase/functions/offers/resolve.ts` — `resolveAccept`, `declineRefusal`, `confirmDecline`
+- Create: `supabase/functions/offers/handler.ts` — `handleOfferRequest(req, deps)`, no client and no supabase-js import
+- Create: `supabase/functions/offers/clients.ts` — the two clients and the four ports
+- Create: `supabase/functions/offers/index.ts` — `serve`, six lines
+- Create: `supabase/tests/verify_offer_authz.sql` — the 10 authorization facts the comments rely on
+- Test: `supabase/functions/_tests/accept_offer.test.ts` — 50 tests
 
 **Interfaces:**
 - Consumes: RPC `accept_offer(uuid)` (Task 5), `kOfferTtl` and `OfferState` semantics (Task 4)
-- Produces: POST `offers` with `{action: 'accept'|'decline', offerId}` returning `{accepted, tripId, winnerDriverId}`. Exports `resolveAccept(input): AcceptResult` for unit tests. The driver app in Task 13 consumes this.
-- **Two clients, and each has exactly one job — `accept` on the driver's own token, `decline` on the service key.** `accept_offer`'s ownership test is the plain expression `v_offer.driver_id is distinct from auth.uid()`, `offers.driver_id` is `not null`, and only the driver's own token makes `auth.uid()` the driver: a service-role request has a NULL `auth.uid()` and is refused outright (measured on this host — as `service_role`, `auth.uid()` is NULL and `accept_offer` returns `accepted = f` with both ids null). So `accept` and the ownership read go on a client built with `SUPABASE_ANON_KEY` plus the request's `Authorization` header forwarded, which is what resolves the role to `authenticated`; a service key placed on that client is ignored for `Authorization` precisely *because* the forwarded bearer is present, so the two keys do not conflict and `auth.uid()` is the driver, not NULL. **The `decline` `UPDATE` must NOT go on that client:** `offers` carries only two SELECT policies and no UPDATE policy, so as `authenticated` the update matches zero rows and the plan's decline answers `{declined: true}` having changed nothing (measured on this host — `UPDATE 0` as `authenticated` against `UPDATE 1` as `service_role`, with the same driver able to SELECT the same row). Use a separate service-role client for that write, or replace the decline with a `SECURITY DEFINER` RPC that mirrors `accept_offer`'s ownership check, which is the cleaner fix and needs a Task 5 migration. Note that Task 6's single service-role client is **not** the pattern to copy here: Task 6 has no user-scoped operation at all, so it has nothing to be the second client for.
+- Produces: POST `offers` with `{action: 'accept'|'decline', offerId}` returning `{accepted, tripId, winnerDriverId}` or `{declined: true}`. The driver app in Task 13 consumes this.
+- The **request** contract is stricter than the brief's. `parseOfferCommand` refuses with 400 anything that is not exactly `{action: 'accept' | 'decline', offerId: <uuid>}`, in this order: body not a JSON object, `action` not one of the two strings, `offerId` not a string, `offerId` not a uuid. Testing only `action === 'decline'` sent every other value down the accept path, so a client that sent `'Accept'`, `'delete'`, or no action at all had its offer accepted on the caller's behalf — by then the trip is `matched` and no one can undo it. The uuid check is not fussiness: `offers.id` is `uuid primary key` (migration:78) and the id goes straight into a PostgREST equality filter, so a non-uuid comes back 400 and the handler would report a client typo as a 500. Unknown *extra* fields are left alone — a field this function does not read cannot change what it does.
+- The **response** contract is: 401 unauthenticated, 400 bad body, 404 `{accepted:false|'declined':false, reason:'offer not found'}`, 409 on a terminal offer (`offer is already <state>`) and on a zero-row decline write, 500 on a client or database error, else 200. An `accept_offer` that answers `accepted = false` is a **200**, not a 500.
+- `resolveAccept` is a **mirror** of the RPC's rules, not a gate, and the handler never consults it before calling the RPC: the RPC decides under a lock on the trip row, so any answer computed beforehand would be stale. It exists so the rules are pinned by tests, and `supabase/tests/verify_concurrency.sql` pins the locking against the real RPC from two live `dblink` backends.
 
-- [ ] **Step 1: Write the failing test, including the Review Focus case**
+**Two clients, and each has exactly one job — `accept` on the driver's own token, `decline` on the service key.** `accept_offer`'s ownership test is the plain expression `v_offer.driver_id is distinct from auth.uid()` (migration:324) inside a `security definer` function, so it is evaluated for every caller and `bypassrls` is no exemption. `offers.driver_id` is `not null` (migration:80), so a caller with no `sub` claim — whose `auth.uid()` is NULL — fails it. Measured: as `anon` and as `service_role` with no `sub` claim, `accept_offer` answers `false / NULL / NULL` and writes nothing (`verify_offer_authz.sql` probes 1 and 2), and as the offer's own driver it answers `true` and the trip goes to `matched` with the sibling `released` (probe 3). So the accept must go out on the driver's own token.
 
-`supabase/functions/_tests/accept_offer.test.ts`:
+The decline is the other way round. `offers` carries two SELECT policies and no UPDATE policy (migration:530 and :532 are its only two), so the decline `UPDATE` must not go on the caller's client. Measured: the same driver SELECTs 1 row and UPDATEs 0 as `authenticated`, and the identical UPDATE matches 1 row as `service_role` (probes 6 and 7). A `SECURITY DEFINER` RPC mirroring `accept_offer` would be the cleaner fix and needs a Task 5 migration; it was ruled out of scope for this task.
 
-```ts
-import { assertEquals } from 'https://deno.land/std@0.224.0/testing/asserts.ts';
-import { resolveAccept, type OfferRow } from '../offers/resolve.ts';
+**supabase-js only sets `Authorization` when the request has none** (`@supabase/supabase-js@2.45.4/dist/module/lib/fetch.js`), so a service key paired with a forwarded bearer leaves the *bearer* as the effective credential. Measured by driving the shipped client with a stub fetch: a service key plus `Authorization: Bearer DRIVER-JWT` puts `Bearer DRIVER-JWT` on the wire, with the service key only in `apikey`. That construction is what the brief's Step 5 comment claimed the opposite of, and it is the one Task 6's brief shipped and had to be unpicked from. The service client here therefore carries no forwarded header at all, and `authenticate` passes the token to `getUser(token)` explicitly instead — measured to put `Authorization: Bearer <token>` on the wire from a client with no header of its own.
 
-const offer = (id: string, driverId: string, ttlMs = 10_000): OfferRow => ({
-  id,
-  driverId,
-  state: 'pending',
-  tripId: 't1',
-  tripState: 'requested',
-  expiresAt: new Date(Date.now() + ttlMs).toISOString(),
-});
+**The decline is the only thing enforcing three invariants RLS was otherwise providing**, and it establishes all three before the write: read the offer on the **caller's bearer** (the `driver reads own offers` policy is what makes that read evidence about this driver), then refuse unless the row exists, is `pending`, and `driver_id` is the caller. The read alone is not enough — `rider reads offers on own trip` (migration:532) also lets the trip's own rider read every offer on it, which probe 5 measures, so the `driver_id` comparison is the only thing that proves ownership. Then the write goes out on the service client filtered by `id` **and** `driver_id` **and** `state = 'pending'` (all three reach the wire; probe 8 measures each refusing on its own), and **the affected row count is checked, not only `error`**. `.select('id,state')` is what makes the count readable: measured, without it the same write returns `data = null` and `count = null` with `error = null` whatever happened. A zero-row match answers **409 `{declined:false}`**, because a decline that changed no row is not a decline.
 
-Deno.test('accept_offer_single_winner_test: first accept wins and releases the rest', () => {
-  const result = resolveAccept({
-    existingOffers: [offer('o1', 'driverA'), offer('o2', 'driverB'), offer('o3', 'driverC')],
-    tripState: 'requested',
-    chosenOfferId: 'o1',
-  });
-  assertEquals(result.accepted, true);
-  assertEquals(result.winnerDriverId, 'driverA');
-  assertEquals(result.released, ['o2', 'o3']);
-  assertEquals(result.nextTripState, 'matched');
-  assertEquals(result.reason, 'ok');
-});
+- [x] **Step 1: the test file**
 
-Deno.test('a second simultaneous accept is rejected with no side effects', () => {
-  const offers = [offer('o1', 'driverA'), offer('o2', 'driverB')];
-  const first = resolveAccept({
-    existingOffers: offers,
-    tripState: 'requested',
-    chosenOfferId: 'o1',
-  });
-  const second = resolveAccept({
-    existingOffers: offers,
-    tripState: first.nextTripState,
-    chosenOfferId: 'o2',
-  });
-  assertEquals(first.accepted, true);
-  assertEquals(second.accepted, false);
-  assertEquals(second.winnerDriverId, null);
-  assertEquals(second.released, []);
-});
+`supabase/functions/_tests/accept_offer.test.ts`, 50 tests. Every one of them was checked against a mutation; 19 of 21 mutations are killed. The mutation battery is `/tmp`-scratch and is not committed, but the mutations are listed at the end of this section so they can be re-run.
 
-Deno.test('accept after the trip left requested is rejected', () => {
-  for (const state of ['matched', 'arriving', 'ongoing', 'completed', 'cancelled'] as const) {
-    const result = resolveAccept({
-      existingOffers: [offer('o1', 'driverA')],
-      tripState: state,
-      chosenOfferId: 'o1',
-    });
-    assertEquals(result.accepted, false, `trip state ${state} must reject accept`);
-  }
-});
+  Coverage of the cases this task has to get right: the accept path; `accepted = false` from the RPC as a 200; an empty RPC answer as a 500 rather than a lost race; a non-boolean `accepted` as a 500; a decline against a nonexistent offer, another driver's offer, and each of the four terminal states, none of which reach the write; **a decline whose write matched zero rows is not reported as declined**; and every `parseOfferCommand` refusal, with the bad-action cases also asserting that *no query runs at all*, which is what distinguishes them from the brief's fall-through.
 
-Deno.test('expired offer cannot be accepted', () => {
-  const result = resolveAccept({
-    existingOffers: [offer('o1', 'driverA', -1000)],
-    tripState: 'requested',
-    chosenOfferId: 'o1',
-  });
-  assertEquals(result.accepted, false);
-  assertEquals(result.reason, 'offer expired');
-});
+- [x] **Step 2: run it and confirm it fails**
 
-Deno.test('offers already in a terminal offer state cannot be re-accepted', () => {
-  for (const state of ['declined', 'accepted', 'expired', 'released'] as const) {
-    const result = resolveAccept({
-      existingOffers: [{ ...offer('o1', 'driverA'), state }],
-      tripState: 'requested',
-      chosenOfferId: 'o1',
-    });
-    assertEquals(result.accepted, false, `offer state ${state} must reject accept`);
-  }
-});
+Expected and observed: `../offers/resolve.ts` did not exist.
 
-Deno.test('unknown offer id is rejected', () => {
-  const result = resolveAccept({
-    existingOffers: [offer('o1', 'driverA')],
-    tripState: 'requested',
-    chosenOfferId: 'nope',
-  });
-  assertEquals(result.accepted, false);
-  assertEquals(result.reason, 'offer not found');
-});
+- [x] **Step 3: the decision module**
+
+`resolve.ts`, no I/O. Two deliberate differences from the brief's version, both from C9:
+
+  **The trip state is read from the chosen offer's own row, and the separate `input.tripState` parameter is gone.** The brief passed it in separately, never read the authoritative `chosen.tripState` sitting in the row, and then had the "trip is no longer awaiting a driver" check trust the caller-supplied value. The RPC reads the trip under `for update` and tests that row (migration:373), so the mirror reads the same row. `nextTripState` is therefore `TripStateName | null`, and null only when the offer was not found — there is no trip to have a state, and inventing one would be the same caller-supplied-value problem. A test pins that a sibling offer still reading `requested` cannot talk the check out of rejecting.
+
+  That removal also makes the brief's check *order* inexpressible rather than wrong. The brief tested the trip state before the offer's existence, which is only possible if the trip state is available when the offer is not found. `accept_offer` tests existence first (migration:304-307), and the mirror now does too: an unknown id reports `offer not found` whatever the trip is doing. The one ordering the surface *can* observe — a terminal offer on a matched trip — is pinned to report the trip.
+
+  The expiry comparison stays `<=` exactly as the brief had it, because the brief is right and Task 4 is wrong. `accept_offer` uses `v_offer.expires_at <= now()` (migration:375) and probe 9 measures it refusing an offer whose `expires_at` is exactly `now()`. `Offer.isExpired` is written `DateTime.now().isAfter(expiresAt)` (offer.dart:35), which is the strict comparison, so the two disagree at exactly `expiresAt`. Both sides carry a comment saying so, and Dart is a later task's fix.
+
+- [x] **Step 4: run the tests and confirm they pass**
+
+```
+$ cd ~/meet-n-go/supabase && deno test --allow-env functions/_tests/accept_offer.test.ts
+running 50 tests from ./functions/_tests/accept_offer.test.ts
+ok | 50 passed | 0 failed
 ```
 
-- [ ] **Step 2: Run it and confirm it fails**
+- [x] **Step 5: the function**
 
-```bash
-cd ~/meet-n-go/supabase && deno test functions/_tests/accept_offer.test.ts
-```
+Five files rather than the brief's one, and the split is what makes the security-critical parts testable without a network:
 
-Expected: FAIL — `../offers/resolve.ts` does not exist.
+  `command.ts` parses. `resolve.ts` decides. `handler.ts` routes and holds every status code, and takes four injected ports, so it has no client and no supabase-js import and is tested against fakes. `clients.ts` is the only file that constructs anything, and the only one that has to be believed rather than executed. `index.ts` is `serve((req) => handleOfferRequest(req, buildDeps(buildClients(req))))`.
 
-- [ ] **Step 3: Write `resolve.ts`, the pure decision function**
+  `getUser(token)` with the token passed explicitly, not `getUser()` with no argument: there is no persisted session in a Deno Edge Function, so the argumentless form has nothing to read and 401s every request. Measured on this host before writing: `user: null`, `error: Auth session missing!`. `userError` is checked as well as `!userData.user`, since `getUser` answers a bad token with a null user *and* an error, and either alone is enough to refuse.
 
-```ts
-export type OfferStateName =
-  | 'pending' | 'accepted' | 'declined' | 'expired' | 'released';
+  `req.json()` is inside a `try`. Unguarded it throws on a truncated body, escapes to `serve`'s default `onError`, and returns a bare 500 that says the request failed rather than that the body was wrong.
 
-export type TripStateName =
-  | 'requested' | 'matched' | 'arriving' | 'ongoing' | 'completed' | 'cancelled';
+  A body that is present but null is a 400 from `parseOfferCommand`, not a 500 from a null dereference.
 
-export interface OfferRow {
-  id: string;
-  driverId: string;
-  state: OfferStateName;
-  tripId: string;
-  tripState: TripStateName;
-  expiresAt: string;
-}
-
-export interface AcceptResult {
-  accepted: boolean;
-  winnerDriverId: string | null;
-  released: string[];
-  nextTripState: TripStateName;
-  reason: string;
-}
-
-/**
- * Pure decision function. The database RPC `accept_offer` is the real
- * serialisation point; this mirrors its rules so the rule set is unit-testable
- * without a live project. Keep the two in step.
- */
-export function resolveAccept(input: {
-  existingOffers: OfferRow[];
-  tripState: TripStateName;
-  chosenOfferId: string;
-}): AcceptResult {
-  const reject = (reason: string): AcceptResult => ({
-    accepted: false,
-    winnerDriverId: null,
-    released: [],
-    nextTripState: input.tripState,
-    reason,
-  });
-
-  if (input.tripState !== 'requested') {
-    return reject('trip is no longer awaiting a driver');
-  }
-
-  const chosen = input.existingOffers.find((o) => o.id === input.chosenOfferId);
-  if (!chosen) return reject('offer not found');
-  if (chosen.state !== 'pending') return reject(`offer already ${chosen.state}`);
-  if (new Date(chosen.expiresAt).getTime() <= Date.now()) return reject('offer expired');
-
-  return {
-    accepted: true,
-    winnerDriverId: chosen.driverId,
-    released: input.existingOffers
-      .filter((o) => o.id !== chosen.id && o.state === 'pending')
-      .map((o) => o.id),
-    nextTripState: 'matched',
-    reason: 'ok',
-  };
-}
-```
-
-- [ ] **Step 4: Run the tests and confirm they pass**
-
-```bash
-cd ~/meet-n-go/supabase && deno test functions/_tests/accept_offer.test.ts
-```
-
-Expected: 6 tests pass, 0 fail.
-
-- [ ] **Step 5: Write `offers/index.ts`**
-
-The `global: { headers: { Authorization: ... } }` line below is load bearing and must not be
-simplified away. `accept_offer` refuses any caller whose `auth.uid()` is not the offer's
-`driver_id`, and `offers.driver_id` is `not null`, so the only way through the check is for
-`auth.uid()` to be that driver. The check is an explicit expression inside a `security definer`
-function rather than an RLS policy, so it is evaluated for every caller and `bypassrls` is no
-exemption: the outcome follows `auth.uid()` and nothing else. The line is what puts the driver's
-own bearer token on the request, so `auth.uid()` is the offer's driver. The plain service-role
-client sends the project's service-role key there instead, so the identity the check compares
-against is that key's own rather than the driver's, and every `accept_offer` call returns
-`false`. `getUser()` needs the same header for the same reason.
-
-```ts
-import { serve } from 'https://deno.land/std@0.224.0/http/server.ts';
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.45.4';
-import { corsHeaders } from '../_shared/cors.ts';
-
-serve(async (req) => {
-  if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
-
-  const supabase = createClient(
-    Deno.env.get('SUPABASE_URL')!,
-    Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
-    { global: { headers: { Authorization: req.headers.get('Authorization')! } } },
-  );
-
-  const { data: userData } = await supabase.auth.getUser();
-  if (!userData.user) {
-    return new Response(JSON.stringify({ error: 'unauthenticated' }), {
-      status: 401,
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-    });
-  }
-  const driverId = userData.user.id;
-
-  const body = await req.json();
-
-  if (body.action === 'decline') {
-    const { error } = await supabase
-      .from('offers')
-      .update({ state: 'declined' })
-      .eq('id', body.offerId)
-      .eq('driver_id', driverId);
-    if (error) {
-      return new Response(JSON.stringify({ error: error.message }), {
-        status: 500,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      });
-    }
-    return new Response(JSON.stringify({ declined: true }), {
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-    });
-  }
-
-  const { data: offer } = await supabase
-    .from('offers')
-    .select('driver_id')
-    .eq('id', body.offerId)
-    .maybeSingle();
-
-  if (!offer || offer.driver_id !== driverId) {
-    return new Response(JSON.stringify({ accepted: false, reason: 'offer not found' }), {
-      status: 404,
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-    });
-  }
-
-  const { data, error } = await supabase.rpc('accept_offer', { p_offer: body.offerId });
-  if (error) {
-    return new Response(JSON.stringify({ error: error.message }), {
-      status: 500,
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-    });
-  }
-
-  const row = (data ?? [])[0];
-  return new Response(
-    JSON.stringify({
-      accepted: row?.accepted ?? false,
-      tripId: row?.trip_id ?? null,
-      winnerDriverId: row?.accepted ? row?.driver_id ?? null : null,
-    }),
-    { headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
-  );
-});
-```
-
-- [ ] **Step 6: Lint, deploy, and push**
+- [x] **Step 6: check, lint, test**
 
 ```bash
 cd ~/meet-n-go/supabase
-deno check functions/offers/index.ts functions/offers/resolve.ts
-deno lint functions/ && deno fmt --check functions/
-deno test functions/_tests/
-supabase functions deploy offers
+deno check functions/offers/index.ts functions/offers/resolve.ts functions/offers/handler.ts functions/offers/clients.ts functions/offers/command.ts
+deno lint functions/
+deno test --allow-env functions/_tests/
 ```
 
-Expected: all 17 Deno tests pass, no lint findings, deploy succeeds.
+Observed:
 
-- [ ] **Step 7: Verify the single-winner rule against the real database**
+```
+Check functions/offers/index.ts
+Check functions/offers/resolve.ts
+Check functions/offers/handler.ts
+Check functions/offers/clients.ts
+Check functions/offers/command.ts
 
-Create two approved drivers with vehicles and live locations, request a ride, then fire two accepts at once:
+Checked 16 files
 
-```bash
-curl -s -X POST "$SUPABASE_URL/functions/v1/offers" -H "Authorization: Bearer $DRIVER_A_JWT" \
-  -H "Content-Type: application/json" -d "{\"action\":\"accept\",\"offerId\":\"$OFFER_A\"}" &
-curl -s -X POST "$SUPABASE_URL/functions/v1/offers" -H "Authorization: Bearer $DRIVER_B_JWT" \
-  -H "Content-Type: application/json" -d "{\"action\":\"accept\",\"offerId\":\"$OFFER_B\"}" &
-wait
+running 50 tests from ./functions/_tests/accept_offer.test.ts
+running  6 tests from ./functions/_tests/compensate.test.ts
+running 11 tests from ./functions/_tests/fare.test.ts
+running  4 tests from ./functions/_tests/match.test.ts
+running 13 tests from ./functions/_tests/request.test.ts
+ok | 84 passed | 0 failed (1s)
 ```
 
-Expected: exactly one response has `"accepted":true`. Then:
+`deno fmt --check` is **not** run and is not in this project: there is deliberately no formatting standard, CI has no format step, and the brief's line would either fail or smuggle in a standard the project has declined four times. The brief's "all 17 Deno tests pass" was stale in both directions — the suite was 34 before this task and is 84 after, 50 of them new.
 
-```bash
-psql "$SUPABASE_DB_URL" -c "select driver_id, state from trips where id='$TRIP_ID';"
-psql "$SUPABASE_DB_URL" -c "select state, count(*) from offers where trip_id='$TRIP_ID' group by state;"
-```
+  `supabase functions deploy offers` was **not run**: it needs interactive browser auth, and there is no Docker on this host, so there is no local Supabase stack either. Not attempted, and not claimed.
 
-Expected: one driver on the trip in state `matched`, and the offers split as one `accepted` plus four `released`. A single `accepted` row is the whole point of the task; if two appear, the `for update` locks are missing and the trip is double-booked.
+- [ ] **Step 7: the deployed round trip — NOT RUN, and why**
 
-- [ ] **Step 8: Commit**
+`supabase functions deploy`, `supabase login` and `supabase link` all require an interactive browser login and there is no local stack, so the brief's two-curl race against a deployed URL cannot be executed here. **The deployed HTTP round trip is therefore unverified.** What is verified instead:
+
+  The locking is not re-verified by this step. It is already proven at the database layer by `supabase/tests/verify_concurrency.sql` (Task 5), which fires two accepts at two different offers of one trip from two live `dblink` backends against the real `accept_offer` and asserts exactly one winner, the loser receiving `false`, the siblings released, and no SQLSTATE 40P01. What that file cannot cover is the wiring in front of the RPC, so this task added `supabase/tests/verify_offer_authz.sql`: 10 probes over the real migration on local Postgres 17.11, all passing, each returning a row rather than a `RAISE NOTICE` (which a `dblink` backend discards). It measures the identity rules, the rider-can-read case, the two decline row counts, the three filters, the inclusive expiry boundary and the unknown-id path.
+
+  Still unverified after all of that: the deployed `POST /functions/v1/offers` round trip, and the "one `accepted` plus four `released`" observation, which assumes a five-offer fan-out and so also assumes `MAX_OFFERS = 5` and five approved online drivers within range. Do that on a linked project with two real driver tokens before trusting the function in the app.
+
+- [x] **Step 8: commit**
 
 ```bash
 cd ~/meet-n-go
-git add -A
+git add supabase/functions/offers supabase/functions/_tests/accept_offer.test.ts supabase/tests/verify_offer_authz.sql
 git commit -m "feat(functions): single-winner offer acceptance with released siblings"
 ```
 
----
+**Mutations the test file kills.** 21 attempted, 19 killed, 2 survive and both survivors are characterised rather than ignored:
 
+| # | Mutation | Result |
+|---|---|---|
+| M1 | `confirmDecline` reports any count as a decline | killed |
+| M2 | `declineRefusal` drops the ownership test | killed |
+| M3 | `declineRefusal` drops the pending test | killed |
+| M4 | `declineRefusal` drops the existence test | killed |
+| M5 | handler checks only `!userId`, not the auth error | killed |
+| M6 | handler does not guard `req.json()` | killed |
+| M7 | handler treats an empty RPC answer as a lost race | killed |
+| M8 | handler does not check `accepted` is a boolean | killed |
+| M9 | handler ignores the decline outcome | killed |
+| M10 | `parseOfferCommand` drops the action allow-list | killed |
+| M11 | `parseOfferCommand` drops the uuid check | killed |
+| M12 | `parseOfferCommand` drops the `offerId` type check | killed |
+| M13 | re-adds an **optional** `input.tripState` | **survives** — see below |
+| M13b | ...and prefers the supplied value when one is given | killed |
+| M14 | expiry uses `<` instead of `<=` | killed |
+| M15 | accept path drops the ownership comparison | killed |
+| M16 | `released` drops the `state = 'pending'` filter | killed |
+| M17 | tests the trip before the offer's existence | **survives** — see below |
+| M18 | tests the offer state before the trip state | killed |
+| M19 | `confirmDecline` reports any nonzero count as a decline | killed |
+| M20 | runs the decline write before the refusal checks | killed |
+
+M13 surviving is a no-op mutation and not a gap: an optional parameter that no test supplies cannot change any answer, and the half that *would* matter — a supplied value overriding the row — is M13b and is killed. M17 surviving is the point of the C9 change rather than a hole: with no offer there is no row carrying a trip state, so "report the offer" and "report the trip" cannot both be expressed from the row alone, which is exactly why the brief needed the extra parameter to state its order. The observable part of the ordering is pinned by M18 and its test.
+
+---
 ### Task 8: Rider app — data layer and auth screens
 
 **Files:**
