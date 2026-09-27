@@ -36,6 +36,11 @@ dependencies:
   cupertino_icons: ^1.0.8
   mng_core:
     path: ../../packages/mng_core
+  # Pinned to 5.x deliberately. All of 2.x predates null safety and cannot
+  # resolve on Dart 3. 5.x is a rewrite. ScreenUtilInit(designSize: ...) is the
+  # recommended bootstrap. ScreenUtil.init(context, designSize: ...) still
+  # exists in 5.x. The real 2.x trap: .sm is deprecated, use .spMin.
+  # See the "Screenutil is pinned to 5.x" section of README.md.
   flutter_screenutil: ^5.9.3
 
 dev_dependencies:
