@@ -4,7 +4,13 @@
 // lives in clients.ts and the rule set lives in resolve.ts.
 import { corsHeaders } from '../_shared/cors.ts';
 import { parseOfferCommand } from './command.ts';
-import { confirmDecline, declineRefusal } from './resolve.ts';
+import {
+  confirmDecline,
+  declineRefusal,
+  resolveAccept,
+  type OfferStateName,
+  type TripStateName,
+} from './resolve.ts';
 
 const json = (status: number, payload: Record<string, unknown>) =>
   new Response(JSON.stringify(payload), {
@@ -12,12 +18,14 @@ const json = (status: number, payload: Record<string, unknown>) =>
     headers: { ...corsHeaders, 'Content-Type': 'application/json' },
   });
 
-// The row as the ownership read returns it, snake_case because that is what
-// comes off the wire. `state` is a string rather than the offer-state union
+// The offer row as the ownership read returns it, snake_case because that is
+// what comes off the wire. `state` is a string rather than the offer-state union
 // because nothing here narrows it: see `DeclineRow` in resolve.ts.
 export interface OfferSnapshot {
   driver_id: string;
   state: string;
+  trip_id: string;
+  expires_at: string;
 }
 
 export interface AcceptRpcRow {
@@ -31,7 +39,12 @@ export interface OfferDeps {
   // `getUser` answers a malformed or revoked token with a null user *and* an
   // error, and either alone is enough to refuse.
   authenticate(token: string): Promise<{ userId: string | null; error: string | null }>;
+  // On the caller's own bearer, so `driver reads own offers` is what makes the
+  // row evidence about this driver rather than merely visible to them.
   readOffer(offerId: string): Promise<{ row: OfferSnapshot | null; error: string | null }>;
+  // On the service client, `state` only. See the note in `accept` for why this
+  // cannot be read on the caller's bearer.
+  readTripState(tripId: string): Promise<{ state: string | null; error: string | null }>;
   acceptOffer(offerId: string): Promise<{ rows: unknown; error: string | null }>;
   writeDecline(offerId: string, driverId: string): Promise<{ updated: number; error: string | null }>;
 }
@@ -76,16 +89,77 @@ async function accept(
   offerId: string,
   driverId: string,
 ): Promise<Response> {
-  // The read exists to answer 404 rather than to authorise: `accept_offer`
-  // refuses a stranger's offer with the same `false` it gives a lost race, so
-  // without this the driver app cannot tell "that is not your offer" from "you
-  // were too slow", and the 404 is the only thing that can.
+  // Two reads, on two clients, and the split is forced by the policies rather
+  // than chosen.
+  //
+  // The offer comes from the caller's own bearer, where `driver reads own
+  // offers` (migration:530) is what makes the row evidence about *this* driver.
+  // That policy is not sufficient on its own -- `rider reads offers on own trip`
+  // (migration:532) also lets the trip's rider read every offer on it, which
+  // probe 5 measures -- so the `driver_id` comparison below is what proves
+  // ownership, and `accept_offer` checks it a second time under the trip lock
+  // (migration:368).
   const { row, error: readError } = await deps.readOffer(offerId);
   if (readError) return json(500, { error: readError });
   if (!row || row.driver_id !== driverId) {
     return json(404, { accepted: false, reason: 'offer not found' });
   }
 
+  // The trip state comes from the service client because the caller's own
+  // bearer cannot get it: `driver reads assigned trips` (migration:520) is
+  // `using (driver_id = auth.uid())`, and a trip's driver_id is NULL until
+  // `accept_offer` matches it. Probe 11 measures the driver reading their own
+  // offer and 0 trip rows at that moment; probe 12 measures the same read
+  // returning 1 row after the accept. So no role this function can put a
+  // caller's token on has an RLS path to the trip the offer belongs to.
+  //
+  // This is a privileged read of one column, and it is a read of a fact the
+  // driver is entitled to anyway: it is the state of the trip their own offer is
+  // on. `select('state')` and not `select('*')` is deliberate -- the trip row
+  // also carries the rider's `pickup`, `dropoff` and `fare_ghs`, and this
+  // function has no use for them. The decision it feeds is still the RPC's: a
+  // refusal here only ever skips a call the RPC would have refused too, which is
+  // what the monotonicity argument in resolve.ts is for.
+  const { state: tripState, error: tripError } = await deps.readTripState(row.trip_id);
+  if (tripError) return json(500, { error: tripError });
+
+  // Only the chosen offer is passed in, so `released` is always empty and the
+  // handler never reports sibling ids it has not read. `winnerDriverId` is
+  // likewise not reported: the winner is the RPC's to name. Both fields exist so
+  // the rule set is testable over a full offer set, which is where the mirror's
+  // value is, and the handler uses only the classification.
+  const classified = resolveAccept({
+    existingOffers: [{
+      id: offerId,
+      driverId: row.driver_id,
+      // Cast, not narrowed. `state` is the `offer_state` enum (migration:83), so
+      // the database cannot produce a value outside it, and a cast that were
+      // wrong would read as not-`pending` and refuse rather than accept. Same
+      // direction for the trip state.
+      state: row.state as OfferStateName,
+      tripId: row.trip_id,
+      // A trip that is gone, or in a state this build does not name, is not
+      // `requested`, and both refuse. `accept_offer` answers `false / NULL /
+      // NULL` for a missing trip (migration:330-334) for the same reason.
+      tripState: (tripState ?? 'cancelled') as TripStateName,
+      expiresAt: row.expires_at,
+    }],
+    chosenOfferId: offerId,
+  });
+
+  // A refusal the RPC would have made too, answered with the reason that
+  // applies instead of a bare `false`. No write is skipped: every fact tested
+  // above is monotone, so this accept was already invalid.
+  if (!classified.accepted) {
+    return json(classified.refusalStatus ?? 409, {
+      accepted: false,
+      reason: classified.reason,
+    });
+  }
+
+  // Classified acceptable, and the RPC decides. A `false` here is the ordinary
+  // outcome of losing the race, it is reported verbatim, and nothing the
+  // classifier said overrides it.
   const { rows, error } = await deps.acceptOffer(offerId);
   if (error) return json(500, { error });
 

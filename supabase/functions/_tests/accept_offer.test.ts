@@ -38,6 +38,9 @@ Deno.test('accept_offer_single_winner_test: first accept wins and releases the r
   assertEquals(result.released, ['o2', 'o3']);
   assertEquals(result.nextTripState, 'matched');
   assertEquals(result.reason, 'ok');
+  // No refusal, so no status to send. The handler reads this field rather than
+  // matching on `reason`.
+  assertEquals(result.refusalStatus, null);
 });
 
 // The sibling filter is what frees the losing drivers, so it has to exclude
@@ -89,6 +92,7 @@ Deno.test('accept after the trip left requested is rejected', () => {
     });
     assertEquals(result.accepted, false, `trip state ${state} must reject accept`);
     assertEquals(result.nextTripState, state);
+    assertEquals(result.refusalStatus, 409, `trip state ${state}`);
   }
 });
 
@@ -130,6 +134,7 @@ Deno.test('expired offer cannot be accepted', () => {
   assertEquals(result.accepted, false);
   assertEquals(result.reason, 'offer expired');
   assertEquals(result.released, []);
+  assertEquals(result.refusalStatus, 409);
 });
 
 Deno.test('an offer at or before now is expired', () => {
@@ -195,6 +200,7 @@ Deno.test('offers already in a terminal offer state cannot be re-accepted', () =
     });
     assertEquals(result.accepted, false, `offer state ${state} must reject accept`);
     assertEquals(result.reason, `offer already ${state}`);
+    assertEquals(result.refusalStatus, 409, `offer state ${state}`);
   }
 });
 
@@ -208,6 +214,9 @@ Deno.test('unknown offer id is rejected', () => {
   // There is no trip to have a state when the offer was never found, and
   // inventing one would be a caller-supplied value again.
   assertEquals(result.nextTripState, null);
+  // 404 and not 409: the offer is not there, which is a different answer from
+  // the offer being there in a state that forbids the accept.
+  assertEquals(result.refusalStatus, 404);
 });
 
 // The RPC tests the offer's existence before the trip's state (migration:304-307),
@@ -364,6 +373,15 @@ Deno.test('confirmDecline refuses a count the primary key cannot produce', () =>
 // ---------------------------------------------------------------------------
 
 const OFFER_ID = '0f2c1d6a-3b4e-4c5d-8e9f-a0b1c2d3e4f5';
+const TRIP_ID = '1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d';
+
+const offerRow = (over: Record<string, unknown> = {}) => ({
+  driver_id: 'd1',
+  state: 'pending',
+  trip_id: TRIP_ID,
+  expires_at: new Date(Date.now() + 10_000).toISOString(),
+  ...over,
+});
 
 interface Harness {
   deps: OfferDeps;
@@ -379,7 +397,11 @@ const harness = (over: Partial<OfferDeps> = {}): Harness => {
     },
     readOffer: (offerId) => {
       calls.push(`readOffer:${offerId}`);
-      return Promise.resolve({ row: { driver_id: 'd1', state: 'pending' }, error: null });
+      return Promise.resolve({ row: offerRow(), error: null });
+    },
+    readTripState: (tripId) => {
+      calls.push(`readTripState:${tripId}`);
+      return Promise.resolve({ state: 'requested', error: null });
     },
     acceptOffer: (offerId) => {
       calls.push(`acceptOffer:${offerId}`);
@@ -414,11 +436,13 @@ Deno.test('the accept path answers accepted, the trip and the winner', async () 
   const { res, calls, body } = await call({ action: 'accept', offerId: OFFER_ID });
   assertEquals(res.status, 200);
   assertEquals(body, { accepted: true, tripId: 't1', winnerDriverId: 'd1' });
-  // The identity is resolved from the caller's own token and the accept goes
-  // out on it, in that order, and the write port is never touched.
+  // The identity is resolved from the caller's own token, the offer is read on
+  // that token, the trip state is read for the classifier, and only then does
+  // the accept go out. The write port is never touched on this path.
   assertEquals(calls, [
     'authenticate:DRIVER-JWT',
     `readOffer:${OFFER_ID}`,
+    `readTripState:${TRIP_ID}`,
     `acceptOffer:${OFFER_ID}`,
   ]);
 });
@@ -426,7 +450,7 @@ Deno.test('the accept path answers accepted, the trip and the winner', async () 
 Deno.test("accepting another driver's offer is a 404 and never reaches the RPC", async () => {
   const { res, calls, body } = await call(
     { action: 'accept', offerId: OFFER_ID },
-    { readOffer: () => Promise.resolve({ row: { driver_id: 'd2', state: 'pending' }, error: null }) },
+    { readOffer: () => Promise.resolve({ row: offerRow({ driver_id: 'd2' }), error: null }) },
   );
   assertEquals(res.status, 404);
   assertEquals(body, { accepted: false, reason: 'offer not found' });
@@ -495,6 +519,153 @@ Deno.test('an error on the ownership read is a 500', async () => {
   assertEquals(calls.filter((c) => c.startsWith('acceptOffer')), []);
 });
 
+// ---------------------------------------------------------------------------
+// The accept classifier: refusals skip the RPC, a pass defers to it
+// ---------------------------------------------------------------------------
+
+// Each of the classifier's three refusals on an offer that is otherwise the
+// caller's. The RPC is never called, and each answer carries the reason that
+// applies rather than the blanket 404 the offer read used to produce.
+Deno.test('a classified refusal answers its own reason and never reaches the RPC', async () => {
+  const cases: [string, Record<string, unknown>, Record<string, unknown>, number][] = [
+    [
+      'offer already declined',
+      { state: 'declined' },
+      {},
+      409,
+    ],
+    [
+      'offer already accepted',
+      { state: 'accepted' },
+      {},
+      409,
+    ],
+    [
+      'offer already released',
+      { state: 'released' },
+      {},
+      409,
+    ],
+    [
+      'offer expired',
+      { expires_at: new Date(Date.now() - 1000).toISOString() },
+      {},
+      409,
+    ],
+    [
+      'trip is no longer awaiting a driver',
+      {},
+      { state: 'matched' },
+      409,
+    ],
+  ];
+  for (const [reason, offer, trip, status] of cases) {
+    const { res, calls, body } = await call(
+      { action: 'accept', offerId: OFFER_ID },
+      {
+        readOffer: () => Promise.resolve({ row: offerRow(offer), error: null }),
+        readTripState: () =>
+          Promise.resolve({ state: 'requested' as string | null, error: null, ...trip }),
+      },
+    );
+    assertEquals(res.status, status, reason);
+    assertEquals(body, { accepted: false, reason });
+    // The whole point: a refusal the RPC would have made too is not paid for.
+    assertEquals(calls.filter((c) => c.startsWith('acceptOffer')), [], reason);
+  }
+});
+
+// Every one of the six trip states refuses, and a trip that is missing entirely
+// refuses rather than crashing. `accept_offer` answers `false / NULL / NULL`
+// for a missing trip (migration:330-334), so a null state is the safe direction.
+Deno.test('a trip that has left requested is refused before the RPC', async () => {
+  for (const state of ['matched', 'arriving', 'ongoing', 'completed', 'cancelled', null] as const) {
+    const { res, calls, body } = await call(
+      { action: 'accept', offerId: OFFER_ID },
+      { readTripState: () => Promise.resolve({ state, error: null }) },
+    );
+    assertEquals(res.status, 409, `trip state ${state}`);
+    assertEquals(body, { accepted: false, reason: 'trip is no longer awaiting a driver' });
+    assertEquals(calls.filter((c) => c.startsWith('acceptOffer')), [], `trip state ${state}`);
+  }
+});
+
+// The direction most likely to be got wrong. The classifier passed, so the RPC
+// was called, and the RPC says the driver lost the race. The answer is the
+// RPC's, verbatim: `accepted: false`. Nothing the classifier said may promote
+// this to a win, and nothing it said may be reported to the driver as the
+// outcome.
+Deno.test('a pre-check pass whose RPC answers false is reported as false', async () => {
+  const { res, body } = await call(
+    { action: 'accept', offerId: OFFER_ID },
+    {
+      acceptOffer: () =>
+        Promise.resolve({ rows: [{ accepted: false, trip_id: 't1', driver_id: null }], error: null }),
+    },
+  );
+  assertEquals(res.status, 200);
+  assertEquals(body, { accepted: false, tripId: 't1', winnerDriverId: null });
+  assertEquals(body.accepted, false);
+});
+
+// The winner is the RPC's to name, not the classifier's. The two can differ: the
+// classifier reads `offers.driver_id` before the call, and `accept_offer` re-reads
+// the offer under the trip lock and returns that value (migration:381 and :403),
+// so an offer reassigned in that window is matched to its *new* driver -- and the
+// ownership re-check at migration:368 is what refuses that caller. Both ids are
+// the caller's own here so the call is allowed to succeed, which is exactly the
+// window the migration's own comment warns about. The handler must report the
+// RPC's driver, so this pins it with the two ids deliberately different.
+Deno.test('the winner is the RPC\'s driver, not the one the classifier read', async () => {
+  const { res, body } = await call(
+    { action: 'accept', offerId: OFFER_ID },
+    {
+      readOffer: () => Promise.resolve({ row: offerRow({ driver_id: 'd1' }), error: null }),
+      acceptOffer: () =>
+        Promise.resolve({ rows: [{ accepted: true, trip_id: 't1', driver_id: 'd2' }], error: null }),
+    },
+  );
+  assertEquals(res.status, 200);
+  assertEquals(body, { accepted: true, tripId: 't1', winnerDriverId: 'd2' });
+});
+
+// The mirror image, and the reason the pre-check exists at all: a refusal here
+// is one the RPC agrees with, so the driver gets a reason instead of a bare
+// false. This is the improvement over the old blanket 404.
+Deno.test('a classified refusal replaces the blanket 404 with a specific reason', async () => {
+  const { res, body } = await call(
+    { action: 'accept', offerId: OFFER_ID },
+    { readOffer: () => Promise.resolve({ row: offerRow({ state: 'expired' }), error: null }) },
+  );
+  assertEquals(res.status, 409);
+  assertEquals(body.reason, 'offer already expired');
+});
+
+// The trip read is on the service client because the caller's bearer cannot get
+// it, so a failure there is a 500 of its own and must not be reported as a lost
+// race or a refusal.
+Deno.test('an error on the trip state read is a 500 and never reaches the RPC', async () => {
+  const { res, calls, body } = await call(
+    { action: 'accept', offerId: OFFER_ID },
+    { readTripState: () => Promise.resolve({ state: null, error: 'permission denied for table trips' }) },
+  );
+  assertEquals(res.status, 500);
+  assertEquals(body, { error: 'permission denied for table trips' });
+  assertEquals(calls.filter((c) => c.startsWith('acceptOffer')), []);
+});
+
+// An offer state the build does not name is not `pending`, so it refuses. A cast
+// that were wrong has to fail this way and not the other one.
+Deno.test('an offer state the build does not name is refused, not accepted', async () => {
+  const { res, body, calls } = await call(
+    { action: 'accept', offerId: OFFER_ID },
+    { readOffer: () => Promise.resolve({ row: offerRow({ state: 'pendingish' }), error: null }) },
+  );
+  assertEquals(res.status, 409);
+  assertEquals(body, { accepted: false, reason: 'offer already pendingish' });
+  assertEquals(calls.filter((c) => c.startsWith('acceptOffer')), []);
+});
+
 Deno.test('the decline path answers declined and writes the row', async () => {
   const { res, calls, body } = await call({ action: 'decline', offerId: OFFER_ID });
   assertEquals(res.status, 200);
@@ -519,7 +690,7 @@ Deno.test('declining an offer that does not exist is a 404 and writes nothing', 
 Deno.test("declining another driver's offer is a 404 and writes nothing", async () => {
   const { res, calls, body } = await call(
     { action: 'decline', offerId: OFFER_ID },
-    { readOffer: () => Promise.resolve({ row: { driver_id: 'd2', state: 'pending' }, error: null }) },
+    { readOffer: () => Promise.resolve({ row: offerRow({ driver_id: 'd2' }), error: null }) },
   );
   assertEquals(res.status, 404);
   assertEquals(body, { declined: false, reason: 'offer not found' });
@@ -534,7 +705,7 @@ Deno.test('declining an offer that is already terminal is a 409 and writes nothi
   for (const state of ['accepted', 'declined', 'expired', 'released']) {
     const { res, calls, body } = await call(
       { action: 'decline', offerId: OFFER_ID },
-      { readOffer: () => Promise.resolve({ row: { driver_id: 'd1', state }, error: null }) },
+      { readOffer: () => Promise.resolve({ row: offerRow({ state }), error: null }) },
     );
     assertEquals(res.status, 409, `state ${state} must be a 409`);
     assertEquals(body, { declined: false, reason: `offer is already ${state}` });

@@ -19,6 +19,9 @@
 --   trip 4 offer ...0004 (driver 2)   probe 5       the trip's own rider is refused
 --   trip 5 offer ...0005 (driver 3)   probes 6-8    the decline write
 --   trip 6 offer ...0006 (driver 2)   probe 9       the expiry boundary
+--   trip 7 offer ...0007 (driver 3)   probe 11      the trip read before accepting
+--   trip 8 offer ...0008 (driver 2)   probe 12      the trip read after accepting
+--   trip 9 offer ...0009 (driver 3)   probe 13      no transition returns a trip to requested
 --
 -- Usage:
 --   sudo -u postgres psql -d mng_test -v ON_ERROR_STOP=1 \
@@ -83,7 +86,7 @@ select ('d7d7d7d7-0000-4000-8000-00000000000' || g::text)::uuid,
        '{"label":"Airport Residential","point":{"lat":5.6052,"lng":-0.1660},"address":"Airport Residential, Accra"}',
        'SRID=4326;POINT(-0.187 5.6037)'::geography, 'SRID=4326;POINT(-0.166 5.6052)'::geography,
        2.33, 1.00, 12.00
-from generate_series(1, 6) g;
+from generate_series(1, 9) g;
 
 insert into offers (id, trip_id, driver_id, fare_ghs, pickup_distance_km, state, expires_at)
 select ('d7d7d7d7-0000-4000-8000-0000000000' || lpad(g::text, 2, '0'))::uuid,
@@ -91,7 +94,7 @@ select ('d7d7d7d7-0000-4000-8000-0000000000' || lpad(g::text, 2, '0'))::uuid,
        case when g % 2 = 0 then 'd7d7d7d7-0000-4000-8000-000000000002'::uuid
             else 'd7d7d7d7-0000-4000-8000-000000000003'::uuid end,
        12.00, 0.40, 'pending', now() + interval '20 seconds'
-from generate_series(1, 6) g;
+from generate_series(1, 9) g;
 
 -- A second, competing offer on trip 2 so probe 3 can measure the sibling
 -- release rather than assert it.
@@ -325,6 +328,81 @@ begin
 end $$;
 
 -- ---------------------------------------------------------------------------
+-- 11 and 12. A driver cannot read the trip row until the trip is theirs
+-- ---------------------------------------------------------------------------
+\echo ''
+\echo '-- 11/12. the trip row, before and after accept_offer --'
+
+-- `driver reads assigned trips` (migration:520) is `using (driver_id =
+-- auth.uid())`, and a trip's driver_id is NULL until accept_offer matches it, so
+-- the policy matches zero rows for the very driver holding the offer. This is
+-- why the trip state cannot be read on the caller's bearer and why the handler
+-- reads it on the service client.
+do $$
+declare v_trip_reads int; v_offer_reads int; v_driver_id text;
+begin
+  perform pg_temp.fresh_offers(7);
+  select driver_id::text into v_driver_id from trips where id = 'd7d7d7d7-0000-4000-8000-000000000007';
+  set local role authenticated;
+  set local request.jwt.claim.sub = 'd7d7d7d7-0000-4000-8000-000000000003';
+  select count(*) into v_trip_reads from trips where id = 'd7d7d7d7-0000-4000-8000-000000000007';
+  select count(*) into v_offer_reads from offers where id = 'd7d7d7d7-0000-4000-8000-000000000007';
+  reset role;
+  insert into t_authz values (11, 'a driver cannot read the trip row before accepting',
+    'driver_id is NULL while requested, the offer reads 1 and the trip reads 0',
+    'trip_driver_id=' || coalesce(v_driver_id, 'NULL') || ' offer_reads=' || v_offer_reads
+      || ' trip_reads=' || v_trip_reads,
+    coalesce(v_driver_id, 'NULL') = 'NULL' and v_offer_reads = 1 and v_trip_reads = 0);
+end $$;
+
+-- The same read on the same driver, after accept_offer matched the trip to them.
+do $$
+declare v_trip_reads_before int; v_trip_reads_after int;
+begin
+  perform pg_temp.fresh_offers(8);
+  set local role authenticated;
+  set local request.jwt.claim.sub = 'd7d7d7d7-0000-4000-8000-000000000002';
+  select count(*) into v_trip_reads_before from trips where id = 'd7d7d7d7-0000-4000-8000-000000000008';
+  perform accept_offer('d7d7d7d7-0000-4000-8000-000000000008');
+  select count(*) into v_trip_reads_after from trips where id = 'd7d7d7d7-0000-4000-8000-000000000008';
+  reset role;
+  insert into t_authz values (12, 'the same driver reads that trip row once it is assigned',
+    'reads 0 before the accept and 1 after it',
+    'before=' || v_trip_reads_before || ' after=' || v_trip_reads_after,
+    v_trip_reads_before = 0 and v_trip_reads_after = 1);
+end $$;
+
+-- ---------------------------------------------------------------------------
+-- 13. No legal transition returns a trip to `requested`
+-- ---------------------------------------------------------------------------
+-- This is what makes the pre-check in the offers function safe rather than a
+-- source of false refusals: every fact resolveAccept tests is monotone, so an
+-- accept it refuses was already invalid and can never become valid again. The
+-- offer states and `expires_at` are checked that way above; the trip state is
+-- checked here, by asking the trigger to do the impossible thing from each
+-- state a trip can be in when an offer is declined or lost.
+\echo ''
+\echo '-- 13. no transition returns a trip to requested --'
+do $$
+declare v_state text; v_msg text; v_results text := ''; v_all_refused boolean := true;
+begin
+  foreach v_state in array array['requested','matched','arriving','ongoing','completed','cancelled'] loop
+    begin
+      update trips set state = 'requested' where id = 'd7d7d7d7-0000-4000-8000-000000000009';
+      v_msg := 'ACCEPTED';
+    exception when others then
+      v_msg := 'refused';
+    end;
+    if v_msg <> 'refused' then v_all_refused := false; end if;
+    v_results := v_results || v_state || '=' || v_msg || ' ';
+  end loop;
+  insert into t_authz values (13, 'no trip state can be moved back to requested',
+    'every one of the six states refuses the move, and the trip is untouched',
+    trim(v_results) || ' final_state=' || (select state::text from trips where id = 'd7d7d7d7-0000-4000-8000-000000000009'),
+    v_all_refused and (select state = 'requested' from trips where id = 'd7d7d7d7-0000-4000-8000-000000000009'));
+end $$;
+
+-- ---------------------------------------------------------------------------
 -- Results
 -- ---------------------------------------------------------------------------
 \echo ''
@@ -332,9 +410,13 @@ end $$;
 select seq, passed, probe, expectation, observed from t_authz order by seq;
 
 \echo ''
+-- `passed is true` and `passed is not true`, not `passed` and `not passed`: a
+-- probe whose verdict is SQL NULL -- which is what a comparison against a NULL
+-- column produces -- is a failure here, not a silence. An earlier run of this
+-- file reported 0 failed while one probe had no verdict at all.
 select count(*) as probes,
-       count(*) filter (where passed) as passed,
-       count(*) filter (where not passed) as failed
+       count(*) filter (where passed is true) as passed,
+       count(*) filter (where passed is not true) as failed
   from t_authz;
 
 -- Clean up, so a clean run leaves nothing behind.

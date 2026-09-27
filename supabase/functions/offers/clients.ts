@@ -99,21 +99,50 @@ export function buildDeps(clients: OfferClients): OfferDeps {
     // the caller may see the offer, not that the offer is theirs, and the
     // handler compares `driver_id` itself.
     //
-    // `limit(1)` and index the result rather than `maybeSingle()`. Measured
-    // with the shipped client: `maybeSingle()` on a GET sends
-    // `Accept: application/json`, so a 0-row read is a 200 with `[]` that
-    // postgrest-js turns into `data = null` client-side
-    // (`@supabase/postgrest-js@1.16.1/src/PostgrestBuilder.ts:118-134`), and the
-    // server's `details` string is not consulted on that path. `limit(1)` never
-    // asks the client to interpret a row count at all, which is the property
-    // worth having here.
+    // `limit(1)` and index the result rather than `maybeSingle()`. The two are
+    // behaviourally equivalent for a zero-row read on this version, and it is
+    // worth being precise about why, because the reason usually given for this
+    // line is wrong. Measured with the shipped client: `maybeSingle()` on a GET
+    // sends `Accept: application/json`, not
+    // `application/vnd.pgrst.object+json`
+    // (`@supabase/postgrest-js@1.16.1/src/PostgrestTransformBuilder.ts:209-210`),
+    // so a zero-row read is a 200 with `[]` and the client turns that into
+    // `data = null` with no error itself
+    // (`@supabase/postgrest-js@1.16.1/src/PostgrestBuilder.ts:118-134`). The
+    // `error.details.includes('0 rows')` comparison at `:162` is a *different*
+    // branch, reached only when the server answers with an error, and a GET that
+    // asked for `application/json` is not answered with one.
+    //
+    // So the reason to write `limit(1)` is not that `maybeSingle()` is broken
+    // here. It is that `limit(1)` never asks the client to interpret a row count
+    // at all: the answer is `data` and we index it, so the shape of a zero-row
+    // read cannot change under us if that client-side coercion is ever revised.
+    // Every read in this function is then the same shape, which is worth more
+    // than the one line it saves.
     readOffer: async (offerId) => {
       const { data, error } = await user
         .from('offers')
-        .select('driver_id,state')
+        .select('driver_id,state,trip_id,expires_at')
         .eq('id', offerId)
         .limit(1);
       return { row: first(data), error: error?.message ?? null };
+    },
+
+    // The trip state, on the service client and `state` only. It cannot go on
+    // the caller's bearer: `driver reads assigned trips` (migration:520) is
+    // `using (driver_id = auth.uid())` and a trip's driver_id is NULL until
+    // `accept_offer` matches it, so the policy matches zero rows for the very
+    // driver holding the offer (probe 11) and returns the row only once the
+    // accept has landed (probe 12).
+    //
+    // `select('state')` rather than `select('*')` is load bearing on a read that
+    // bypasses RLS: the trip row also carries the rider's `pickup`, `dropoff`
+    // and `fare_ghs`, none of which this function has any use for, and a
+    // privileged read should not widen to the whole row because it was easier.
+    readTripState: async (tripId) => {
+      const { data, error } = await service.from('trips').select('state').eq('id', tripId).limit(1);
+      const row = first(data);
+      return { state: row ? String(row.state) : null, error: error?.message ?? null };
     },
 
     // On the user client, so `auth.uid()` is the driver. `accept_offer` is

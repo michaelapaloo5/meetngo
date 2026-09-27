@@ -1,13 +1,31 @@
 // The decision rules, with no I/O in them, so the rule set is testable without
 // a live project.
 //
-// `resolveAccept` is a *mirror* of the `accept_offer` RPC, not a gate. The
-// handler does not consult it before calling the RPC, and must not: the RPC
-// decides under a lock on the trip row, and any answer computed before the call
-// would be stale by the time it mattered. It exists so the rules are pinned by
-// tests, and the lock behaviour is pinned by
-// supabase/tests/verify_concurrency.sql, which fires two real concurrent
-// accepts against the real RPC.
+// `resolveAccept` is a *classifier* in front of the `accept_offer` RPC, and both
+// halves of that are load bearing.
+//
+// It classifies refusals only. A refusal it returns is one the RPC would have
+// made too, so skipping the call costs nothing, and it lets the driver be told
+// which of the four reasons applied instead of a bare `false`. It never decides
+// the outcome: when it returns `accepted: true` the handler still calls the RPC
+// and reports that answer verbatim, including a `false`. The pre-check cannot
+// promote an accept, and nothing it returns reaches the driver as an outcome.
+//
+// Why a refusal is safe to act on alone, which is the whole justification: every
+// fact tested here is **monotone**, so an accept classified as invalid was
+// already invalid and cannot become valid again. An offer's state only ever
+// leaves `pending` (migration:376, :381 and :391); `expires_at` only approaches as the
+// clock advances; and no trip transition returns a trip to `requested` -- the
+// legality predicate at migration:192-197 contains no `new.state` of
+// `requested`, and probe 13 of supabase/tests/verify_offer_authz.sql measures
+// all six states refusing the move. The read this classifier runs on therefore
+// cannot go stale in the direction that would produce a false refusal. The other
+// direction is ordinary and expected: a rival accept landing between the read
+// and the RPC, which the RPC reports as `false` and the handler passes on.
+//
+// The lock behaviour itself is not pinned here. It is pinned by
+// supabase/tests/verify_concurrency.sql, which fires two real concurrent accepts
+// against the real RPC from two live `dblink` backends.
 
 export type OfferStateName = 'pending' | 'accepted' | 'declined' | 'expired' | 'released';
 
@@ -26,6 +44,15 @@ export interface OfferRow {
   expiresAt: string;
 }
 
+// A refusal carrying the status to send it with, so the handler has one shape
+// for "this caller may not do that to this offer" whatever the reason, and so
+// the status is chosen where the reason is produced rather than by matching the
+// reason string somewhere downstream.
+export interface Refusal {
+  status: number;
+  reason: string;
+}
+
 export interface AcceptResult {
   accepted: boolean;
   winnerDriverId: string | null;
@@ -34,13 +61,11 @@ export interface AcceptResult {
   // have a state.
   nextTripState: TripStateName | null;
   reason: string;
-}
-
-// A refusal carrying the status to send it with, so the handler has one shape
-// for "this caller may not do that to this offer" whatever the reason.
-export interface Refusal {
-  status: number;
-  reason: string;
+  // The status to answer a refusal with; null when the offer is acceptable.
+  // Carried here rather than derived from `reason` by the handler, because a
+  // string match on an English message is exactly the coupling that breaks
+  // silently when one side is reworded.
+  refusalStatus: number | null;
 }
 
 export type DeclineResult = { declined: true } | ({ declined: false } & Refusal);
@@ -49,12 +74,17 @@ export function resolveAccept(input: {
   existingOffers: OfferRow[];
   chosenOfferId: string;
 }): AcceptResult {
-  const reject = (reason: string, nextTripState: TripStateName | null): AcceptResult => ({
+  const reject = (
+    reason: string,
+    nextTripState: TripStateName | null,
+    refusalStatus: number,
+  ): AcceptResult => ({
     accepted: false,
     winnerDriverId: null,
     released: [],
     nextTripState,
     reason,
+    refusalStatus,
   });
 
   // Order matches the RPC's own: it tests that the offer exists (migration:304-307)
@@ -63,11 +93,18 @@ export function resolveAccept(input: {
   // and tested it first, which is both a caller-supplied value the code never
   // cross-checked against the row and the opposite order to the database.
   const chosen = input.existingOffers.find((o) => o.id === input.chosenOfferId);
-  if (!chosen) return reject('offer not found', null);
+  // 404 for an offer that is not there and 409 for one that is there but in a
+  // state that forbids the accept. Both are refusals the RPC agrees with: it
+  // answers `false / NULL / NULL` for an unknown id (probe 10) and moves an
+  // already-terminal or expired offer on before answering `false` (probes 9 and
+  // 3), so nothing is skipped that the database would have done.
+  if (!chosen) return reject('offer not found', null, 404);
   if (chosen.tripState !== 'requested') {
-    return reject('trip is no longer awaiting a driver', chosen.tripState);
+    return reject('trip is no longer awaiting a driver', chosen.tripState, 409);
   }
-  if (chosen.state !== 'pending') return reject(`offer already ${chosen.state}`, chosen.tripState);
+  if (chosen.state !== 'pending') {
+    return reject(`offer already ${chosen.state}`, chosen.tripState, 409);
+  }
 
   // Inclusive, and it has to stay inclusive. The RPC refuses the offer with
   // `v_offer.expires_at <= now()` (migration:375), and probe 9 of
@@ -79,7 +116,7 @@ export function resolveAccept(input: {
   // that matches the database; Task 4 is the side to change. Do not "fix" this
   // to match Dart.
   if (new Date(chosen.expiresAt).getTime() <= Date.now()) {
-    return reject('offer expired', chosen.tripState);
+    return reject('offer expired', chosen.tripState, 409);
   }
 
   // The offer TTL is not read here and is not configurable: Task 6 writes
@@ -93,6 +130,7 @@ export function resolveAccept(input: {
       .map((o) => o.id),
     nextTripState: 'matched',
     reason: 'ok',
+    refusalStatus: null,
   };
 }
 
