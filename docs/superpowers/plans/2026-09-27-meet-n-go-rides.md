@@ -3727,6 +3727,7 @@ The two survivors of the pre-review battery — an optional `input.tripState` th
 
 **Files:**
 - Create: `apps/rider/lib/src/data/auth_repository.dart`
+- Create: `apps/rider/lib/src/data/function_failure.dart`
 - Create: `apps/rider/lib/src/data/supabase_auth_repository.dart`
 - Create: `apps/rider/lib/src/data/trip_repository.dart`
 - Create: `apps/rider/lib/src/data/supabase_trip_repository.dart`
@@ -3738,31 +3739,33 @@ The two survivors of the pre-review battery — an optional `input.tripState` th
 - Create: `apps/rider/lib/src/auth/reset_password_screen.dart`
 - Modify: `apps/rider/pubspec.yaml`
 - Test: `apps/rider/test/auth/login_screen_test.dart`
+- Test: `apps/rider/test/auth/forgot_password_screen_test.dart`
 - Test: `apps/rider/test/auth/reset_password_screen_test.dart`
+- Test: `apps/rider/test/data/trip_json_test.dart`
 
 **Interfaces:**
-- Consumes: `mng_core` (Tasks 1–4)
-- Produces: `class AuthFailure implements Exception` with `String message`; `abstract class AuthRepository` with `signInWithPassword`, `signInWithGoogle`, `sendResetOtp`, `verifyOtpAndSetPassword`; `abstract class TripRepository` with `activeTrip`, `watchTrip`, `requestRide`, `cancelTrip`; `SupabaseAuthRepository` and `SupabaseTripRepository`; `AuthController extends ChangeNotifier` with `busy`, `error`, `submitPassword`, `submitGoogle`; `ResetController extends ChangeNotifier` with `error`, `submit({code, password, confirm})`; four screens. Widget keys: `emailField`, `passwordField`, `loginButton`, `sendCodeButton`, `codeField`, `newPasswordField`, `confirmPasswordField`, `resetButton`.
+- Consumes: `mng_core` (Tasks 1–4); the `request-ride` Edge Function (Task 6); the migration's RLS (Task 5)
+- Produces: `class AuthFailure implements Exception` with `String message`; `abstract class AuthRepository` with `signInWithPassword`, `signInWithGoogle`, `sendResetOtp`, `verifyOtpAndSetPassword`; `abstract class TripRepository` with `activeTrip`, `watchTrip`, `requestRide`, `cancelTrip`, `currentLocation`, `raiseSos`; `SupabaseAuthRepository` and `SupabaseTripRepository`; `AuthController extends ChangeNotifier` with `busy`, `error`, `submitPassword`, `submitGoogle`; `ResetController extends ChangeNotifier` with `error`, `done`, `submit({code, password, confirm})`; four screens. Widget keys: `emailField`, `passwordField`, `loginButton`, `sendCodeButton`, `resendButton`, `codeField`, `newPasswordField`, `confirmPasswordField`, `resetButton`.
+
+  `TripRepository.history()` is deliberately absent: Task 16 adds it, together with the `BookingsScreen` that consumes it.
 
 - [ ] **Step 1: Add dependencies**
 
-`apps/rider/pubspec.yaml` gains:
+`apps/rider/pubspec.yaml` gains the three packages this task actually imports:
 
 ```yaml
   supabase_flutter: ^2.4.0
-  google_maps_flutter: ^2.9.0
   geolocator: ^13.0.1
-  url_launcher: ^6.3.1
-  path_provider: ^2.1.4
-  shared_preferences: ^2.3.2
   provider: ^6.1.2
 ```
+
+`google_maps_flutter`, `url_launcher`, `path_provider` and `shared_preferences` are **not** added here. Each is imported by a later task (`google_maps_flutter` and `url_launcher` by Task 10, `path_provider` by Task 12) and adding a dependency no file in this task imports is unused weight on a disk with under 2 GB free. Add each in the task that imports it.
 
 ```bash
 cd ~/meet-n-go/apps/rider && flutter pub get
 ```
 
-Expected: `Got dependencies!` with no version conflicts. If `supabase_flutter` demands a higher Dart SDK than stable provides, pin to the newest version whose constraint the local Dart satisfies.
+Expected: `Got dependencies!` with no version conflicts. Verified on this host against Flutter 3.47.5 / Dart 3.13.4: the three resolve to `supabase_flutter 2.17.2`, `geolocator 13.0.4`, `provider 6.1.5`.
 
 - [ ] **Step 2: Write the failing login test**
 
@@ -3804,7 +3807,7 @@ class FakeAuthRepository implements AuthRepository {
 Widget wrap(FakeAuthRepository repo) => ScreenUtilInit(
       designSize: const Size(390, 844),
       minTextAdapt: true,
-      builder: (_, __) => ChangeNotifierProvider<AuthController>.value(
+      builder: (_, _) => ChangeNotifierProvider<AuthController>.value(
         value: AuthController(repo),
         child: const MaterialApp(home: LoginScreen()),
       ),
@@ -3895,12 +3898,10 @@ void main() {
 - [ ] **Step 3: Write the failing reset test**
 
 `apps/rider/test/auth/reset_password_screen_test.dart`:
-
 ```dart
 import 'package:flutter/material.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:meetngo_rider/src/auth/reset_controller.dart';
 import 'package:meetngo_rider/src/auth/reset_password_screen.dart';
 import 'package:meetngo_rider/src/data/auth_repository.dart';
 import 'package:provider/provider.dart';
@@ -3927,9 +3928,9 @@ class RecordingAuthRepository implements AuthRepository {
 
 Widget wrap(RecordingAuthRepository repo) => ScreenUtilInit(
       designSize: const Size(390, 844),
-      builder: (_, __) => ChangeNotifierProvider<ResetController>.value(
-        value: ResetController(repo, 'rider@example.com'),
-        child: const MaterialApp(home: ResetPasswordScreen()),
+      builder: (_, _) => ChangeNotifierProvider<AuthRepository>.value(
+        value: repo,
+        child: const MaterialApp(home: ResetPasswordScreen(email: 'rider@example.com')),
       ),
     );
 
@@ -3999,16 +4000,190 @@ void main() {
     expect(find.text('Password updated'), findsOneWidget);
     expect(find.byIcon(Icons.check_circle), findsOneWidget);
   });
+
+  testWidgets('the password ticks appear only once the rules hold', (tester) async {
+    await tester.pumpWidget(wrap(RecordingAuthRepository()));
+    expect(find.text('At least 6 characters'), findsNothing);
+    expect(find.text('Passwords match'), findsNothing);
+
+    await tester.enterText(find.byKey(const Key('newPasswordField')), 'abc12');
+    await tester.pump();
+    expect(find.text('At least 6 characters'), findsNothing);
+
+    await tester.enterText(find.byKey(const Key('newPasswordField')), 'secret123');
+    await tester.enterText(find.byKey(const Key('confirmPasswordField')), 'secret123');
+    await tester.pump();
+    expect(find.text('At least 6 characters'), findsOneWidget);
+    expect(find.text('Passwords match'), findsOneWidget);
+
+    await tester.enterText(find.byKey(const Key('confirmPasswordField')), 'secret124');
+    await tester.pump();
+    expect(find.text('Passwords match'), findsNothing);
+  });
+}
+```
+
+`apps/rider/test/auth/forgot_password_screen_test.dart`:
+
+```dart
+import 'package:flutter/material.dart';
+import 'package:flutter_screenutil/flutter_screenutil.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:meetngo_rider/src/auth/forgot_password_screen.dart';
+import 'package:meetngo_rider/src/data/auth_repository.dart';
+import 'package:provider/provider.dart';
+
+class SpyAuthRepository implements AuthRepository {
+  final sent = <String>[];
+  String? failure;
+
+  @override
+  Future<void> sendResetOtp(String email) async {
+    if (failure != null) throw AuthFailure(failure!);
+    sent.add(email);
+  }
+
+  @override
+  Future<void> signInWithPassword(String email, String password) async {}
+
+  @override
+  Future<void> signInWithGoogle() async {}
+
+  @override
+  Future<void> verifyOtpAndSetPassword(String email, String code, String password) async {}
+}
+
+Widget wrap(SpyAuthRepository repo) => ScreenUtilInit(
+      designSize: const Size(390, 844),
+      builder: (_, _) => ChangeNotifierProvider<AuthRepository>.value(
+        value: repo,
+        child: const MaterialApp(home: ForgotPasswordScreen()),
+      ),
+    );
+
+void main() {
+  testWidgets('an empty address is refused without calling the repository', (tester) async {
+    final repo = SpyAuthRepository();
+    await tester.pumpWidget(wrap(repo));
+    await tester.tap(find.byKey(const Key('sendCodeButton')));
+    await tester.pump();
+    expect(find.text('Enter the email on your account'), findsOneWidget);
+    expect(repo.sent, isEmpty);
+  });
+
+  testWidgets('sending the code calls the repository and shows the check screen', (tester) async {
+    final repo = SpyAuthRepository();
+    await tester.pumpWidget(wrap(repo));
+    await tester.enterText(find.byKey(const Key('emailField')), 'rider@example.com');
+    await tester.tap(find.byKey(const Key('sendCodeButton')));
+    await tester.pumpAndSettle();
+    expect(repo.sent, ['rider@example.com']);
+    expect(find.text('Check your email'), findsOneWidget);
+  });
+
+  testWidgets('a repository failure surfaces and does not claim a code was sent', (tester) async {
+    final repo = SpyAuthRepository()..failure = 'No account for that address';
+    await tester.pumpWidget(wrap(repo));
+    await tester.enterText(find.byKey(const Key('emailField')), 'rider@example.com');
+    await tester.tap(find.byKey(const Key('sendCodeButton')));
+    await tester.pumpAndSettle();
+    expect(find.text('No account for that address'), findsOneWidget);
+    expect(find.text('Check your email'), findsNothing);
+  });
+
+  testWidgets('resend is disabled while the countdown runs and reopens when it ends', (tester) async {
+    final repo = SpyAuthRepository();
+    await tester.pumpWidget(wrap(repo));
+    await tester.enterText(find.byKey(const Key('emailField')), 'rider@example.com');
+    await tester.tap(find.byKey(const Key('sendCodeButton')));
+    await tester.pumpAndSettle();
+
+    final resend = tester.widget<TextButton>(find.byKey(const Key('resendButton')));
+    expect(resend.onPressed, isNull);
+
+    await tester.pump(const Duration(seconds: 30));
+    final after = tester.widget<TextButton>(find.byKey(const Key('resendButton')));
+    expect(after.onPressed, isNotNull);
+  });
+}
+```
+
+`apps/rider/test/data/trip_json_test.dart` — the numeric-cast assumption,
+pinned against a hand-built PostgREST-shaped row:
+
+```dart
+import 'package:flutter_test/flutter_test.dart';
+import 'package:mng_core/mng_core.dart';
+
+/// PostgREST serialises a Postgres `numeric` as a JSON **number**, which is
+/// what `Trip.fromJson` casts with `as num`. A string would throw at runtime,
+/// not at compile time, so nothing else in the tree would catch it. This
+/// fixture is written by hand to that shape: **it is not a live PostgREST
+/// read**, because there is no PostgREST on this host. The residual risk —
+/// that a future PostgREST change emits numeric as a string — is untested and
+/// belongs in Task 18's pilot runbook, not here.
+final row = <String, dynamic>{
+  'id': '11111111-1111-1111-1111-111111111111',
+  'rider_id': '22222222-2222-2222-2222-222222222222',
+  'driver_id': null,
+  'category': 'standard',
+  'state': 'requested',
+  'pickup': {
+    'label': 'Osu',
+    'address': 'Oxford Street',
+    'point': {'lat': 5.6037, 'lng': -0.1870},
+  },
+  'dropoff': {
+    'label': 'Airport Residential',
+    'address': 'Liberation Road',
+    'point': {'lat': 5.6200, 'lng': -0.1870},
+  },
+  'distance_km': 8.0,
+  'fare_ghs': 22.0,
+  'is_demo': true,
+  'eta_minutes': null,
+};
+
+void main() {
+  test('a PostgREST-shaped row parses into a Trip', () {
+    final trip = Trip.fromJson(row);
+    expect(trip.id, '11111111-1111-1111-1111-111111111111');
+    expect(trip.category, RideCategory.standard);
+    expect(trip.state, TripState.requested);
+    expect(trip.distanceKm, 8.0);
+    expect(trip.fareGhs, 22.0);
+    expect(trip.isDemo, isTrue);
+    expect(trip.etaMinutes, isNull);
+    expect(trip.hasDriver, isFalse);
+  });
+
+  test('the nested point key is required, and a flattened pin is not it', () {
+    final flattened = <String, dynamic>{
+      ...row,
+      'pickup': {
+        'label': 'Osu',
+        'address': 'Oxford Street',
+        'lat': 5.6037,
+        'lng': -0.1870,
+      },
+    };
+    expect(() => Trip.fromJson(flattened), throwsA(isA<TypeError>()));
+  });
+
+  test('a numeric column arriving as a string throws, which is the risk pinned', () {
+    final asString = <String, dynamic>{...row, 'fare_ghs': '22.00'};
+    expect(() => Trip.fromJson(asString), throwsA(isA<TypeError>()));
+  });
 }
 ```
 
 - [ ] **Step 4: Run them and confirm they fail**
 
 ```bash
-cd ~/meet-n-go/apps/rider && flutter test test/auth/
+cd ~/meet-n-go/apps/rider && flutter test test/auth/ test/data/
 ```
 
-Expected: FAIL — the auth files do not exist.
+Expected: FAIL — the auth and data files do not exist.
 
 - [ ] **Step 5: Write the repository interfaces**
 
@@ -4057,11 +4232,35 @@ abstract class TripRepository {
 
 - [ ] **Step 6: Write the Supabase implementations**
 
+`apps/rider/lib/src/data/function_failure.dart` — the one place a failed Edge
+Function call becomes a message:
+
+```dart
+import 'package:supabase_flutter/supabase_flutter.dart';
+
+/// Every Edge Function in this project answers an error status with the body
+/// `{ error: <string> }` (`_shared/cors.ts` sets `Content-Type: application/json`,
+/// and `functions_client` decodes a JSON body before handing it back as
+/// `details`). A body that is not JSON, or a JSON body with no `error` key,
+/// must still produce a message rather than `null`.
+String describeFunctionFailure(FunctionException e) {
+  final details = e.details;
+  if (details is Map) {
+    final message = details['error'];
+    if (message is String && message.isNotEmpty) return message;
+  }
+  if (details is String && details.isNotEmpty) return details;
+  if (e.status == 0) return 'Could not reach the server';
+  return 'Something went wrong (${e.status})';
+}
+```
+
 `apps/rider/lib/src/data/supabase_auth_repository.dart`:
 
 ```dart
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'auth_repository.dart';
+import 'function_failure.dart';
 
 class SupabaseAuthRepository implements AuthRepository {
   SupabaseAuthRepository(this._client);
@@ -4079,22 +4278,23 @@ class SupabaseAuthRepository implements AuthRepository {
   @override
   Future<void> signInWithGoogle() async {
     // Apple Sign-In is intentionally absent, see spec section 3.1.
-    final res = await _client.auth.signInWithOAuth(
-      Provider.google,
+    // `signInWithOAuth` launches a browser and returns whether the launch
+    // happened, not whether the sign-in did; the session arrives later on
+    // `auth.onAuthStateChanged` through the `meetngo://auth-callback` deep link.
+    final launched = await _client.auth.signInWithOAuth(
+      OAuthProvider.google,
       redirectTo: 'meetngo://auth-callback',
     );
-    if (res.session == null && res.url == null) {
-      throw const AuthFailure('Google sign-in was cancelled');
-    }
+    if (!launched) throw const AuthFailure('Google sign-in could not start');
   }
 
   @override
   Future<void> sendResetOtp(String email) async {
-    final res = await _client.functions.invoke(
-      'otp-mail',
-      body: {'email': email},
-    );
-    if (res.error != null) throw AuthFailure(res.error!.message);
+    try {
+      await _client.functions.invoke('otp-mail', body: {'email': email});
+    } on FunctionException catch (e) {
+      throw AuthFailure(describeFunctionFailure(e));
+    }
   }
 
   @override
@@ -4108,22 +4308,38 @@ class SupabaseAuthRepository implements AuthRepository {
     // correct code it sets a random temporary password server-side and returns
     // it once. The client signs in with that temporary password, immediately
     // replaces it with the real one, and never surfaces the temporary value.
-    final res = await _client.functions.invoke(
-      'otp-mail',
-      body: {'action': 'verify', 'email': email, 'code': code},
-    );
-    if (res.error != null) throw AuthFailure(res.error!.message);
-    final data = res.data as Map<String, dynamic>?;
-    final tempPassword = data?['tempPassword'] as String?;
+    String? tempPassword;
+    try {
+      final res = await _client.functions.invoke(
+        'otp-mail',
+        body: {'action': 'verify', 'email': email, 'code': code},
+      );
+      final data = res.data;
+      if (data is Map) {
+        final value = data['tempPassword'];
+        if (value is String && value.isNotEmpty) tempPassword = value;
+      }
+    } on FunctionException catch (e) {
+      throw AuthFailure(describeFunctionFailure(e));
+    }
     if (tempPassword == null) {
       throw const AuthFailure('That code is not right');
     }
 
-    await _client.auth.signInWithPassword(email: email, password: tempPassword);
-    final updated = await _client.auth.updateUser(
-      UserAttributes(password: password),
-    );
-    if (updated.user == null) throw const AuthFailure('Could not update password');
+    try {
+      await _client.auth.signInWithPassword(
+        email: email,
+        password: tempPassword,
+      );
+      final updated = await _client.auth.updateUser(
+        UserAttributes(password: password),
+      );
+      if (updated.user == null) {
+        throw const AuthFailure('Could not update password');
+      }
+    } on AuthException catch (e) {
+      throw AuthFailure(e.message);
+    }
     await _client.auth.signOut();
   }
 }
@@ -4135,6 +4351,7 @@ class SupabaseAuthRepository implements AuthRepository {
 import 'package:geolocator/geolocator.dart';
 import 'package:mng_core/mng_core.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'function_failure.dart';
 import 'trip_repository.dart';
 
 class SupabaseTripRepository implements TripRepository {
@@ -4143,14 +4360,18 @@ class SupabaseTripRepository implements TripRepository {
 
   @override
   Future<Trip?> activeTrip() async {
+    // No `rider_id` filter on purpose: the `rider reads own trips` RLS policy
+    // is `using (rider_id = auth.uid())`, so the anon key cannot widen this to
+    // another rider's trip even with the filter removed.
     final res = await _client
         .from('trips')
         .select()
         .in('state', ['requested', 'matched', 'arriving', 'ongoing'])
         .order('created_at', ascending: false)
         .limit(1);
-    if (res.data == null || res.data!.isEmpty) return null;
-    return Trip.fromJson(res.data!.first as Map<String, dynamic>);
+    final rows = res.data;
+    if (rows == null || rows.isEmpty) return null;
+    return Trip.fromJson(rows.first as Map<String, dynamic>);
   }
 
   @override
@@ -4167,23 +4388,42 @@ class SupabaseTripRepository implements TripRepository {
     required RideCategory category,
     String? promoCode,
   }) async {
-    final res = await _client.functions.invoke('request-ride', body: {
-      'category': category.name,
-      'promoCode': promoCode,
-      'pickup': {...pickup.toJson(), ...pickup.point.toJson()},
-      'dropoff': {...dropoff.toJson(), ...dropoff.point.toJson()},
-    });
-    if (res.error != null) throw TripRequestFailure(res.error!.message);
-    return Trip.fromJson((res.data as Map)['trip'] as Map<String, dynamic>);
+    // The flattened `lat`/`lng` are what `parseRideRequest` reads; the nested
+    // `point` rides along for free and `request-ride` normalises the stored
+    // jsonb to `{label, address, point: {lat, lng}}`, which is the only shape
+    // `TripStop.fromJson` can parse.
+    dynamic data;
+    try {
+      final res = await _client.functions.invoke('request-ride', body: {
+        'category': category.name,
+        'promoCode': promoCode,
+        'pickup': {...pickup.toJson(), ...pickup.point.toJson()},
+        'dropoff': {...dropoff.toJson(), ...dropoff.point.toJson()},
+      });
+      data = res.data;
+    } on FunctionException catch (e) {
+      throw TripRequestFailure(describeFunctionFailure(e));
+    }
+    if (data is! Map) {
+      throw const TripRequestFailure('The ride service returned nothing');
+    }
+    final trip = data['trip'];
+    if (trip is! Map) {
+      throw const TripRequestFailure('The ride service returned no trip');
+    }
+    return Trip.fromJson(trip.cast<String, dynamic>());
   }
 
   @override
   Future<void> cancelTrip(String tripId) async {
-    final res = await _client.functions.invoke(
-      'cancel-trip',
-      body: {'tripId': tripId},
-    );
-    if (res.error != null) throw TripRequestFailure(res.error!.message);
+    try {
+      await _client.functions.invoke(
+        'cancel-trip',
+        body: {'tripId': tripId},
+      );
+    } on FunctionException catch (e) {
+      throw TripRequestFailure(describeFunctionFailure(e));
+    }
   }
 
   @override
@@ -4210,10 +4450,31 @@ class SupabaseTripRepository implements TripRepository {
       'note': note,
       if (here != null) 'point': 'POINT(${here.lng} ${here.lat})',
     });
-    if (res.error != null) throw TripRequestFailure(res.error!.message);
+    final error = res.error;
+    if (error != null) throw TripRequestFailure(error.message);
   }
 }
 ```
+
+**Two API facts this code is written against, both measured against the
+installed packages rather than assumed. Do not "simplify" either back.**
+
+1. `SupabaseClient.functions.invoke` **throws on a non-2xx status**; it does not
+   return an error field. `FunctionResponse` (`functions_client-2.7.1/lib/src/types.dart:14`)
+   carries `data` and `status` and nothing else. The three throwables —
+   `FunctionsHttpException`, `FunctionsRelayException`, `FunctionsFetchException`
+   — all extend `FunctionException` (`types.dart:29`), which is what the `on`
+   clauses catch.
+2. `supabase.auth.signInWithOAuth` is an **extension on `GoTrueClient`**
+   (`GoTrueClientSignInProvider`, `supabase_flutter-2.17.2/lib/src/supabase_auth.dart:327`),
+   it takes an **`OAuthProvider`**, and it returns **`Future<bool>`**. There is no
+   `Provider` enum in `gotrue-2.27.2` and no `OAuthResponse` on this path.
+
+`sos_events.point` is `geography(Point,4326)` and the insert sends WKT
+(`POINT(lng lat)`). PostgREST parses WKT for PostGIS columns, and Task 6's
+`wkt()` helper sends the same form, so the two agree. **This is not verifiable
+on this host** — there is no PostgREST here — so it is recorded as untested
+rather than asserted.
 
 - [ ] **Step 7: Write the controllers**
 
@@ -4508,9 +4769,13 @@ class SplashScreen extends StatelessWidget {
 - [ ] **Step 10: Write `forgot_password_screen.dart`**
 
 ```dart
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
 import 'package:mng_core/mng_core.dart';
+import 'package:provider/provider.dart';
+import '../data/auth_repository.dart';
 import 'reset_password_screen.dart';
 
 class ForgotPasswordScreen extends StatefulWidget {
@@ -4520,15 +4785,36 @@ class ForgotPasswordScreen extends StatefulWidget {
 }
 
 class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
+  static const _resendWindow = Duration(seconds: 30);
+
   final _email = TextEditingController();
+  Timer? _ticker;
   String? _error;
+  bool _busy = false;
   bool _sent = false;
   int _resendSeconds = 0;
 
   @override
   void dispose() {
+    _ticker?.cancel();
     _email.dispose();
     super.dispose();
+  }
+
+  void _startCountdown() {
+    _ticker?.cancel();
+    _ticker = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (!mounted) {
+        timer.cancel();
+        return;
+      }
+      if (_resendSeconds <= 1) {
+        timer.cancel();
+        setState(() => _resendSeconds = 0);
+      } else {
+        setState(() => _resendSeconds -= 1);
+      }
+    });
   }
 
   Future<void> _send() async {
@@ -4538,9 +4824,27 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
     }
     setState(() {
       _error = null;
-      _sent = true;
-      _resendSeconds = 30;
+      _busy = true;
     });
+    try {
+      // The repository call is the whole point of this screen. Without it the
+      // rider is shown a 6-digit code was sent when nothing was sent, and
+      // `otp-mail` never runs.
+      await context.read<AuthRepository>().sendResetOtp(_email.text);
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _sent = true;
+        _resendSeconds = _resendWindow.inSeconds;
+      });
+      _startCountdown();
+    } on AuthFailure catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _error = e.message;
+      });
+    }
   }
 
   @override
@@ -4580,13 +4884,14 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
               SizedBox(height: 20.h),
               FilledButton(
                 key: const Key('sendCodeButton'),
-                onPressed: _send,
+                onPressed: _busy ? null : _send,
                 child: const Text('Send Code'),
               ),
               SizedBox(height: 12.h),
               Center(
                 child: TextButton(
-                  onPressed: _resendSeconds == 0 ? _send : null,
+                  key: const Key('resendButton'),
+                  onPressed: _resendSeconds == 0 || _busy ? null : _send,
                   child: Text(
                     _resendSeconds == 0
                         ? "Didn't get it? Resend"
@@ -4674,7 +4979,21 @@ class _ResetPasswordViewState extends State<_ResetPasswordView> {
   bool _obscureConfirm = true;
 
   @override
+  void initState() {
+    super.initState();
+    // The two rule ticks below read `_password.text` and `_confirm.text`
+    // during `build`. Without these listeners a keystroke rebuilds nothing, so
+    // "Passwords match" never appears and the green tick is dead UI.
+    _password.addListener(_onFieldChanged);
+    _confirm.addListener(_onFieldChanged);
+  }
+
+  void _onFieldChanged() => setState(() {});
+
+  @override
   void dispose() {
+    _password.removeListener(_onFieldChanged);
+    _confirm.removeListener(_onFieldChanged);
     _code.dispose();
     _password.dispose();
     _confirm.dispose();
@@ -4763,22 +5082,25 @@ class _ResetPasswordViewState extends State<_ResetPasswordView> {
                 ),
               ),
               SizedBox(height: 12.h),
-              Row(
-                children: [
-                  const Icon(Icons.check_circle, size: 16, color: MngColors.success),
-                  SizedBox(width: 6.w),
-                  Text('At least 6 characters', style: text.bodySmall),
-                  SizedBox(width: 16.w),
-                  if (_password.text.isNotEmpty && _password.text == _confirm.text)
-                    Row(
-                      children: [
-                        const Icon(Icons.check_circle, size: 16, color: MngColors.success),
-                        SizedBox(width: 6.w),
-                        Text('Passwords match', style: text.bodySmall),
-                      ],
-                    ),
-                ],
-              ),
+              // A green tick must mean the rule holds. Showing both ticks
+              // unconditionally paints a passing "At least 6 characters" over a
+              // five-character password.
+              if (_password.text.length >= 6)
+                Row(
+                  children: [
+                    const Icon(Icons.check_circle, size: 16, color: MngColors.success),
+                    SizedBox(width: 6.w),
+                    Text('At least 6 characters', style: text.bodySmall),
+                  ],
+                ),
+              if (_confirm.text.isNotEmpty && _password.text == _confirm.text)
+                Row(
+                  children: [
+                    const Icon(Icons.check_circle, size: 16, color: MngColors.success),
+                    SizedBox(width: 6.w),
+                    Text('Passwords match', style: text.bodySmall),
+                  ],
+                ),
               if (controller.error != null) ...[
                 SizedBox(height: 12.h),
                 Text(controller.error!, style: const TextStyle(color: MngColors.error)),
@@ -4805,10 +5127,15 @@ class _ResetPasswordViewState extends State<_ResetPasswordView> {
 - [ ] **Step 12: Run the tests and confirm they pass**
 
 ```bash
-cd ~/meet-n-go/apps/rider && flutter test && flutter analyze
+cd ~/meet-n-go/apps/rider && flutter test && flutter analyze --fatal-infos
 ```
 
-Expected: 1 skeleton + 9 login + 6 reset tests pass, analyze clean.
+Expected: 1 skeleton + 9 login + 7 reset + 4 forgot-password + 3 trip-json tests pass (24), `flutter analyze --fatal-infos` clean. Use `--fatal-infos` and not bare `analyze`: CI runs that flag at `.github/workflows/ci.yml:25`, and `unnecessary_underscores` is an info-severity lint, so a bare `analyze` passes locally and turns the pipeline red.
+
+`LoginScreen` and `ForgotPasswordScreen` both reach for an ancestor
+`Provider<AuthRepository>`, so **when this task's screens are first mounted
+under a shell, an `AuthRepository` must be in scope above them.** Task 16 owns
+that wiring; the tests here inject it explicitly for the same reason.
 
 - [ ] **Step 13: Commit**
 
