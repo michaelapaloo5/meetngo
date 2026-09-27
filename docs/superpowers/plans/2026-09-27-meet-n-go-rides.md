@@ -1693,12 +1693,12 @@ git commit -m "feat(core): trip, offer, vehicle, payment, rating, driver models"
 - Create: `supabase/migrations/20260927000001_init.sql`
 - Create: `supabase/seed/seed.sql`
 - Create: `supabase/tests/harness.sql` (local Postgres + PostGIS stand-in for a Supabase project; there is no Docker on this host)
-- Create: `supabase/tests/verify_migration.sql` (119 assertions: the 36 ordered trip transitions, the demo-only CHECK constraints, RLS, the geometry helpers, `match_offers_for_trip` and `accept_offer`, and the client write paths)
+- Create: `supabase/tests/verify_migration.sql` (120 assertions: the 36 ordered trip transitions, the demo-only CHECK constraints, RLS, the geometry helpers, `match_offers_for_trip` and `accept_offer`, and the client write paths)
 - Create: `supabase/tests/verify_concurrency.sql` (16 assertions over two real concurrent backends, via `dblink`)
 
 **Interfaces:**
 - Consumes: field names from Task 4 models
-- Produces: tables `profiles`, `vehicles`, `trips`, `offers`, `driver_locations`, `payments`, `payouts`, `ledger_entries`, `ratings`, `promos`, `chat_messages`, `sos_events`; enums `trip_state`, `offer_state`, `payment_state`, `pay_method`, `kyc_status`, `driver_availability`; functions `trip_distance_km(text, text)`, `driver_pickup_distance_km(uuid, uuid)`, `match_offers_for_trip(uuid)`, `accept_offer(uuid)`; triggers `enforce_trip_transition` (trips), `on_auth_user_created` (auth.users, runs `handle_new_user`) and `profiles_update_guard` (profiles, runs `guard_profile_update`). Tasks 6, 7, 8, 10, 11, 12, 13, 14 call these, and the client write paths in Tasks 8 and 12 depend on the column grants and policies declared at the end of the migration: a client may update only `trips.(state, eta_minutes, started_at, completed_at)` and only a trip assigned to it, only `profiles.(full_name, phone, photo_url, ghana_card_last4, ghana_card_expiry, selfie_url, vehicle_id, availability, kyc_status)` and only its own row, and it may insert `sos_events` and `chat_messages` only for a trip it is party to.
+- Produces: tables `profiles`, `vehicles`, `trips`, `offers`, `driver_locations`, `payments`, `payouts`, `ledger_entries`, `ratings`, `promos`, `chat_messages`, `sos_events`; enums `trip_state`, `offer_state`, `payment_state`, `pay_method`, `kyc_status`, `driver_availability`; functions `trip_distance_km(text, text)`, `driver_pickup_distance_km(uuid, uuid)`, `match_offers_for_trip(uuid)`, `accept_offer(uuid)`; triggers `enforce_trip_transition` (trips), `on_auth_user_created` (auth.users, runs `handle_new_user`) and `profiles_update_guard` (profiles, runs `guard_profile_update`). **Of those, `match_offers_for_trip(uuid)` is callable only by `service_role`**: the migration ends it with `revoke execute on function match_offers_for_trip(uuid) from public, anon, authenticated;`. `public` has to be in that list, because PostgreSQL grants EXECUTE on every function to `PUBLIC` by default and `anon` and `authenticated` are PUBLIC members, so revoking from the two named roles alone leaves the grant in place. Add no `auth.uid()` guard and no party-membership check to that function: a service-role PostgREST request carries no `request.jwt.claim.sub`, so `auth.uid()` is null on the only legitimate caller and either guard would make it return no candidates. `accept_offer(uuid)` is the opposite case and stays executable by `anon` and `authenticated`, because a client is supposed to call it; it is guarded inside by an ownership check on the offer. `handle_new_user()` is also `SECURITY DEFINER` but returns `trigger`, so it cannot be invoked as a query at all. Tasks 6, 7, 8, 10, 11, 12, 13, 14 call these, and the client write paths in Tasks 8 and 12 depend on the column grants and policies declared at the end of the migration: a client may update only `trips.(state, eta_minutes, started_at, completed_at)` and only a trip assigned to it, only `profiles.(full_name, phone, photo_url, ghana_card_last4, ghana_card_expiry, selfie_url, vehicle_id, availability, kyc_status)` and only its own row, and it may insert `sos_events` and `chat_messages` only for a trip it is party to.
 
 - [ ] **Step 1: Initialise the Supabase project and link a hosted project**
 
@@ -1989,6 +1989,29 @@ as $$
   order by driver_pickup_distance_km(target_trip, d.id)
   limit 5;
 $$;
+
+-- Service-role only. Hosted Supabase grants EXECUTE on every public function to
+-- anon and authenticated, and this one is SECURITY DEFINER, so any caller who
+-- learned a foreign trip_id could read which drivers are online, KYC-approved and
+-- within 5 km of that pickup, with their ids and their distances. That is the
+-- same class of leak as the accept_offer ownership hole, and this is the last
+-- unguarded SECURITY DEFINER surface in the schema.
+--
+-- Do not "fix" this with an `auth.uid() is not null` guard or a party-membership
+-- check. Task 6's request-ride Edge Function calls it with the service-role
+-- client, and a service-role PostgREST request carries no request.jwt.claim.sub,
+-- so auth.uid() is null there and either guard would make the candidate query
+-- return nothing and every ride request would find zero drivers. EXECUTE is
+-- already granted to service_role, so this revoke is the whole change.
+--
+-- `public` has to be in the list, and omitting it leaves the hole open.
+-- PostgreSQL grants EXECUTE on every function to PUBLIC by default and Supabase
+-- does not take that away, so the ACL still reads `=X/postgres` after revoking
+-- from anon and authenticated alone. anon and authenticated are members of
+-- PUBLIC implicitly, so a signed-in caller still got through. Revoking from
+-- public as well is what actually closes it; service_role keeps its explicit
+-- grant.
+revoke execute on function match_offers_for_trip(uuid) from public, anon, authenticated;
 
 -- Single-winner offer acceptance.
 --
@@ -2363,7 +2386,7 @@ git commit -m "feat(db): schema, PostGIS, RLS, trip transition guard, accept_off
 - Test: `supabase/functions/_tests/match.test.ts`
 
 **Interfaces:**
-- Consumes: RPCs `trip_distance_km` and `match_offers_for_trip` (Task 5), `FareCalculator` semantics (Task 2)
+- Consumes: RPCs `trip_distance_km` (callable by anyone) and `match_offers_for_trip` (Task 5, **service-role only**: the migration revokes EXECUTE from `public`, `anon` and `authenticated`, so it must be called with the service-role client and never with a user's own client or from a Flutter app), `FareCalculator` semantics (Task 2)
 - Produces: POST `request-ride` with body `{category, pickup, dropoff, promoCode?, surge?}` returning `{trip, quote, offerDriverIds}`. Exports `computeFare(input: FareInput): FareQuote` and `pickDrivers(candidates: Candidate[], max: number): string[]` for unit tests.
 
 - [ ] **Step 1: Write the failing unit tests**
@@ -2652,6 +2675,11 @@ serve(async (req) => {
     });
   }
 
+  // `match_offers_for_trip` is service-role only, EXECUTE revoked from public, anon
+  // and authenticated. The `supabase` client above is created with
+  // SUPABASE_SERVICE_ROLE_KEY, so this call is allowed; calling it with a user's
+  // client, or from a Flutter app, returns 42501. If the candidate list comes back
+  // empty on a live project, check the key before anything else.
   const { data: candidates } = await supabase.rpc('match_offers_for_trip', {
     target_trip: trip.id,
   });
