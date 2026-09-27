@@ -1,13 +1,15 @@
 import 'package:flutter/material.dart';
+import 'package:mng_core/mng_core.dart';
 
 class DriverNGoApp extends StatelessWidget {
   const DriverNGoApp({super.key});
 
   @override
   Widget build(BuildContext context) {
-    return const MaterialApp(
+    return MaterialApp(
       debugShowCheckedModeBanner: false,
-      home: Scaffold(body: Center(child: Text('Meet \'N Go Driver'))),
+      theme: MngTheme.light,
+      home: const Scaffold(body: Center(child: Text('Meet \'N Go Driver'))),
     );
   }
 }
