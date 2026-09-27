@@ -34,6 +34,8 @@ Every task implicitly includes this section. Values are fixed for the whole buil
 3. Two events, one command — `grep` the repository for a claim's other restatements, the file you are editing included. **You discover a claim is wrong:** its other sites break then, not when you get round to writing the correction. **A change lands that invalidates something you already wrote,** yours or another's: a sentence you no longer remember writing goes stale without touching you. A correction that leaves live copies of the claim it corrects is not a correction, and the copies are what a later reader finds first.
 4. Any claim of the form "X returns Z" that you did not execute in this round must be executed before you write it, or written as a claim about source you read, with `file:line`.
 
+**Measured yield at `9a5cd3b`.** Items 1-2: two instances, both in tracked files that ship — a stale client-split comment in `supabase/functions/offers/handler.ts` and a stale twin at this plan's Task 7 section. Item 3: one instance, in a gitignored report. Item 4: none in five rounds.
+
 ## Review Focus
 
 Five input classes the spec implies but no screen test naturally covers. Each is pinned by a named test in the task that owns the logic.
@@ -11949,6 +11951,7 @@ The plan is complete when all of the following hold:
   `active_trip_survives_app_restart_test`.
 - A real Accra trip has been walked end to end on two Android devices with demo
   payments, following `docs/runbooks/accra-pilot.md`.
+- Every item in the noun-sweep block either fired at least once in Tasks 8-18, or has been deleted.
 
 ## Explicitly Not In This Plan
 
