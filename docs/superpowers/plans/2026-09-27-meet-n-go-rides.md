@@ -1900,9 +1900,10 @@ returns trigger
 language plpgsql
 as $$
 begin
-  if new.state = old.state then
-    return new;
-  end if;
+  -- No self-transition short circuit: a no-op update falls through to the
+  -- legality predicate below, so `new.state = old.state` raises like any other
+  -- illegal move. Do not reintroduce an early `return new` here; the Dart
+  -- `canTransition` table and the Task 17 fake both reject all self-transitions.
   if not (
     (old.state = 'requested' and new.state in ('matched','cancelled')) or
     (old.state = 'matched'    and new.state in ('arriving','cancelled')) or
