@@ -1693,7 +1693,7 @@ git commit -m "feat(core): trip, offer, vehicle, payment, rating, driver models"
 - Create: `supabase/migrations/20260927000001_init.sql`
 - Create: `supabase/seed/seed.sql`
 - Create: `supabase/tests/harness.sql` (local Postgres + PostGIS stand-in for a Supabase project; there is no Docker on this host)
-- Create: `supabase/tests/verify_migration.sql` (120 assertions: the 36 ordered trip transitions, the demo-only CHECK constraints, RLS, the geometry helpers, `match_offers_for_trip` and `accept_offer`, and the client write paths)
+- Create: `supabase/tests/verify_migration.sql` (121 assertions: the 36 ordered trip transitions, the demo-only CHECK constraints, RLS, the geometry helpers, `match_offers_for_trip` and `accept_offer`, and the client write paths)
 - Create: `supabase/tests/verify_concurrency.sql` (16 assertions over two real concurrent backends, via `dblink`)
 
 **Interfaces:**
@@ -2065,7 +2065,17 @@ begin
 
   -- 3. Now the offer. The unlocked read above may be stale by the time the
   --    trip lock is granted, so re-read and re-check ownership under the lock.
+  --    A zero-row SELECT INTO leaves v_offer at its step 1 value rather than
+  --    nulling it, so the not-found case has to be tested the same way step 2
+  --    tests it. Without this, a privileged DELETE landing between the two reads
+  --    would let the function accept a vanished offer, release its siblings and
+  --    match the trip. Not reachable from a client: offers has no DELETE policy
+  --    and no other writer, but the pattern one line above already checks it.
   select * into v_offer from offers where id = p_offer for update;
+  if not found then
+    return query select false, null::uuid, null::uuid;
+    return;
+  end if;
   if v_offer.driver_id is distinct from auth.uid() then
     return query select false, null::uuid, null::uuid;
     return;
@@ -2281,9 +2291,19 @@ create policy "own sos events" on sos_events
   for select using (raised_by = auth.uid());
 -- SOS is dead in the field without this. The plan has
 -- SupabaseTripRepository.raiseSos inserting with the rider's own client, and
--- RLS default-denied the INSERT, so every SOS returned 42501. The state gate
--- keeps it to a trip that is actually under way, so a caller cannot farm SOS
--- rows against a stale or unassigned trip.
+-- RLS default-denied the INSERT, so every SOS returned 42501.
+--
+-- There is deliberately no state gate, and that is a deliberate symmetry with
+-- "own sos events" above, which is also ungated. An earlier draft of this policy
+-- added `t.state in ('matched','arriving','ongoing')`, and that recreated the
+-- very defect this policy exists to remove: TrackingController.activeTrip()
+-- includes `requested`, raiseSos fires whenever the trip is non-null, and
+-- sosRaised is set to true *before* the await, so a rider who pressed the
+-- button while still waiting for a driver got a 42501 that surfaced as an
+-- uncaught exception on a screen already reading "Help is on the way", with no
+-- row in sos_events. `requested` is exactly the state a rider may need SOS in.
+-- Do not narrow the plan's button to fit a policy; narrow the policy if
+-- anything, never the other way round.
 create policy "raise sos on a trip you are party to" on sos_events
   for insert with check (
     raised_by = auth.uid()
@@ -2291,7 +2311,6 @@ create policy "raise sos on a trip you are party to" on sos_events
       select 1 from trips t
       where t.id = sos_events.trip_id
         and (t.rider_id = auth.uid() or t.driver_id = auth.uid())
-        and t.state in ('matched','arriving','ongoing')
     )
   );
 
@@ -5989,7 +6008,9 @@ In `apps/rider/lib/src/data/trip_repository.dart` add the method to the abstract
   Future<void> raiseSos(String tripId, String note);
 ```
 
-In `apps/rider/lib/src/data/supabase_trip_repository.dart` implement it by inserting directly into `sos_events`. The migration's `raise sos on a trip you are party to` policy is what makes this work: it requires `raised_by = auth.uid()` and that the trip's `rider_id` or `driver_id` is the caller and the trip is in `matched`, `arriving` or `ongoing`. Without that policy the insert returns 42501, so do not replace it with a select-only policy on `sos_events`.
+In `apps/rider/lib/src/data/supabase_trip_repository.dart` implement it by inserting directly into `sos_events`. The migration's `raise sos on a trip you are party to` policy is what makes this work: it requires `raised_by = auth.uid()` and that the trip's `rider_id` or `driver_id` is the caller. Without that policy the insert returns 42501, so do not replace it with a select-only policy on `sos_events`.
+
+That policy carries **no state clause**, on purpose, and it must stay that way. `activeTrip()` above includes `requested`, and `TrackingController.raiseSos` fires whenever the trip is non-null while setting `sosRaised = true` *before* awaiting the insert. So a rider who presses the button while still waiting for a driver is in a `requested` trip, and a gate of `state in ('matched','arriving','ongoing')` would turn a working safety button into a 42501 that surfaces as an uncaught exception on a screen already reading "Help is on the way", with no row in `sos_events`. The symmetry argument is the same one that makes the `chat_messages` INSERT policy ungated: the SOS SELECT policy is ungated, so the write policy is too. Never narrow this button to fit a policy; if a state restriction is ever genuinely wanted, change `raiseSos` deliberately and write the test with it.
 
 ```dart
   @override
