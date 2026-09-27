@@ -37,6 +37,37 @@ void main() {
     expect(canTransition(TripState.requested, TripState.requested), isFalse);
   });
 
+  test('all 36 ordered pairs agree with the seven legal pairs', () {
+    const legal = <(TripState, TripState)>{
+      (TripState.requested, TripState.matched),
+      (TripState.requested, TripState.cancelled),
+      (TripState.matched, TripState.arriving),
+      (TripState.matched, TripState.cancelled),
+      (TripState.arriving, TripState.ongoing),
+      (TripState.arriving, TripState.cancelled),
+      (TripState.ongoing, TripState.completed),
+    };
+    expect(legal, hasLength(7), reason: 'the legal set must stay at 7 pairs');
+
+    final mismatches = <String>[];
+    for (final from in TripState.values) {
+      for (final to in TripState.values) {
+        final want = legal.contains((from, to));
+        final got = canTransition(from, to);
+        if (got != want) {
+          mismatches.add('canTransition($from, $to) is $got, want $want');
+        }
+      }
+    }
+    expect(
+      mismatches,
+      isEmpty,
+      reason: 'illegal transition table: ${mismatches.length} of '
+          '${TripState.values.length * TripState.values.length} ordered pairs '
+          'disagree with the legal set above',
+    );
+  });
+
   test('nextState returns the target for a legal move', () {
     expect(nextState(TripState.requested, TripState.matched), TripState.matched);
   });
@@ -59,5 +90,14 @@ void main() {
     expect(TripState.ongoing.isActive, isTrue);
     expect(TripState.completed.isActive, isFalse);
     expect(TripState.cancelled.isActive, isFalse);
+  });
+
+  test('isTerminal covers completed and cancelled only', () {
+    expect(TripState.requested.isTerminal, isFalse);
+    expect(TripState.matched.isTerminal, isFalse);
+    expect(TripState.arriving.isTerminal, isFalse);
+    expect(TripState.ongoing.isTerminal, isFalse);
+    expect(TripState.completed.isTerminal, isTrue);
+    expect(TripState.cancelled.isTerminal, isTrue);
   });
 }

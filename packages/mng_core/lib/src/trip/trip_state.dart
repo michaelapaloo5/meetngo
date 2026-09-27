@@ -33,7 +33,8 @@ const Map<TripState, Set<TripState>> _legal = {
   TripState.cancelled: {},
 };
 
-bool canTransition(TripState from, TripState to) => _legal[from]!.contains(to);
+bool canTransition(TripState from, TripState to) =>
+    _legal[from]?.contains(to) ?? false;
 
 TripState nextState(TripState from, TripState to) {
   if (!canTransition(from, to)) {
