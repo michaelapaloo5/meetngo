@@ -1693,12 +1693,12 @@ git commit -m "feat(core): trip, offer, vehicle, payment, rating, driver models"
 - Create: `supabase/migrations/20260927000001_init.sql`
 - Create: `supabase/seed/seed.sql`
 - Create: `supabase/tests/harness.sql` (local Postgres + PostGIS stand-in for a Supabase project; there is no Docker on this host)
-- Create: `supabase/tests/verify_migration.sql` (125 assertions: the 36 ordered trip transitions, the demo-only CHECK constraints, RLS, the geometry helpers, `match_offers_for_trip` and `accept_offer`, and the client write paths)
+- Create: `supabase/tests/verify_migration.sql` (128 assertions: the 36 ordered trip transitions, the demo-only CHECK constraints, RLS, the geometry helpers, `match_offers_for_trip` and `accept_offer`, and the client write paths)
 - Create: `supabase/tests/verify_concurrency.sql` (16 assertions over two real concurrent backends, via `dblink`)
 
 **Interfaces:**
 - Consumes: field names from Task 4 models
-- Produces: tables `profiles`, `vehicles`, `trips`, `offers`, `driver_locations`, `payments`, `payouts`, `ledger_entries`, `ratings`, `promos`, `chat_messages`, `sos_events`; enums `trip_state`, `offer_state`, `payment_state`, `pay_method`, `kyc_status`, `driver_availability`; functions `trip_distance_km(text, text)`, `driver_pickup_distance_km(uuid, uuid)`, `match_offers_for_trip(uuid)`, `accept_offer(uuid)`; triggers `enforce_trip_transition` (trips), `on_auth_user_created` (auth.users, runs `handle_new_user`) and `profiles_update_guard` (profiles, runs `guard_profile_update`). **Of those, `match_offers_for_trip(uuid)` is callable only by `service_role`**: the migration ends it with `revoke execute on function match_offers_for_trip(uuid) from public, anon, authenticated;`. `public` has to be in that list, because PostgreSQL grants EXECUTE on every function to `PUBLIC` by default and `anon` and `authenticated` are PUBLIC members, so revoking from the two named roles alone leaves the grant in place. Add no `auth.uid()` guard and no party-membership check to that function: a service-role PostgREST request carries no `request.jwt.claim.sub`, so `auth.uid()` is null on the only legitimate caller and either guard would make it return no candidates. `accept_offer(uuid)` is the opposite case and stays executable by `anon` and `authenticated`, because a client is supposed to call it; it is guarded inside by an ownership check on the offer. `handle_new_user()` is also `SECURITY DEFINER` but returns `trigger`, so it cannot be invoked as a query at all. Tasks 6, 7, 8, 10, 11, 12, 13, 14 call these, and the client write paths in Tasks 8 and 12 depend on the column grants and policies declared at the end of the migration: a client may update only `trips.(state, eta_minutes, started_at, completed_at)` and only a trip assigned to it, only `profiles.(full_name, phone, photo_url, ghana_card_last4, ghana_card_expiry, selfie_url, vehicle_id, availability, kyc_status)` and only its own row, and it may insert `sos_events` and `chat_messages` only for a trip it is party to.
+- Produces: tables `profiles`, `vehicles`, `trips`, `offers`, `driver_locations`, `payments`, `payouts`, `ledger_entries`, `ratings`, `promos`, `chat_messages`, `sos_events`; enums `trip_state`, `offer_state`, `payment_state`, `pay_method`, `kyc_status`, `driver_availability`; functions `trip_distance_km(text, text)`, `driver_pickup_distance_km(uuid, uuid)`, `match_offers_for_trip(uuid)`, `accept_offer(uuid)`; triggers `enforce_trip_transition` (trips), `on_auth_user_created` (auth.users, runs `handle_new_user`) and `profiles_update_guard` (profiles, runs `guard_profile_update`). **Of those, `match_offers_for_trip(uuid)` is callable only by `service_role`**: the migration ends it with `revoke execute on function match_offers_for_trip(uuid) from public, anon, authenticated;`. `public` has to be in that list, because PostgreSQL grants EXECUTE on every function to `PUBLIC` by default and `anon` and `authenticated` are PUBLIC members, so revoking from the two named roles alone leaves the grant in place. Add no `auth.uid()` guard and no party-membership check to that function: a service-role PostgREST request carries no `request.jwt.claim.sub`, so `auth.uid()` is null on the only legitimate caller and either guard would make it return no candidates. `accept_offer(uuid)` is the opposite case and stays executable by `anon` and `authenticated`, because a client is supposed to call it; it is guarded inside by an ownership check on the offer. **That ownership check means only a caller's own `auth.uid()` can accept: `offers.driver_id` is `not null`, so a caller with a null `auth.uid()` fails `v_offer.driver_id is distinct from auth.uid()` and gets `false` with both ids null. Measured on this host, both `anon` and `service_role` have a null `auth.uid()` and both hold EXECUTE on the function, so neither role can accept an offer through it. Task 7's `offers` Edge Function must therefore call `accept_offer` on a user client carrying the driver's bearer token, never on a service-role client. Do not change the function to accommodate a service-role caller; forward the request `Authorization` header instead, as the Task 7 code already does.** `handle_new_user()` is also `SECURITY DEFINER` but returns `trigger`, so it cannot be invoked as a query at all. Tasks 6, 7, 8, 10, 11, 12, 13, 14 call these, and the client write paths in Tasks 8 and 12 depend on the column grants and policies declared at the end of the migration: a client may update only `trips.(state, eta_minutes, started_at, completed_at)` and only a trip assigned to it, only `profiles.(full_name, phone, photo_url, ghana_card_last4, ghana_card_expiry, selfie_url, vehicle_id, availability, kyc_status)` and only its own row, and it may insert `sos_events` and `chat_messages` only for a trip it is party to.
 
 - [ ] **Step 1: Initialise the Supabase project and link a hosted project**
 
@@ -2051,6 +2051,13 @@ begin
   -- the trip, releasing every other offer and locking the remaining drivers
   -- out. The offers Edge Function performs the same ownership check in
   -- TypeScript before calling; this is the database-side copy of it.
+  --
+  -- A caller with no `sub` claim has a NULL auth.uid() and is refused here too,
+  -- because `null is distinct from <uuid>` is true and offers.driver_id is NOT
+  -- NULL. On this host `anon` and `service_role` both measure that way, and both
+  -- hold EXECUTE on this function, so neither role can accept an offer through
+  -- it: the offers Edge Function has to call it on a user client carrying the
+  -- driver's bearer token, never on a service-role client.
   if v_offer.driver_id is distinct from auth.uid() then
     return query select false, null::uuid, null::uuid;
     return;
@@ -2066,19 +2073,21 @@ begin
   -- 3. Now the offer. The unlocked read above may be stale by the time the
   --    trip lock is granted, so re-read and re-check ownership under the lock.
   --
-  --    The IF NOT FOUND here is not belt and braces. What it closes is the one
-  --    caller the ownership check below does not cover. A zero-row
-  --    `select * into v_offer` nulls the *whole record*, not just the fields the
-  --    later statements read, so v_offer.trip_id is NULL: the sibling release
-  --    and the trip match both key off a NULL and touch no rows at all. For any
-  --    authenticated caller the check below already returned false, because
-  --    `null is distinct from <uuid>` is true. A caller with a NULL auth.uid()
-  --    is the exception: `null is distinct from null` is false, so the ownership
-  --    check is skipped, the state guard evaluates to NULL and is not taken, and
-  --    the function returns accepted = true with trip_id and driver_id both
-  --    NULL. Only an anon caller gets that far, and only on an offer id that
-  --    does not exist, so no row is written either way and the damage is a false
-  --    accepted = true rather than a corrupted trip.
+  --    The IF NOT FOUND here is defence in depth, not the check that closes this
+  --    path. A zero-row `select * into v_offer ... for update` nulls the whole
+  --    record, so v_offer.driver_id is NULL, and the ownership re-check
+  --    immediately below this one refuses that on its own, for the same reason
+  --    the unlocked check above does: `null is distinct from <uuid>` is true.
+  --    Measured on this host, with a service-role DELETE of the offer committed
+  --    while the call was parked on the trip lock: this branch, and the same
+  --    branch with the ownership re-check also deleted, both returned false and
+  --    left the trip `requested`. With both deleted the call fell through to
+  --    `return query select true, v_trip.id, v_offer.driver_id` and answered
+  --    accepted = true with a NULL driver id, having written no rows, because
+  --    every keyed UPDATE below matched on a NULL. So what this pair of guards
+  --    is worth is refusing a false positive, not preventing a corrupted trip,
+  --    and either one alone does that. Keep both: this is a destructive path and
+  --    a redundant guard on one is cheap.
   select * into v_offer from offers where id = p_offer for update;
   if not found then
     return query select false, null::uuid, null::uuid;
@@ -2962,6 +2971,12 @@ cd ~/meet-n-go/supabase && deno test functions/_tests/accept_offer.test.ts
 Expected: 6 tests pass, 0 fail.
 
 - [ ] **Step 5: Write `offers/index.ts`**
+
+The `global: { headers: { Authorization: ... } }` line below is load bearing and must not be
+simplified away. `accept_offer` refuses any caller whose `auth.uid()` is not the offer's
+`driver_id`, and a service-role request has a null `auth.uid()`, so swapping this client for
+the plain service-role client makes every `accept_offer` call return `false`. `getUser()` needs
+the same header for the same reason.
 
 ```ts
 import { serve } from 'https://deno.land/std@0.224.0/http/server.ts';
