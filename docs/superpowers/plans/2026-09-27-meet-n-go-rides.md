@@ -2488,11 +2488,16 @@ these was a live defect in the first draft of this task; the code comments carry
   `max_discount_ghs`; `percent_off` carries `check (percent_off > 0 and percent_off <= 100)`, and
   because that is a conjunction it does reject NaN — measured, `'NaN'::numeric > 0` is true but
   `'NaN'::numeric <= 100` is false.
-- **The promo read is `limit(1)` plus `data?.[0]`, not `maybeSingle()`.** `maybeSingle` requests
-  `application/vnd.pgrst.object+json`, so a 0-row read arrives as a 406, and the shipped client
-  clears that only by comparing the server's `details` against the substring `0 rows`
-  (`@supabase/postgrest-js@1.16.1/src/PostgrestBuilder.ts:162`). Whether a typo'd promo code is a
-  full-price quote or a 500 must not depend on an English string in someone else's API. The 500 on a
+- **The promo read is `limit(1)` plus `data?.[0]`, not `maybeSingle()`.** Measured: on a GET
+  `maybeSingle` sends `Accept: application/json`, not `application/vnd.pgrst.object+json`
+  (`@supabase/postgrest-js@1.16.1/src/PostgrestTransformBuilder.ts:209-210`), so a 0-row read is a
+  200 `[]` that the client coerces to `data = null` itself (`PostgrestBuilder.ts:118-134`) and the
+  two are behaviourally equivalent here. The `error.details.includes('0 rows')` comparison at `:162`
+  is a *different* branch, taken only when the server answers with an error, which this GET is not,
+  and it is a bare substring test that PostgREST's own single-object message `multiple (or no) rows
+  returned` does not contain and would not clear. So that is the branch that would break on a
+  rewording, and it is not this one. `limit(1)` asks the client to interpret no row count at all, so
+  the read depends on no response shape rather than on how a server words an error. The 500 on a
   genuine read error stays; the ruling above says why.
 - **A `promoCode` that is present but is not a string is a 400.** Silently dropping it returned 200
   at full price to a rider who supplied a code, which is the rider-visible outcome the 500 on a
@@ -3343,15 +3348,24 @@ serve(async (req) => {
     // full price for a code they supplied, which is a worse outcome than
     // failing: nothing in the response says the promo was not applied.
     if (promoError) return json(500, { error: promoError.message });
-    // `promoRows?.[0]` rather than `maybeSingle()`. `maybeSingle` sets
-    // `Accept: application/vnd.pgrst.object+json`, so a 0-row read comes back as
-    // a 406, and the shipped client clears that only by comparing the server's
-    // `details` against the substring `0 rows`
-    // (`@supabase/postgrest-js@1.16.1/src/PostgrestBuilder.ts:162`, the
-    // version supabase-js 2.45.4 resolves). So whether a typo'd promo code is a
-    // full-price quote or a 500 depends on an English string in someone else's
-    // API. `limit(1)` never asks for the single-object media type, so a 0-row
-    // read is a 200 with `[]` and we index it ourselves.
+    // `promoRows?.[0]` rather than `maybeSingle()`, and not for the reason this
+    // comment used to give. Measured with the shipped client: on a GET,
+    // `maybeSingle()` sends `Accept: application/json`, not
+    // `application/vnd.pgrst.object+json`
+    // (`@supabase/postgrest-js@1.16.1/src/PostgrestTransformBuilder.ts:209-210`,
+    // the version supabase-js 2.45.4 resolves), so a 0-row read is a 200 with
+    // `[]` and the client turns it into `data = null` itself
+    // (`@supabase/postgrest-js@1.16.1/src/PostgrestBuilder.ts:118-134`), which
+    // makes the two behaviourally equivalent for a 0-row read. The
+    // `details.includes('0 rows')` comparison at `:162` is the error branch,
+    // which this GET does not take, and it is a bare substring test that
+    // PostgREST's own single-object message `multiple (or no) rows returned`
+    // would not match — so that is the branch that would break on a rewording,
+    // and it is not this one. So the reason to write `limit(1)` is not that
+    // `maybeSingle()` is broken here: it is that `limit(1)` never asks the
+    // client to interpret a row count, so the answer is `data` and we index it,
+    // and the shape of a 0-row read cannot change under us if that client-side
+    // coercion is ever revised.
     const promo = promoRows?.[0] ?? null;
     // `expires_at` is filtered here rather than in the query because a
     // PostgREST filter value is a literal, not SQL: `expires_at.gt.now()` is
