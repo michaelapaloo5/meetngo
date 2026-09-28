@@ -158,20 +158,45 @@ workflows:
         script: |
           set -e
           export PATH="$HOME/flutter/bin:$PATH"
+
+          # The anon key is a public client credential and is designed to ship
+          # inside the app, so it is committed in toolchain/apk-build.env
+          # rather than typed into a dashboard field on a phone. Codemagic's
+          # own environment variables win when they are set, so a private
+          # project can override without a code change.
           if [ -z "${SB_URL:-}" ] || [ -z "${SB_KEY:-}" ]; then
-            echo "::warning::SB_URL or SB_KEY is not set; the APKs will build"
-            echo "::warning::but launch into the 'not configured' screen."
+            echo "Using the committed values from toolchain/apk-build.env"
+            . toolchain/apk-build.env
+            SB_KEY="$SB_ANON_KEY"
+          else
+            echo "Using the environment variables configured in Codemagic"
           fi
+
+          if [ -z "${SB_URL:-}" ] || [ -z "${SB_KEY:-}" ]; then
+            echo "::error::SB_URL or SB_KEY is still empty after the fallback."
+            exit 1
+          fi
+          echo "Supabase URL: $SB_URL"
+          echo "anon key length: ${#SB_KEY}"
+
+          # A service_role key bypasses every row level security policy in the
+          # migration, so it must never reach an APK. The check lives in a
+          # file rather than inline because a heredoc cannot sit inside a
+          # YAML block scalar, and because a guard worth having is a guard
+          # worth running against the real credentials.
+          python3 toolchain/check_anon_key.py "$SB_KEY" mkdbzddgafkqnejivikt \
+            || exit 1
+
           mkdir -p dist
           cd apps/rider
           flutter build apk --release \
-            --dart-define=SUPABASE_URL="${SB_URL:-}" \
-            --dart-define=SUPABASE_ANON_KEY="${SB_KEY:-}"
+            --dart-define=SUPABASE_URL="$SB_URL" \
+            --dart-define=SUPABASE_ANON_KEY="$SB_KEY"
           cp build/app/outputs/flutter-apk/app-release.apk ../../dist/rider-release.apk
           cd ../../apps/driver
           flutter build apk --release \
-            --dart-define=SUPABASE_URL="${SB_URL:-}" \
-            --dart-define=SUPABASE_ANON_KEY="${SB_KEY:-}"
+            --dart-define=SUPABASE_URL="$SB_URL" \
+            --dart-define=SUPABASE_ANON_KEY="$SB_KEY"
           cp build/app/outputs/flutter-apk/app-release.apk ../../dist/driver-release.apk
           cd ../..
           ls -lh dist/
