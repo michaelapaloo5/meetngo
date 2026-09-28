@@ -9,9 +9,10 @@ old chat — it is 1000+ messages and mostly compressed.
 
 ---
 
-## 1. Start here
+## 1. Start here — the user works on **Windows**
 
-```bash
+```powershell
+git config --system core.longpaths true     # required, Flutter paths exceed 260 chars
 git clone https://github.com/michaelapaloo5/meetngo.git
 cd meetngo
 git checkout feature/rides-marketplace
@@ -19,12 +20,37 @@ git checkout feature/rides-marketplace
 
 Then read this file and `RUNBOOK.md` (deploy + phone-test instructions).
 
-To get a working build, on a machine with real memory:
+### What Windows changes, and what it does not
 
-```bash
-cd apps/rider   && flutter pub get && flutter analyze --fatal-infos && flutter test
-cd ../driver   && flutter pub get && flutter analyze --fatal-infos && flutter test
+**You do not need to build the APKs locally.** `codemagic.yaml` is a cloud
+build: it runs on Codemagic's Linux machines and produces both APKs. You trigger
+it by pushing to the branch or by pressing rebuild in the Codemagic dashboard.
+Nothing about the build needs a local toolchain, a JDK, or an Android SDK. This
+is deliberate — GitHub Actions is blocked by a billing lock on that account, and
+Codemagic's free tier asks for no payment method.
+
+**To run the test suites locally you need Flutter on Windows:**
+install Flutter, ensure `flutter` is on `PATH` in PowerShell, and run
+`flutter doctor`. Only the Flutter SDK and Git are needed — not the Android SDK,
+because Codemagic does the compiling.
+
+```powershell
+cd apps\rider
+flutter pub get
+flutter analyze --fatal-infos
+flutter test
+cd ..\driver
+flutter pub get
+flutter analyze --fatal-infos
+flutter test
 ```
+
+**iOS cannot be built on Windows at all** — it needs macOS. Only Android is
+buildable here, which is what the pilot needs (a Samsung S10 Lite).
+
+**`push-to-github.sh` will not run** in PowerShell; it is a convenience helper
+from the Linux session. Use ordinary `git push`, or the GitHub Desktop client.
+Everything else in the repo is cross-platform.
 
 **These suites have never been run green on this branch.** `flutter analyze
 --fatal-infos` is clean for both apps (that compiles the tests too, so they
@@ -93,14 +119,15 @@ Everything else was made real.
 
 ## 5. Why tests were not run
 
-The dev box has 2.7 GB RAM, ~40 MB free and **no swap**. Swap cannot be added —
-this virtual disk rejects `swapon` with `Invalid argument`. Running
-`flutter test` on more than one file at a time OOM-kills the terminal, and that
+The dev box was Linux with 2.7 GB RAM, ~40 MB free and **no swap**. Swap cannot
+be added — that virtual disk rejects `swapon` with `Invalid argument`. Running
+`flutter test` on more than one file at a time OOM-killed the terminal, and that
 happened repeatedly. `flutter analyze --fatal-infos` is a single process and is
 safe.
 
-**On a normal machine, run the suites properly.** Expect genuine failures: the
-new screen tests were written against a plan, not against running output.
+A Windows machine does not have that constraint. **Run the suites properly.**
+Expect genuine failures: the new screen tests were written against a plan, not
+against running output.
 
 ## 6. Traps that will bite you
 
