@@ -55,6 +55,19 @@ void main() {
       expect(trip.pickup.address, 'Osu, Accra');
     });
 
+    test('parses the pickup code, and a row without one is null not empty', () {
+      // The rider reads this out to the driver, so the difference between
+      // "absent" and "blank" is the difference between an unreadable code and
+      // a screen that says the code is unavailable.
+      expect(Trip.fromJson(json).pickupOtp, isNull);
+      expect(Trip.fromJson({...json, 'pickup_otp': '4821'}).pickupOtp, '4821');
+      expect(
+        Trip.fromJson(Trip.fromJson({...json, 'pickup_otp': '4821'}).toJson())
+            .pickupOtp,
+        '4821',
+      );
+    });
+
     test('copyWith changes state and leaves everything else alone', () {
       final trip = Trip.fromJson(json);
       final moved = trip.copyWith(state: TripState.arriving);

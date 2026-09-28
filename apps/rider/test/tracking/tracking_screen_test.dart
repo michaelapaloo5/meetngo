@@ -18,7 +18,12 @@ void useDesignSurface(WidgetTester tester) {
 /// every ETA to the same number cannot tell a mirrored `eta_minutes` from a
 /// hardcoded one. `TripStop` has no `operator ==`, so nothing here asserts on a
 /// `TripStop` — only on `.address` and `.point`.
-Trip tripInState(TripState state, {int? etaMinutes, RideCategory? category}) =>
+Trip tripInState(
+  TripState state, {
+  int? etaMinutes,
+  RideCategory? category,
+  String? pickupOtp,
+}) =>
     Trip(
       id: 't1',
       riderId: 'r1',
@@ -32,6 +37,7 @@ Trip tripInState(TripState state, {int? etaMinutes, RideCategory? category}) =>
       fareGhs: 12.50,
       isDemo: true,
       etaMinutes: etaMinutes,
+      pickupOtp: pickupOtp,
     );
 
 /// Stands in for the raw `http.ClientException` a direct PostgREST call lets
@@ -152,7 +158,15 @@ Widget wrapTracking(TrackingController c) => ScreenUtilInit(
     );
 
 /// Presses the SOS button and settles the frame the press started.
+///
+/// `ensureVisible` first, because the tracking screen is a scroll view and the
+/// arrival panel pushes the buttons below the fold: at 390x844 the SOS button
+/// sits at y=881 with a 844-high viewport, so a bare `tap` misses it and warns.
+/// Scrolling to it is what a rider does anyway, and the screen was already
+/// scrollable for exactly this reason (the 200% text-scale test).
 Future<void> tapSos(WidgetTester tester) async {
+  await tester.ensureVisible(find.byKey(const Key('sosButton')));
+  await tester.pumpAndSettle();
   await tester.tap(find.byKey(const Key('sosButton')));
   await tester.pump();
   await tester.pump();
@@ -555,5 +569,66 @@ void main() {
     }
     expect(find.text('Asking Van drivers near you'), findsOneWidget);
     expect(find.text('Asking Standard drivers near you'), findsNothing);
+  });
+
+
+  testWidgets('while arriving the rider sees the pickup code from the trip',
+      (tester) async {
+    useDesignSurface(tester);
+    await tester.pumpWidget(
+      wrapTracking(
+        FakeTrackingController(
+          TripState.arriving,
+          tripInState(TripState.arriving, pickupOtp: '4821'),
+        ),
+      ),
+    );
+    expect(find.byKey(const Key('pickupCodePanel')), findsOneWidget);
+    expect(
+      find.text('4821'),
+      findsOneWidget,
+      reason: 'the code on screen must be the code on the trip, not a literal',
+    );
+  });
+
+  testWidgets('the pickup code is not shown before the driver arrives',
+      (tester) async {
+    useDesignSurface(tester);
+    for (final state in [
+      TripState.matched,
+      TripState.ongoing,
+      TripState.completed,
+    ]) {
+      await tester.pumpWidget(
+        wrapTracking(
+          FakeTrackingController(
+            state,
+            tripInState(state, pickupOtp: '4821'),
+          ),
+        ),
+      );
+      expect(
+        find.byKey(const Key('pickupCodePanel')),
+        findsNothing,
+        reason: state.name,
+      );
+    }
+  });
+
+  testWidgets('a missing code is shown rather than hidden', (tester) async {
+    useDesignSurface(tester);
+    await tester.pumpWidget(
+      wrapTracking(
+        FakeTrackingController(
+          TripState.arriving,
+          tripInState(TripState.arriving),
+        ),
+      ),
+    );
+    // Null is a real state: a trip row written before `request-ride` started
+    // minting codes has none, and a panel that silently does not appear is
+    // indistinguishable from a bug.
+    expect(find.byKey(const Key('pickupCodePanel')), findsOneWidget);
+    expect(find.text('Not available'), findsOneWidget);
   });
 }

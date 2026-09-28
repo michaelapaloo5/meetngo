@@ -108,8 +108,65 @@ class TrackingScreen extends StatelessWidget {
                   vehicle: c.driverVehicle,
                 ),
               ),
-            if (c.sosRaised) ...[
+            // Shown only while the driver is at the pickup, which is the only
+            // moment the code is asked for. A driver arrives, taps "Arrived at
+            // pickup", and asks the rider to read four digits out loud. Without
+            // this panel the rider has nowhere to read them from and the trip
+            // cannot leave `arriving` at all.
+            //
+            // `pickupOtp` is nullable, and null is shown rather than hidden:
+            // a rider whose code is missing needs to know that, and a panel
+            // that silently does not appear is indistinguishable from a bug.
+            if (trip.state == TripState.arriving) ...[
               SizedBox(height: 12.h),
+              Padding(
+                padding: EdgeInsets.symmetric(horizontal: 20.w),
+                child: Container(
+                  key: const Key('pickupCodePanel'),
+                  padding: EdgeInsets.symmetric(
+                    horizontal: 16.w,
+                    vertical: 12.h,
+                  ),
+                  decoration: BoxDecoration(
+                    color: MngColors.primary,
+                    borderRadius: BorderRadius.circular(MngRadius.large),
+                  ),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          'Read this out\nto your driver',
+                          style: MngTheme.light.textTheme.bodySmall?.copyWith(
+                            color: MngColors.onPrimary,
+                          ),
+                        ),
+                      ),
+                      SizedBox(width: 12.w),
+                      // Shown as "Not available" rather than hidden: a rider
+                      // whose trip row predates code minting has none, and a
+                      // panel that silently does not appear is
+                      // indistinguishable from a bug. `Flexible` because that
+                      // placeholder is wider than four digits plus the
+                      // letterspacing, and a bare `Text` here overflows the row
+                      // by 6px at 390 logical pixels.
+                      Flexible(
+                        child: Text(
+                          trip.pickupOtp ?? 'Not available',
+                          key: const Key('pickupCodeText'),
+                          textAlign: TextAlign.right,
+                          overflow: TextOverflow.ellipsis,
+                          style: MngTheme.light.textTheme.titleLarge?.copyWith(
+                            color: MngColors.onPrimary,
+                            letterSpacing: trip.pickupOtp == null ? 0 : 4,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+            if (c.sosRaised) ...[              SizedBox(height: 12.h),
               Padding(
                 padding: EdgeInsets.symmetric(horizontal: 20.w),
                 child: Container(

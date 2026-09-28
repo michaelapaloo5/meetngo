@@ -4,6 +4,7 @@ import { corsHeaders } from '../_shared/cors.ts';
 import { compensating } from './compensate.ts';
 import { computeFare, promoDiscountGhs } from './fare.ts';
 import { MAX_OFFERS, pickDrivers } from './match.ts';
+import { pickupOtp } from './otp.ts';
 import { isFiniteNumber, parseRideRequest, type Pin } from './request.ts';
 
 const OFFER_TTL_SECONDS = 20;
@@ -168,6 +169,7 @@ serve(async (req) => {
       distance_km: distanceKm,
       surge: quote.surge,
       fare_ghs: quote.fareGhs,
+      pickup_otp: pickupOtp(),
       is_demo: true,
     })
     .select()

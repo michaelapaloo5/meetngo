@@ -35,6 +35,7 @@ class Trip {
     required this.fareGhs,
     this.isDemo = true,
     this.etaMinutes,
+    this.pickupOtp,
   });
 
   factory Trip.fromJson(Map<String, dynamic> json) => Trip(
@@ -49,6 +50,7 @@ class Trip {
         fareGhs: (json['fare_ghs'] as num).toDouble(),
         isDemo: (json['is_demo'] as bool?) ?? true,
         etaMinutes: (json['eta_minutes'] as num?)?.toInt(),
+        pickupOtp: json['pickup_otp'] as String?,
       );
 
   final String id;
@@ -63,6 +65,14 @@ class Trip {
   final bool isDemo;
   final int? etaMinutes;
 
+  /// The four digits the rider reads out to the driver at the pickup.
+  ///
+  /// Minted by the `request-ride` function and stored on the trip row. Null on
+  /// a trip created before this field existed, and null on any trip the rider
+  /// is not party to, which is why the tracking screen treats it as optional
+  /// rather than assuming a code is there.
+  final String? pickupOtp;
+
   bool get hasDriver => driverId != null;
 
   Trip copyWith({
@@ -70,6 +80,7 @@ class Trip {
     String? driverId,
     bool clearDriver = false,
     int? etaMinutes,
+    String? pickupOtp,
   }) =>
       Trip(
         id: id,
@@ -83,6 +94,7 @@ class Trip {
         fareGhs: fareGhs,
         isDemo: isDemo,
         etaMinutes: etaMinutes ?? this.etaMinutes,
+        pickupOtp: pickupOtp ?? this.pickupOtp,
       );
 
   Map<String, dynamic> toJson() => {
@@ -97,5 +109,6 @@ class Trip {
         'fare_ghs': fareGhs,
         'is_demo': isDemo,
         'eta_minutes': etaMinutes,
+        'pickup_otp': pickupOtp,
       };
 }
