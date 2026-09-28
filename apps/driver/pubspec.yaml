@@ -42,6 +42,15 @@ dependencies:
   # exists in 5.x. The real 2.x trap: .sm is deprecated, use .spMin.
   # See the "Screenutil is pinned to 5.x" section of README.md.
   flutter_screenutil: ^5.9.3
+  # Auth, Realtime and Edge Functions. `google_maps_flutter` and `url_launcher`
+  # are not dependencies of this app: nothing imports them, and the two buttons
+  # that would have used `url_launcher` (`navigateButton`, `callRiderButton`)
+  # say so on the screen instead of opening a dead link. `image_picker` is the
+  # only capture seam; see `lib/src/onboarding/document_scanner_stub.dart`.
+  supabase_flutter: ^2.4.0
+  geolocator: ^13.0.1
+  image_picker: ^1.1.2
+  provider: ^6.1.2
 
 dev_dependencies:
   flutter_test:
