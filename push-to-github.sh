@@ -15,7 +15,7 @@
 set -euo pipefail
 
 cd "$(dirname "$0")"
-REPO_NAME="${REPO_NAME:-meet-ngo}"
+REPO_NAME="${REPO_NAME:-meetngo}"
 BRANCH="$(git rev-parse --abbrev-ref HEAD)"
 
 echo "==> working from $(pwd) on branch $BRANCH"
@@ -35,11 +35,17 @@ if ! command -v gh >/dev/null 2>&1; then
 fi
 
 if ! gh auth status >/dev/null 2>&1; then
-  echo
-  echo "==> one browser step: sign in to GitHub. Choose 'GitHub.com' and 'HTTPS'."
-  echo "    (if a code is copied to your clipboard, it is already filled in for you)"
-  echo
-  gh auth login --hostname github.com --git-protocol https --web
+  if [ -z "${GH_TOKEN:-}" ]; then
+    echo
+    echo "==> paste a GitHub personal access token (classic, 'repo' scope only)."
+    echo "    make one at https://github.com/settings/tokens -> Generate new token (classic)"
+    echo "    tick NOTHING except 'repo'. It is read hidden and stays in this terminal."
+    echo "    NEVER paste it into a chat window."
+    read -rsp "    token: " GH_TOKEN
+    echo
+    export GH_TOKEN
+  fi
+  printf '%s' "$GH_TOKEN" | gh auth login --hostname github.com --git-protocol https --with-token
 fi
 
 gh auth setup-git
