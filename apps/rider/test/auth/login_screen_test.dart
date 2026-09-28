@@ -13,6 +13,8 @@ class FakeAuthRepository implements AuthRepository {
   String? lastPassword;
   bool googlePressed = false;
   bool failWith = false;
+  String? signUpEmail;
+  String? signUpName;
 
   @override
   Future<void> signInWithPassword(String email, String password) async {
@@ -23,6 +25,13 @@ class FakeAuthRepository implements AuthRepository {
 
   @override
   Future<void> signInWithGoogle() async => googlePressed = true;
+
+  @override
+  Future<void> signUp(String email, String password, String fullName) async {
+    signUpEmail = email;
+    signUpName = fullName;
+    if (failWith) throw const AuthFailure('User already registered');
+  }
 
   @override
   Future<void> sendResetOtp(String email) async {}
@@ -134,5 +143,74 @@ void main() {
     await tester.pump();
     final after = tester.widget<TextField>(find.byKey(const Key('passwordField')));
     expect(after.obscureText, isFalse);
+  });
+
+  group('sign up', () {
+    testWidgets('the Sign Up label is tappable and reveals the name field',
+        (tester) async {
+      await tester.pumpWidget(wrap(repo));
+      expect(find.byKey(const Key('nameField')), findsNothing);
+
+      // The tap, not the label. The label is on the screen whether or not the
+      // `GestureDetector` still has a handler, which is exactly how the first
+      // pilot build shipped a dead button: the text was there, the tap was not.
+      await tester.tap(find.byKey(const Key('signUpToggle')));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Create Account'), findsOneWidget);
+      expect(find.byKey(const Key('nameField')), findsOneWidget);
+      expect(find.text('Sign In'), findsOneWidget);
+    });
+
+    testWidgets('signing up sends the name, email and password', (tester) async {
+      await tester.pumpWidget(wrap(repo));
+      await tester.tap(find.byKey(const Key('signUpToggle')));
+      await tester.pumpAndSettle();
+
+      await tester.enterText(
+        find.byKey(const Key('nameField')),
+        'Edem Apaloo',
+      );
+      await tester.enterText(
+        find.byKey(const Key('emailField')),
+        'edem@example.com',
+      );
+      await tester.enterText(find.byKey(const Key('passwordField')), 'Meetngo2026');
+      await tester.tap(find.text('Sign Up'));
+      await tester.pump();
+
+      expect(repo.signUpName, 'Edem Apaloo');
+      expect(repo.signUpEmail, 'edem@example.com');
+    });
+
+    testWidgets('a duplicate account reports the reason', (tester) async {
+      repo.failWith = true;
+      await tester.pumpWidget(wrap(repo));
+      await tester.tap(find.byKey(const Key('signUpToggle')));
+      await tester.pumpAndSettle();
+
+      await tester.enterText(find.byKey(const Key('nameField')), 'Edem');
+      await tester.enterText(find.byKey(const Key('emailField')), 'edem@example.com');
+      await tester.enterText(find.byKey(const Key('passwordField')), 'Meetngo2026');
+      await tester.tap(find.text('Sign Up'));
+      await tester.pump();
+
+      expect(find.text('User already registered'), findsOneWidget);
+    });
+
+    testWidgets('an empty name is refused before the repository is called',
+        (tester) async {
+      await tester.pumpWidget(wrap(repo));
+      await tester.tap(find.byKey(const Key('signUpToggle')));
+      await tester.pumpAndSettle();
+
+      await tester.enterText(find.byKey(const Key('emailField')), 'edem@example.com');
+      await tester.enterText(find.byKey(const Key('passwordField')), 'Meetngo2026');
+      await tester.tap(find.text('Sign Up'));
+      await tester.pump();
+
+      expect(find.text('Enter your name'), findsOneWidget);
+      expect(repo.signUpEmail, isNull);
+    });
   });
 }

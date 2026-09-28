@@ -16,6 +16,26 @@ class SupabaseAuthRepository implements AuthRepository {
   }
 
   @override
+  Future<void> signUp(String email, String password, String fullName) async {
+    try {
+      final res = await _client.auth.signUp(
+        email: email,
+        password: password,
+        data: {'full_name': fullName},
+      );
+      // A project with "Confirm email" enabled returns a user but no session.
+      // Saying so plainly beats letting the button appear to do nothing.
+      if (res.session == null) {
+        throw const AuthFailure(
+          'Account created. Confirm your email, then sign in.',
+        );
+      }
+    } on AuthException catch (e) {
+      throw AuthFailure(e.message);
+    }
+  }
+
+  @override
   Future<void> signInWithGoogle() async {
     // Apple Sign-In is intentionally absent, see spec section 3.1.
     // `signInWithOAuth` launches a browser and returns whether the launch
