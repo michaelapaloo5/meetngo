@@ -1,4 +1,9 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Release builds need this declared here, not only in the debug and
+         profile manifests. Without it the shipped APK cannot resolve any
+         hostname, and every Supabase call fails at DNS with "Failed host
+         lookup ... OS Error: No address associated with hostname, errno = 7". -->
+    <uses-permission android:name="android.permission.INTERNET"/>
     <application
         android:label="meetngo_driver"
         android:name="${applicationName}"
