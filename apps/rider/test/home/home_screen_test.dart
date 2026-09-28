@@ -107,7 +107,29 @@ void main() {
     expect(find.text('GR-4417-22'), findsNothing);
     expect(find.text('GR-9021-23'), findsNothing);
     expect(find.text('GR-7788-24'), findsNothing);
-    expect(find.byIcon(Icons.directions_car), findsNothing);
+    // Scoped to the Standard chip rather than banned outright.
+    //
+    // `CategoryChips` gives `RideCategory.standard` a `directions_car`,
+    // `premium` an `auto_awesome` and `van` an `airport_shuttle`
+    // (`category_chips.dart:27-31`), so one car icon is a correct control and
+    // the old blanket `findsNothing` forbade it. What this test is really
+    // guarding is that the hard-coded vehicle list cannot come back, and that
+    // is what the names and the plates above pin. So: the car on screen is the
+    // Standard chip's, and there is no second one -- which is what a restored
+    // list of four fake cars would add.
+    expect(
+      find.descendant(
+        of: find.byKey(const Key('chip-standard')),
+        matching: find.byIcon(Icons.directions_car),
+      ),
+      findsOneWidget,
+      reason: 'the one car icon is the Standard category chip',
+    );
+    expect(
+      find.byIcon(Icons.directions_car),
+      findsOneWidget,
+      reason: 'a second car icon would be a row in the removed vehicle list',
+    );
     expect(find.byType(ListTile), findsNothing);
   });
 

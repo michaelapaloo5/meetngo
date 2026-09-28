@@ -4,16 +4,28 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:meetngo_rider/src/data/booked_trip.dart';
 import 'package:meetngo_rider/src/data/location_service.dart';
 import 'package:meetngo_rider/src/data/trip_repository.dart';
+import 'package:meetngo_rider/src/map/ride_map.dart';
 import 'package:meetngo_rider/src/tracking/finding_driver_screen.dart';
 import 'package:meetngo_rider/src/tracking/tracking_controller.dart';
 import 'package:meetngo_rider/src/tracking/tracking_screen.dart';
 import 'package:mng_core/mng_core.dart';
 import 'package:provider/provider.dart';
 
+import '../support/silent_tile_provider.dart';
+
 void useDesignSurface(WidgetTester tester) {
   tester.view.physicalSize = const Size(1170, 2532);
   tester.view.devicePixelRatio = 3.0;
+  // The tracking screen draws a real `RideMap`, and its `TileLayer` otherwise
+  // builds a `NetworkTileProvider`. `flutter_test` answers every HTTP request
+  // with an empty 400, `NetworkImage` turns that into a load exception, and an
+  // `Image` with no `errorBuilder` reports it to `FlutterError.onError` -- so
+  // without this every test below fails for a reason that has nothing to do
+  // with what it is testing. This is the rider's side of the same seam the
+  // driver harness sets in `apps/driver/test/support/harness.dart`.
+  RideMap.tileProviderOverride = () => SilentTileProvider();
   addTearDown(tester.view.reset);
+  addTearDown(() => RideMap.tileProviderOverride = null);
 }
 
 /// `etaMinutes` is a parameter and not a fixed 4 because a fixture that pins
@@ -104,6 +116,11 @@ class FakeTripRepository implements TripRepository {
 
   @override
   Future<void> cancelTrip(String tripId) async {
+    // Counted before the failure check, exactly as `sosCalls` is: the count is
+    // "how many times was the function called", and the controller's own guard
+    // is asserted by this never becoming 1. Counting only successful calls
+    // would let a refused call read as zero and make that assertion vacuous.
+    cancelCalls++;
     final failure = cancelFailure;
     if (failure != null) throw failure;
     cancelled = true;
@@ -231,6 +248,10 @@ void main() {
     await tester.pump();
     expect(c.repo.cancelled, isTrue);
     expect(c.repo.cancelledTripId, 't1');
+    // The positive half of the pair. `cancel refuses a trip it may not cancel`
+    // below asserts this counter is still 0, which only means something because
+    // a call that did reach the repository moves it to 1.
+    expect(c.repo.cancelCalls, 1);
   });
 
   testWidgets('ongoing state hides the cancel action', (tester) async {

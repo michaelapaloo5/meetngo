@@ -17,10 +17,11 @@ and balances to the cent. What is left is installing it on a phone.
 Two things to know before you start, because they are the two that surprise
 people:
 
-1. **Neither app has a sign-up screen.** The rider app has Google and password
-   sign-in; the driver app has the same. Accounts are created in the Supabase
-   dashboard, not in the app. You need **two** accounts: one to ride, one to
-   drive. One account cannot be both parties to the same trip.
+1. **Both apps have a sign-up screen**, on the same screen as sign-in — tap
+   "Sign Up" at the bottom of the login screen. Google and password sign-in are
+   both there. You still need **two** accounts for a full run: one to ride, one
+   to drive. One account cannot be both parties to the same trip. If you would
+   rather not sign up on the phone, the two accounts below are already made.
 2. **A driver has to be approved before the app will show them any work**, and
    no client is allowed to approve itself. `supabase/seed/pilot_driver.sql` does
    that for you. Without it no ride can ever happen.
@@ -84,19 +85,25 @@ Either way works. Push is nicer if you want history.
 **Push to GitHub** (no remote is configured yet):
 
 ```bash
-cd ~/meet-n-go
-git remote add origin https://github.com/YOUR-USERNAME/meet-n-go.git
-git push -u origin feature/rides-marketplace
-git clone https://github.com/YOUR-USERNAME/meet-n-go.git   # on the laptop
+git clone https://github.com/michaelapaloo5/meetngo.git   # on the laptop
+cd meetngo
+git checkout feature/rides-marketplace
+```
+
+On Windows, set the long-paths option once before cloning, because Flutter's
+generated paths exceed the 260-character default:
+
+```powershell
+git config --system core.longpaths true
 ```
 
 **Or copy the folder.** The repository is 3.1 MB excluding `.git`. Copy
-`~/meet-n-go` across, then delete the build caches, which are large and are
+`meetngo` across, then delete the build caches, which are large and are
 recreated anyway:
 
 ```bash
-rm -rf ~/meet-n-go/.dart_tool ~/meet-n-go/**/.dart_tool
-rm -rf ~/meet-n-go/build ~/meet-n-go/**/build
+rm -rf meetngo/.dart_tool meetngo/**/.dart_tool
+rm -rf meetngo/build meetngo/**/build
 ```
 
 Then on the laptop:
@@ -322,16 +329,23 @@ Better to know these now than to be asked later in front of a customer.
   deleted rather than left as a deployed function nothing called.
 - **Apple sign-in is absent by design.** iOS cannot pass App Store review
   without it, so an iOS launch needs it added back first.
-- **No maps.** The design is a 3D isometric city map, but `google_maps_flutter`
-  is not wired up; the tracking screen is a card layout. Google Maps also bills
-  per load, which is a decision to make rather than a default to accept.
+- **The map is OpenStreetMap raster tiles, not Google Maps.** Real tiles, real
+  pins and a real polyline on the rider's tracking screen, and the driver's
+  position and pickup on the active trip. `flutter_map` draws the free OSM
+  endpoint: no API key, no account, no billing, which is the only kind of thing
+  this pilot can afford. Google Maps bills per load, so choosing it is a
+  decision rather than a default. The trade is the OSM tile usage policy — no
+  bulk or offline downloading, and a real launch moves to a paid or self-hosted
+  provider.
 - **The driver's `onTrip` state is a window, not a lock.** Availability is
   written twice around a trip. A phone that dies between accepting and the first
   write leaves a driver reading `online` while carrying a rider; the app
   reconciles that on next launch, but it is a reconciliation and not a
   guarantee.
-- **Chat, bookings and profile are placeholders** in both apps' bottom nav. The
-  tables, the policies and the trip history all exist; the screens do not.
+- **The bottom-nav tabs are built, not placeholders.** Rider: Home, Bookings,
+  Chat, Profile. Driver: Drivers, Trips, Earnings, Profile. The chat reads and
+  writes real rows and the trip history is real; what is thin is the depth of
+  the screens, not the wiring behind them.
 
 ## Appendix: turning on Google sign-in
 

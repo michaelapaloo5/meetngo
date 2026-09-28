@@ -21,6 +21,13 @@ const kOsmTileUrlTemplate = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
 /// exactly what that policy is written about.
 const kOsmUserAgentPackageName = 'com.meetngo.rider';
 
+/// The credit the OSM tile usage policy requires to be visible, matching
+/// `kOsmAttribution` in the driver app's `DriverMapPanel`. It is drawn by this
+/// file's own widget rather than by `flutter_map`'s, which prefixes it with the
+/// library's own name and lays it out in a fixed-width row that overflows the
+/// map panel at a large text scale.
+const kOsmAttribution = '© OpenStreetMap contributors';
+
 /// Zoom used when the map has a single point and no second point to fit to.
 const double kRideMapSinglePointZoom = 14.0;
 
@@ -70,6 +77,25 @@ class RideMap extends StatelessWidget {
   /// Swapped for a silent provider under test, where every real tile request
   /// would go to the network and fail.
   final TileProvider? tileProvider;
+
+  /// Supplies the tile provider when a caller did not name one.
+  ///
+  /// A test seam, and the reason it is a static rather than an argument:
+  /// [TrackingScreen], [FindingDriverScreen] and [TripDetailScreen] all build a
+  /// [RideMap] inside their own layout, so threading a test-only parameter
+  /// through all three to reach the bottom of the tree would put test
+  /// scaffolding in three production signatures. `flutter_test` answers every
+  /// HTTP request with an empty 400, which `NetworkImage` turns into a load
+  /// exception, and an `Image` with no `errorBuilder` reports that to
+  /// `FlutterError.onError` -- so an unmocked map fails every test that happens
+  /// to render one. Set from the test harness, which is why it is reset there
+  /// too. Mirrors `DriverMapPanel.tileProviderOverride` on the driver side.
+  ///
+  /// An explicit [tileProvider] argument still wins: production passes nothing
+  /// and gets the network provider.
+  static TileProvider Function()? tileProviderOverride;
+
+  TileProvider? get _tiles => tileProvider ?? tileProviderOverride?.call();
 
   /// `(0, 0)` is in the Gulf of Guinea, which is not a mistake anyone makes
   /// when they are standing in Accra, and lat/lng of exactly zero is what a
@@ -136,7 +162,7 @@ class RideMap extends StatelessWidget {
                 TileLayer(
                   urlTemplate: kOsmTileUrlTemplate,
                   userAgentPackageName: kOsmUserAgentPackageName,
-                  tileProvider: tileProvider,
+                  tileProvider: _tiles,
                 ),
                 if (route != null)
                   PolylineLayer(
@@ -180,15 +206,24 @@ class RideMap extends StatelessWidget {
                       ),
                   ],
                 ),
-                // The attribution the OSM tile usage policy requires. Rendered
-                // as `SimpleAttributionWidget` rather than the collapsible
-                // `RichAttributionWidget` because the simple one always shows
-                // its text, and an attribution behind a tap-to-open affordance
-                // is not a visible attribution.
-                const SimpleAttributionWidget(
-                  source: Text('OpenStreetMap contributors'),
-                ),
               ],
+            ),
+            // The attribution the OSM tile usage policy requires, drawn here
+            // rather than as flutter_map's `SimpleAttributionWidget`.
+            //
+            // That widget is a `Row(mainAxisSize: min)` holding the fixed string
+            // `'flutter_map | (c) '` beside the source text, so its width is the
+            // sum of two unshrinkable runs. It does not fit the map panel at a
+            // large text scale -- the rider's own 200% accessibility test put it
+            // 255px past a 344px panel -- and it also stamps the library's name
+            // onto this app's map. A `Text` in a `Positioned` wraps instead of
+            // overflowing, keeps the credit visible at every scale, and matches
+            // what `DriverMapPanel` already does on the driver side.
+            const Positioned(
+              left: 0,
+              right: 0,
+              bottom: 0,
+              child: _Attribution(),
             ),
             if (note.isNotEmpty)
               Positioned(
@@ -207,6 +242,40 @@ class RideMap extends StatelessWidget {
 
   static List<LatLng> _ll(List<GeoPoint> points) =>
       points.map(_one).toList(growable: false);
+}
+
+/// The visible OpenStreetMap credit, over the bottom-left of the map.
+///
+/// A `Text` rather than a `Row`, so it wraps instead of overflowing: the
+/// map panel is as narrow as the screen allows, and a fixed-width credit at a
+/// large text scale is what pushed the previous attribution off the edge.
+/// Constrained to the map's own width so a long word cannot escape the panel
+/// either.
+class _Attribution extends StatelessWidget {
+  const _Attribution();
+
+  @override
+  Widget build(BuildContext context) {
+    // The `Positioned` that holds this spans the map's width, which is what
+    // gives the `Text` a finite constraint to wrap against. `Align` then pulls
+    // the strip back to the width the credit actually needs, so the backing
+    // panel does not become a full-width bar across the map.
+    return Align(
+      alignment: Alignment.bottomLeft,
+      child: DecoratedBox(
+        decoration: const BoxDecoration(color: MngColors.surface),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+          child: Text(
+            kOsmAttribution,
+            key: const Key('osmAttribution'),
+            softWrap: true,
+            style: const TextStyle(fontSize: 10, color: MngColors.textSub),
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 /// The end of the route, drawn as a filled circle inside a white ring so it

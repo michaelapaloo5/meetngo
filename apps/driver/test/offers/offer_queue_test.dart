@@ -137,13 +137,33 @@ void main() {
     );
   });
 
-  // Truncation, not rounding: a fresh 20-second offer reads 19, because
-  // `expiresAt - now` is 19.99... seconds. Read in the same expression as the
-  // construction, where the two `DateTime.now()` calls are microseconds apart,
-  // this is not a coin toss.
+  // Truncation, not rounding, and pinned on a value that is not a boundary.
+  //
+  // This used to assert that a freshly built 20-second offer read 19, on the
+  // reasoning that `expiresAt - now` is 19.99... seconds. That is true in
+  // principle and false on Windows: `DateTime.now()` has roughly 15.6 ms
+  // granularity, so the two reads that build the offer and query it return the
+  // *same* instant almost every time. Measured on the machine this suite runs
+  // on, 1999 of 2000 consecutive `DateTime.now()` pairs were identical. The
+  // difference is then exactly 20 s, truncation of 20.0 is 20, and the test
+  // failed with `Expected: <19> Actual: <20>` while the code under test was
+  // right.
+  //
+  // 19.5 s is the same property without the boundary: it truncates to 19 and
+  // rounds to 20, so it fails if `secondsRemaining` ever grows a `.round()`,
+  // and the half-second of slack absorbs any clock granularity. 1.5 s pins the
+  // same thing on the other side of zero.
   test('the countdown truncates rather than rounds', () {
-    expect(offer('a').secondsRemaining, 19);
-    expect(offer('a', ttl: const Duration(milliseconds: 1950)).secondsRemaining, 1);
+    expect(
+      offer('a', ttl: const Duration(milliseconds: 19500)).secondsRemaining,
+      19,
+      reason: '19.5s truncates to 19; rounding would say 20',
+    );
+    expect(
+      offer('a', ttl: const Duration(milliseconds: 1500)).secondsRemaining,
+      1,
+      reason: '1.5s truncates to 1; rounding would say 2',
+    );
   });
 
   testWidgets('the card shows a whole-number countdown, never a decimal',

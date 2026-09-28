@@ -52,9 +52,10 @@ buildable here, which is what the pilot needs (a Samsung S10 Lite).
 from the Linux session. Use ordinary `git push`, or the GitHub Desktop client.
 Everything else in the repo is cross-platform.
 
-**These suites have never been run green on this branch.** `flutter analyze
---fatal-infos` is clean for both apps (that compiles the tests too, so they
-compile). The tests themselves were written but **not executed** — see §5.
+**All three Dart suites are green as of the first run on Windows.** `flutter
+analyze --fatal-infos` and `flutter test` both pass for `packages/mng_core`
+(48 tests), `apps/rider` (144) and `apps/driver` (217). Thirty-one genuine
+failures were fixed; see §5.
 
 ---
 
@@ -102,7 +103,9 @@ Everything else was made real.
 
 ## 4. Known gaps
 
-- **No tests have been run on this branch.** Highest-value first job.
+- **The Dart test suites now run and pass on this branch** — see §5. The Deno
+  Edge Function tests (`supabase/functions/_tests/`, run by CI with `deno test`)
+  have **not** been run: Deno is not installed on this machine.
 - **The deployed HTTP round trip for the Edge Functions has never been run
   against a live project** with a real phone. First thing a pilot does; it is in
   `RUNBOOK.md`.
@@ -117,17 +120,86 @@ Everything else was made real.
   withdrawal applies to the session balance only. The screen says so. This is
   the most likely thing to be mistaken for real when demonstrating.
 
-## 5. Why tests were not run
+## 5. The tests, run for the first time
 
-The dev box was Linux with 2.7 GB RAM, ~40 MB free and **no swap**. Swap cannot
-be added — that virtual disk rejects `swapon` with `Invalid argument`. Running
-`flutter test` on more than one file at a time OOM-killed the terminal, and that
-happened repeatedly. `flutter analyze --fatal-infos` is a single process and is
-safe.
+They were not run before because the dev box was Linux with 2.7 GB RAM, ~40 MB
+free and **no swap**; `flutter test` on more than one file OOM-killed the
+terminal, and that virtual disk rejects `swapon` with `Invalid argument`. This
+machine has 7.7 GB and 216 GB free, so they ran in full.
 
-A Windows machine does not have that constraint. **Run the suites properly.**
-Expect genuine failures: the new screen tests were written against a plan, not
-against running output.
+**First run: 31 failures out of 409. All fixed; all three packages now pass
+`flutter analyze --fatal-infos` and `flutter test`.** The counts now are
+`mng_core` 48, `rider` 144, `driver` 217.
+
+### The four that were worth the run
+
+**28 of the 31 were one bug in the rider's map.** `flutter_map`'s
+`SimpleAttributionWidget` lays its credit out as a `Row(mainAxisSize: min)`
+holding the fixed string `'flutter_map | © '` beside the source text. Two
+unshrinkable runs do not fit the map panel at 200% text scale — the rider's own
+accessibility test put it **255px past a 344px panel** — and every widget test
+that rendered a `RideMap` failed on the resulting `RenderFlex overflowed`
+instead of on what it was testing. `apps/rider/lib/src/map/ride_map.dart` now
+draws the credit itself, as a wrapping `Text` in a `Positioned`, exactly as
+`DriverMapPanel` already did. The driver's own map never had this bug, which is
+why only the rider broke.
+
+Related, and the second half of that fix: the rider had **no tile-provider test
+seam**. `RideMap` took a `tileProvider` argument, but all three screens that
+build a map construct it themselves, so no test could reach that argument and
+every map test went to the network and got `flutter_test`'s empty 400. Added
+`RideMap.tileProviderOverride`, mirroring `DriverMapPanel.tileProviderOverride`.
+
+**One test asserted a bug.** `home_screen_test.dart` demanded *no*
+`Icons.directions_car` anywhere on the home screen, to prove the old hard-coded
+vehicle list was gone. But `CategoryChips` gives `RideCategory.standard` a car,
+`premium` a sparkle and `van` a shuttle — so the assertion forbade a correct
+control. Scoped to the Standard chip, and pinned to exactly one car icon, which
+is what a restored four-car list would break.
+
+**One test was wrong about the clock.** `offer_queue_test.dart` asserted a fresh
+20-second offer reads `19`, reasoning that the two `DateTime.now()` calls are
+"microseconds apart". On Windows they are not: the clock granularity is ~15.6 ms
+and **1999 of 2000 consecutive pairs read identical**, so the difference is
+exactly 20 s and truncation of 20.0 is 20. The production code was right. Now
+pinned on 19.5 s and 1.5 s — off the boundary, so it still fails if a `.round()`
+is ever added, with half a second of slack for any clock.
+
+**One test fought its own overlay.** `active_trip_test.dart` tapped *Navigate*,
+then *Call*, which share a row low on a 390x844 screen. The SnackBar from the
+first tap is laid out over the bottom of the Scaffold, so the second tap hit
+the SnackBar, Flutter warned the hit test missed, and the test failed on an
+assertion about the second button. `pumpAndSettle` does not clear it — the
+dismiss is a timer, not a frame — so the duration is now advanced past it
+explicitly and the absence of a SnackBar is asserted before the second tap.
+
+### Two test bugs found but not failures
+
+`FakeTripRepository` in `tracking_screen_test.dart` declared `cancelCalls` and
+never incremented it, so `expect(c.repo.cancelCalls, 0)` — the assertion that
+proves the controller's own guard short-circuits before calling the function —
+was vacuous. It now increments, and the success path asserts it reaches 1 so the
+zero means something.
+
+## 5a. Setting Flutter up on this machine
+
+Flutter was **not** installed and had to be installed to run any of this.
+`C:\dev\flutter`, and it is already on the user `PATH`.
+
+- Flutter **3.47.5** stable, Dart 3.13.4. This is not an arbitrary choice: every
+  `pubspec.yaml` pins `sdk: ^3.13.4`, which is exactly the bundled Dart, so the
+  `pubspec.lock` files resolve untouched. A newer SDK would have been free to
+  move versions underneath the tests.
+- Two Windows-specific snags, both cost time:
+  - `Expand-Archive` is unusably slow on a 1.8 GB archive — it had produced
+    1,834 of ~19,000 files after two minutes of CPU. `tar -xf` is bundled with
+    Windows and did the same job in **97 seconds**. Use `tar`, not
+    `Expand-Archive`, for anything this size.
+  - The first `flutter pub get` runs a one-time `pub cache preload` that pulls
+    ~200 common packages. It looks like a hang; it is not. Wait it out.
+- `.ps1` files will not run under the default execution policy. Use
+    `powershell -NoProfile -ExecutionPolicy Bypass -File ...` per-process rather
+  than loosening the machine's policy.
 
 ## 6. Traps that will bite you
 
@@ -161,6 +233,14 @@ These cost real time in this build. All verified, not assumed.
 - **Widget tests need the design surface** or ScreenUtil sizes are wrong and rows
   overflow: `tester.view.physicalSize = Size(1170, 2532)`,
   `tester.view.devicePixelRatio = 3.0`.
+- **`DateTime.now()` on Windows has ~15.6 ms granularity**, so two consecutive
+  calls return the *same* instant — measured 1999/2000 pairs identical. Never
+  write a test that depends on a few microseconds having elapsed between
+  constructing a fixture and reading a clock off it.
+- **A `SnackBar` absorbs taps aimed at whatever is under it.** Two buttons low
+  on a 390x844 screen, the first of which opens a SnackBar, means the second is
+  not tappable until that SnackBar is gone. `pumpAndSettle` will not clear it:
+  the dismiss is a timer, not a frame. Advance the duration explicitly.
 - `unnecessary_underscores` is on and CI uses `--fatal-infos`: `(_, _)`, never
   `(_, __)`.
 - There is **no formatting standard** in this repo and no `dart format` step in

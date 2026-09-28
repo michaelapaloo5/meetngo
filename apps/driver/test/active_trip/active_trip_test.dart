@@ -359,6 +359,25 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.textContaining('not part of this build'), findsOneWidget);
 
+    // Let the SnackBar finish before the second tap. Both buttons share one
+    // row low on a 390x844 screen, and the SnackBar is laid out over the
+    // bottom of the Scaffold, so while the first message is up it is the thing
+    // under the `Call` button: the tap resolved to an offset inside the
+    // SnackBar and Flutter warned that the hit test missed. The second
+    // message then never appeared and the test failed on an assertion about
+    // the second button rather than about the overlay.
+    //
+    // `pumpAndSettle` is not enough on its own -- it settles the entrance
+    // animation but not the dismiss timer, which is a timer rather than a
+    // frame -- so the duration is advanced explicitly past the default 4s.
+    await tester.pump(const Duration(seconds: 5));
+    await tester.pumpAndSettle();
+    expect(
+      find.byType(SnackBar),
+      findsNothing,
+      reason: 'the first message must be gone before the second button is tapped',
+    );
+
     await tester.tap(find.byKey(const Key('callRiderButton')));
     await tester.pumpAndSettle();
     expect(find.textContaining('Calling from the app'), findsOneWidget);
