@@ -50,15 +50,89 @@ class RideNGoApp extends StatelessWidget {
   }
 }
 
+/// A startup failure that would otherwise leave the phone on a blank grey
+/// screen. Release builds render framework errors as grey, so without this the
+/// only symptom of a dead `Supabase.initialize` (or anything else that throws
+/// before the first frame) is the screenshot the pilot just sent: grey and
+/// nothing else.
+Object? _bootError;
+
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  ErrorWidget.builder = (details) => Directionality(
+        textDirection: TextDirection.ltr,
+        child: Container(
+          color: const Color(0xFFFFFFFF),
+          padding: const EdgeInsets.all(24),
+          alignment: Alignment.centerLeft,
+          child: Text(
+            'Meet \'N Go failed to start:\n\n${details.exceptionAsString()}',
+            style: const TextStyle(color: Color(0xFF1A1A1A), fontSize: 14),
+          ),
+        ),
+      );
   if (AppConfig.isConfigured) {
-    await Supabase.initialize(
-      url: AppConfig.supabaseUrl,
-      publishableKey: AppConfig.supabaseAnonKey,
+    try {
+      await Supabase.initialize(
+        url: AppConfig.supabaseUrl,
+        publishableKey: AppConfig.supabaseAnonKey,
+      );
+    } catch (e) {
+      _bootError = e;
+    }
+  }
+  runApp(
+    _bootError == null ? const RideNGoApp() : _BootErrorApp(error: _bootError!),
+  );
+}
+
+/// What the app shows when `Supabase.initialize` itself throws.
+///
+/// This is distinct from [_UnconfiguredApp]: that one means the build carries
+/// no credentials, this one means it carries credentials that did not work.
+class _BootErrorApp extends StatelessWidget {
+  const _BootErrorApp({required this.error});
+
+  final Object error;
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      debugShowCheckedModeBanner: false,
+      title: "Meet 'N Go",
+      theme: MngTheme.light,
+      home: Scaffold(
+        body: SafeArea(
+          child: Padding(
+            padding: EdgeInsets.all(24.w),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  "Meet 'N Go",
+                  style: MngTheme.light.textTheme.headlineMedium,
+                ),
+                SizedBox(height: 12.h),
+                Text(
+                  'The app could not reach its backend:',
+                  style: MngTheme.light.textTheme.titleMedium,
+                ),
+                SizedBox(height: 12.h),
+                Text(
+                  '$error',
+                  style: MngTheme.light.textTheme.bodySmall?.copyWith(
+                    fontFamily: 'monospace',
+                    color: MngColors.textPrimary,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
     );
   }
-  runApp(const RideNGoApp());
 }
 
 /// Shows the login screen until there is a session, then the app.
