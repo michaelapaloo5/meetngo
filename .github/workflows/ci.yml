@@ -11,7 +11,12 @@ jobs:
       - name: Install Supabase CLI
         run: curl -sSfL https://github.com/supabase/cli/releases/latest/download/supabase_linux_amd64.tar.gz | tar -xz -C /usr/local/bin
       - name: Install Deno
-        run: curl -fsSL https://deno.land/install.sh | sh
+        # The installer drops `deno` in ~/.deno/bin, which is not on PATH in a
+        # fresh runner, so the Edge function step below would fail with
+        # "command not found" rather than anything to do with the code.
+        run: |
+          curl -fsSL https://deno.land/install.sh | sh
+          echo "$HOME/.deno/bin" >> "$GITHUB_PATH"
       - name: Core package
         working-directory: packages/mng_core
         run: |
@@ -38,10 +43,61 @@ jobs:
         # two clients and is unreachable from the port-level tests, so the
         # assertions are the only thing pinning which client each port uses.
         run: deno test --allow-env --allow-read=functions/ functions/_tests/
-      - name: Push migrations
-        if: ${{ !cancelled() && github.event_name == 'push' && hashFiles('supabase/**') != '' && secrets.SUPABASE_ACCESS_TOKEN != '' && secrets.SUPABASE_PROJECT_REF != '' }}
-        working-directory: supabase
+
+  # Release APKs for the phone pilot.
+  #
+  # GitHub builds these rather than a laptop because the machine this was written
+  # on has 2.7 GB of RAM and cannot run Gradle, and because the user needs an APK
+  # they can install on a phone without any local toolchain at all.
+  #
+  # `needs: verify` means a broken test suite produces no APK, which is the point:
+  # an APK that installs and then fails at runtime on a phone is harder to debug
+  # than a red build here.
+  build-apk:
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+      # The Supabase URL and anon key are read at compile time
+      # (AppConfig / DriverConfig use String.fromEnvironment), so they are baked
+      # into the APK by --dart-define. The anon key is designed to ship inside
+      # the app: every read it authorises is already filtered by the row level
+      # security policies in the migration, and the service-role key is never
+      # read by either app. A build with neither set still succeeds and launches
+      # into a screen naming the two missing values, so the guard here is a
+      # warning rather than a hard failure.
+      - name: Rider APK
+        working-directory: apps/rider
         env:
-          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
-          SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
-        run: supabase db push --linked
+          SB_URL: ${{ secrets.SUPABASE_URL }}
+          SB_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+        run: |
+          flutter pub get
+          flutter build apk --release \
+            --dart-define=SUPABASE_URL=$SB_URL \
+            --dart-define=SUPABASE_ANON_KEY=$SB_KEY
+          mv build/app/outputs/flutter-apk/app-release.apk rider-release.apk
+      - name: Driver APK
+        working-directory: apps/driver
+        env:
+          SB_URL: ${{ secrets.SUPABASE_URL }}
+          SB_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+        run: |
+          flutter pub get
+          flutter build apk --release \
+            --dart-define=SUPABASE_URL=$SB_URL \
+            --dart-define=SUPABASE_ANON_KEY=$SB_KEY
+          mv build/app/outputs/flutter-apk/app-release.apk driver-release.apk
+      - name: Collect both APKs
+        run: |
+          mkdir -p dist
+          mv apps/rider/rider-release.apk apps/driver/driver-release.apk dist/
+          ls -l dist/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: meetngo-apks
+          path: dist/
+          if-no-files-found: error
