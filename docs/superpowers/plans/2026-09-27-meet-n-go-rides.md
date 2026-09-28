@@ -10003,7 +10003,7 @@ class FakeDriverRepository implements DriverRepository {
 
 Widget wrap(KycController c) => ScreenUtilInit(
       designSize: const Size(390, 844),
-      builder: (_, __) => ChangeNotifierProvider<KycController>.value(
+      builder: (_, _) => ChangeNotifierProvider<KycController>.value(
         value: c,
         child: MaterialApp(theme: MngTheme.light, home: KycScreen(controller: c)),
       ),
@@ -10985,7 +10985,7 @@ Expected: FAIL — `AvailabilityController` is not defined.
         .from('trips')
         .select('*')
         .eq('driver_id', _uid)
-        .in('state', ['requested', 'matched', 'arriving', 'ongoing'])
+        .inFilter('state', ['requested', 'matched', 'arriving', 'ongoing'])
         .order('created_at', ascending: false)
         .limit(1);
     if (res.error != null) throw DriverAuthFailure(res.error!.message);
@@ -11163,7 +11163,7 @@ void main() {
   testWidgets('card shows fare, pickup distance and the countdown', (tester) async {
     await tester.pumpWidget(ScreenUtilInit(
       designSize: const Size(390, 844),
-      builder: (_, __) => MaterialApp(
+      builder: (_, _) => MaterialApp(
         home: Scaffold(
           body: OfferCard(offer: offer('a'), onAccept: () {}, onDecline: () {}),
         ),
@@ -11178,7 +11178,7 @@ void main() {
   testWidgets('expired offer renders a disabled card', (tester) async {
     await tester.pumpWidget(ScreenUtilInit(
       designSize: const Size(390, 844),
-      builder: (_, __) => MaterialApp(
+      builder: (_, _) => MaterialApp(
         home: Scaffold(
           body: OfferCard(
             offer: offer('a', ttl: const Duration(seconds: -1)),
@@ -11198,7 +11198,7 @@ void main() {
     var declined = 0;
     await tester.pumpWidget(ScreenUtilInit(
       designSize: const Size(390, 844),
-      builder: (_, __) => MaterialApp(
+      builder: (_, _) => MaterialApp(
         home: Scaffold(
           body: OfferCard(
             offer: offer('a'),
@@ -11719,7 +11719,7 @@ void main() {
 
 Widget _wrap(ActiveTripController c) => ScreenUtilInit(
       designSize: const Size(390, 844),
-      builder: (_, __) => ChangeNotifierProvider<ActiveTripController>.value(
+      builder: (_, _) => ChangeNotifierProvider<ActiveTripController>.value(
         value: c,
         child: const MaterialApp(home: ActiveTripScreen(onFinished: _noop)),
       ),
@@ -12223,7 +12223,7 @@ class PayoutFailure implements Exception {
 
 Widget wrap(EarningsController c) => ScreenUtilInit(
       designSize: const Size(390, 844),
-      builder: (_, __) => ChangeNotifierProvider<EarningsController>.value(
+      builder: (_, _) => ChangeNotifierProvider<EarningsController>.value(
         value: c,
         child: const MaterialApp(home: WalletScreen()),
       ),
