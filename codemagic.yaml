@@ -48,17 +48,47 @@ workflows:
           #
           # 3.47.5 is the current stable and ships Dart 3.13.4, which is the
           # version the suites below are written against.
+          #
+          # The archive is chosen from `uname` rather than hard-coded: the
+          # free plan runs macOS, where the Linux SDK's `dart` is a foreign
+          # binary and fails with "cannot execute binary file". A Linux
+          # archive is still selected correctly if the machine class ever
+          # changes, and the two macOS builds are distinguished by CPU.
           FLUTTER_VERSION=3.47.5
-          ARCHIVE="flutter_linux_${FLUTTER_VERSION}-stable.tar.xz"
-          URL="https://storage.googleapis.com/flutter_infra_release/releases/stable/linux/${ARCHIVE}"
-          echo "Installing Flutter $FLUTTER_VERSION from $URL"
-          curl -fL --retry 3 -o "/tmp/$ARCHIVE" "$URL"
+          case "$(uname -s)" in
+            Darwin)
+              BASE="https://storage.googleapis.com/flutter_infra_release/releases/stable/macos"
+              if [ "$(uname -m)" = "arm64" ]; then
+                ARCHIVE="flutter_macos_arm64_${FLUTTER_VERSION}-stable.zip"
+              else
+                ARCHIVE="flutter_macos_${FLUTTER_VERSION}-stable.zip"
+              fi
+              ;;
+            *)
+              BASE="https://storage.googleapis.com/flutter_infra_release/releases/stable/linux"
+              ARCHIVE="flutter_linux_${FLUTTER_VERSION}-stable.tar.xz"
+              ;;
+          esac
+          URL="$BASE/$ARCHIVE"
+          echo "Installing Flutter $FLUTTER_VERSION for $(uname -s)/$(uname -m)"
+          echo "from $URL"
           rm -rf "$HOME/flutter"
-          tar -xf "/tmp/$ARCHIVE" -C "$HOME"
-          rm -f "/tmp/$ARCHIVE"
+          curl -fL --retry 3 -o "/tmp/flutter-sdk" "$URL"
+          # The zip and the tarball both contain a single top-level flutter/,
+          # so unpacking into $HOME is the whole install either way.
+          case "$ARCHIVE" in
+            *.zip) unzip -q "/tmp/flutter-sdk" -d "$HOME" ;;
+            *)      tar -xf "/tmp/flutter-sdk" -C "$HOME" ;;
+          esac
+          rm -f "/tmp/flutter-sdk"
+          test -x "$HOME/flutter/bin/flutter" || { echo "extract failed: no flutter/bin/flutter"; exit 1; }
           export PATH="$HOME/flutter/bin:$PATH"
           flutter config --no-analytics > /dev/null
           flutter --version
+          # Prints "Mach-O 64-bit executable arm64" or "ELF 64-bit ..." so a
+          # wrong-architecture SDK is visible in the log instead of only
+          # surfacing later as an unrelated failure.
+          file "$HOME/flutter/bin/cache/dart-sdk/bin/dart"
 
       - name: Accept the Android SDK licences
         script: |
