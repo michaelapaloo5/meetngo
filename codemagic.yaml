@@ -126,12 +126,31 @@ workflows:
 
       - name: Edge function tests
         script: |
-          # The Edge functions are already deployed and a full ride has been
-          # run against the live project, so these are a regression gate
-          # rather than a first run. Codemagic's Linux image does not
-          # necessarily ship Deno, hence the install.
-          curl -fsSL https://deno.land/install.sh | sh > /dev/null
-          export PATH="$HOME/.deno/bin:$PATH"
+          set -e
+          # Pinned to 2.9.7, the version these 225 tests were written and
+          # verified against. The install script's "latest" is newer, and a
+          # newer Deno resolves `npm:@types/node` (pulled in transitively by
+          # supabase-js) through a node_modules directory that this repository
+          # does not have, so `deno test` dies during type resolution with
+          # "Could not find a matching package for 'npm:@types/node'".
+          # Pinning is the same reasoning as the Flutter install: reproduce
+          # the toolchain the tests were verified on rather than hope a newer
+          # one behaves identically.
+          DENO_VERSION=2.9.7
+          case "$(uname -s)-$(uname -m)" in
+            Linux-x86_64)   DENO_TARGET="x86_64-unknown-linux-gnu" ;;
+            Linux-aarch64)  DENO_TARGET="aarch64-unknown-linux-gnu" ;;
+            Darwin-arm64)   DENO_TARGET="aarch64-apple-darwin" ;;
+            Darwin-x86_64)  DENO_TARGET="x86_64-apple-darwin" ;;
+            *) echo "no Deno build for $(uname -s)/$(uname -m)"; exit 1 ;;
+          esac
+          curl -fL --retry 3 -o /tmp/deno.zip \
+            "https://github.com/denoland/deno/releases/download/v${DENO_VERSION}/deno-${DENO_TARGET}.zip"
+          unzip -q /tmp/deno.zip -d "$HOME/.deno-bin"
+          rm -f /tmp/deno.zip
+          chmod +x "$HOME/.deno-bin/deno"
+          export PATH="$HOME/.deno-bin:$PATH"
+          deno --version
           cd supabase
           deno test --allow-env --allow-read=functions/ functions/_tests/
 
