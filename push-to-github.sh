@@ -74,7 +74,7 @@ cat <<EOF
   On your other laptop, run this:
 
       git clone $URL.git
-      cd meet-ngo
+      cd meetngo
       git checkout $BRANCH
       flutter pub get
 
