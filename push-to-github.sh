@@ -25,12 +25,16 @@ if ! command -v gh >/dev/null 2>&1; then
   if command -v brew >/dev/null 2>&1; then
     brew install gh
   else
-    curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
-      | sudo gpg --dearmor -o /usr/share/keyrings/githubcli-archive-keyring.gpg
-    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
-      | sudo tee /etc/apt/sources.list.d/github-cli.list >/dev/null
-    sudo apt-get update -qq
-    sudo apt-get install -y -qq gh
+    # Direct .deb, no apt keyring dance: gpg wants a TTY this box does not have,
+    # and an unrelated third-party source 404s on apt update.
+    arch="$(dpkg --print-architecture)"
+    tag="$(curl -fsSL -o /dev/null -w '%{url_effective}' https://github.com/cli/cli/releases/latest)"
+    tag="${tag##*/}"
+    tmp="$(mktemp -d)"
+    curl -fsSL -o "$tmp/gh.deb" \
+      "https://github.com/cli/cli/releases/download/${tag}/gh_${tag#v}_linux_${arch}.deb"
+    sudo dpkg -i "$tmp/gh.deb"
+    rm -rf "$tmp"
   fi
 fi
 
