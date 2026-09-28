@@ -7,6 +7,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'src/app/app_config.dart';
 import 'src/app/rider_flow.dart';
 import 'src/app/rider_shell.dart';
+import 'src/auth/auth_controller.dart';
 import 'src/auth/login_screen.dart';
 import 'src/data/auth_repository.dart';
 import 'src/data/supabase_auth_repository.dart';
@@ -31,6 +32,9 @@ class RideNGoApp extends StatelessWidget {
             Provider<AuthRepository>(create: (_) => SupabaseAuthRepository(client)),
             Provider<TripRepository>(create: (_) => SupabaseTripRepository(client)),
             Provider<TripFunctions>(create: (_) => SupabaseTripFunctions(client)),
+            ChangeNotifierProvider<AuthController>(
+              create: (c) => AuthController(c.read<AuthRepository>()),
+            ),
             ChangeNotifierProvider<RiderFlow>(
               create: (c) => RiderFlow(
                 trips: c.read<TripRepository>(),
