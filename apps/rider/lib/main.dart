@@ -9,6 +9,7 @@ import 'src/app/rider_flow.dart';
 import 'src/app/rider_shell.dart';
 import 'src/auth/auth_controller.dart';
 import 'src/auth/login_screen.dart';
+import 'src/auth/splash_screen.dart';
 import 'src/data/auth_repository.dart';
 import 'src/data/supabase_auth_repository.dart';
 import 'src/data/supabase_trip_repository.dart';
@@ -46,7 +47,7 @@ class RideNGoApp extends StatelessWidget {
             debugShowCheckedModeBanner: false,
             title: "Meet 'N Go",
             theme: MngTheme.light,
-            home: const _AuthGate(),
+            home: const _Boot(),
           ),
         );
       },
@@ -135,6 +136,34 @@ class _BootErrorApp extends StatelessWidget {
           ),
         ),
       ),
+    );
+  }
+}
+
+/// Runs the brand intro, then hands over to [_AuthGate].
+///
+/// The two are deliberately separate: [SplashScreen] owns the animation and
+/// calls [SplashScreen.onDone] when it finishes, and [_AuthGate] already
+/// renders a spinner while it waits for the first `AuthState`. Keeping the
+/// handover to a single `onDone` means a slow session restore shows that spinner
+/// rather than a second bespoke loading state.
+class _Boot extends StatefulWidget {
+  const _Boot();
+
+  @override
+  State<_Boot> createState() => _BootState();
+}
+
+class _BootState extends State<_Boot> {
+  bool _done = false;
+
+  @override
+  Widget build(BuildContext context) {
+    if (_done) return const _AuthGate();
+    return SplashScreen(
+      onDone: () {
+        if (mounted) setState(() => _done = true);
+      },
     );
   }
 }

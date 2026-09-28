@@ -40,6 +40,18 @@ class FakeAuthRepository implements AuthRepository {
   Future<void> verifyOtpAndSetPassword(String email, String code, String password) async {}
 }
 
+/// Puts the test surface at the app's design size.
+///
+/// `flutter test` defaults to 800x600, where `.w` scales by 2.05 and `.h` by
+/// 0.525, so the entrance transforms in [LoginScreen] displace widgets far
+/// enough that a `tap` lands where nothing is hit-tested. 1170x2532 at dpr 3.0
+/// is a logical 390x844, which is the regime the app ships in.
+void useDesignSurface(WidgetTester tester) {
+  tester.view.physicalSize = const Size(1170, 2532);
+  tester.view.devicePixelRatio = 3.0;
+  addTearDown(tester.view.reset);
+}
+
 Widget wrap(FakeAuthRepository repo) => ScreenUtilInit(
       designSize: const Size(390, 844),
       minTextAdapt: true,
@@ -59,7 +71,9 @@ void main() {
   setUp(() => repo = FakeAuthRepository());
 
   testWidgets('shows heading, fields, and no Apple button', (tester) async {
-    await tester.pumpWidget(wrap(repo));
+
+    useDesignSurface(tester);    await tester.pumpWidget(wrap(repo));
+      await tester.pumpAndSettle();
     expect(find.text('Welcome Back'), findsOneWidget);
     expect(find.text('Login to book a ride in seconds.'), findsOneWidget);
     expect(find.byKey(const Key('emailField')), findsOneWidget);
@@ -69,7 +83,9 @@ void main() {
   });
 
   testWidgets('login button uses the amber primary', (tester) async {
-    await tester.pumpWidget(wrap(repo));
+
+    useDesignSurface(tester);    await tester.pumpWidget(wrap(repo));
+      await tester.pumpAndSettle();
     final button = tester.widget<FilledButton>(find.byKey(const Key('loginButton')));
     // `FilledButton.style` is the constructor argument and nothing else
     // (`button_style_button.dart:139`), and `LoginScreen` passes none: the
@@ -81,7 +97,9 @@ void main() {
   });
 
   testWidgets('empty email shows validation and does not call the repository', (tester) async {
-    await tester.pumpWidget(wrap(repo));
+
+    useDesignSurface(tester);    await tester.pumpWidget(wrap(repo));
+      await tester.pumpAndSettle();
     await tester.tap(find.byKey(const Key('loginButton')));
     await tester.pump();
     expect(find.text('Enter your email'), findsOneWidget);
@@ -89,7 +107,9 @@ void main() {
   });
 
   testWidgets('empty password shows validation', (tester) async {
-    await tester.pumpWidget(wrap(repo));
+
+    useDesignSurface(tester);    await tester.pumpWidget(wrap(repo));
+      await tester.pumpAndSettle();
     await tester.enterText(find.byKey(const Key('emailField')), 'rider@example.com');
     await tester.tap(find.byKey(const Key('loginButton')));
     await tester.pump();
@@ -98,7 +118,9 @@ void main() {
   });
 
   testWidgets('valid submit forwards credentials', (tester) async {
-    await tester.pumpWidget(wrap(repo));
+
+    useDesignSurface(tester);    await tester.pumpWidget(wrap(repo));
+      await tester.pumpAndSettle();
     await tester.enterText(find.byKey(const Key('emailField')), 'rider@example.com');
     await tester.enterText(find.byKey(const Key('passwordField')), 'secret123');
     await tester.tap(find.byKey(const Key('loginButton')));
@@ -108,8 +130,10 @@ void main() {
   });
 
   testWidgets('auth failure surfaces an inline error', (tester) async {
-    repo.failWith = true;
+
+    useDesignSurface(tester);    repo.failWith = true;
     await tester.pumpWidget(wrap(repo));
+      await tester.pumpAndSettle();
     await tester.enterText(find.byKey(const Key('emailField')), 'rider@example.com');
     await tester.enterText(find.byKey(const Key('passwordField')), 'wrongpass');
     await tester.tap(find.byKey(const Key('loginButton')));
@@ -118,14 +142,18 @@ void main() {
   });
 
   testWidgets('google tap delegates to the repository', (tester) async {
-    await tester.pumpWidget(wrap(repo));
+
+    useDesignSurface(tester);    await tester.pumpWidget(wrap(repo));
+      await tester.pumpAndSettle();
     await tester.tap(find.text('Continue with Google'));
     await tester.pump();
     expect(repo.googlePressed, isTrue);
   });
 
   testWidgets('forgot password link opens the reset flow', (tester) async {
-    await tester.pumpWidget(wrap(repo));
+
+    useDesignSurface(tester);    await tester.pumpWidget(wrap(repo));
+      await tester.pumpAndSettle();
     expect(find.text('Forgot Password?'), findsOneWidget);
     // The tap, not just the label: the label alone is on the screen whether or
     // not the `GestureDetector` at `login_screen.dart:72-77` still has a
@@ -136,7 +164,9 @@ void main() {
   });
 
   testWidgets('password visibility toggles', (tester) async {
-    await tester.pumpWidget(wrap(repo));
+
+    useDesignSurface(tester);    await tester.pumpWidget(wrap(repo));
+      await tester.pumpAndSettle();
     final field = tester.widget<TextField>(find.byKey(const Key('passwordField')));
     expect(field.obscureText, isTrue);
     await tester.tap(find.byIcon(Icons.visibility_off));
@@ -145,10 +175,59 @@ void main() {
     expect(after.obscureText, isFalse);
   });
 
+  group('entrance animation', () {
+    // The opacity the heading is actually painted at, read off the nearest
+    // enclosing `Opacity`. Asserting the widget merely *exists* would pass even
+    // if every band stayed at zero forever, which is the failure this pins.
+    // Returns 1.0 when there is no wrapper at all, which is the
+    // `animateIn: false` case: nothing fades, so the heading is simply visible.
+    double headingOpacity(WidgetTester tester) {
+      final finder = find.ancestor(
+        of: find.text('Welcome Back'),
+        matching: find.byType(Opacity),
+      );
+      if (finder.evaluate().isEmpty) return 1.0;
+      return tester.widget<Opacity>(finder.first).opacity;
+    }
+
+    testWidgets('the heading is transparent on the first frame, then opaque',
+        (tester) async {
+      useDesignSurface(tester);
+      await tester.pumpWidget(wrap(repo));
+      await tester.pump();
+      expect(headingOpacity(tester), lessThan(0.5));
+
+      await tester.pump(const Duration(milliseconds: 950));
+      expect(headingOpacity(tester), 1.0);
+    });
+
+    testWidgets('animateIn: false paints everything at full opacity at once',
+        (tester) async {
+      useDesignSurface(tester);
+      await tester.pumpWidget(
+        ScreenUtilInit(
+          designSize: const Size(390, 844),
+          minTextAdapt: true,
+          builder: (_, _) => ChangeNotifierProvider<AuthController>.value(
+            value: AuthController(repo),
+            child: MaterialApp(
+              theme: MngTheme.light,
+              home: const LoginScreen(animateIn: false),
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+      // No settling pump: the point is that nothing is waiting on a controller.
+      expect(headingOpacity(tester), 1.0);
+    });
+  });
+
   group('sign up', () {
     testWidgets('the Sign Up label is tappable and reveals the name field',
         (tester) async {
       await tester.pumpWidget(wrap(repo));
+      await tester.pumpAndSettle();
       expect(find.byKey(const Key('nameField')), findsNothing);
 
       // The tap, not the label. The label is on the screen whether or not the
@@ -163,7 +242,9 @@ void main() {
     });
 
     testWidgets('signing up sends the name, email and password', (tester) async {
-      await tester.pumpWidget(wrap(repo));
+
+    useDesignSurface(tester);      await tester.pumpWidget(wrap(repo));
+      await tester.pumpAndSettle();
       await tester.tap(find.byKey(const Key('signUpToggle')));
       await tester.pumpAndSettle();
 
@@ -184,8 +265,10 @@ void main() {
     });
 
     testWidgets('a duplicate account reports the reason', (tester) async {
-      repo.failWith = true;
+
+    useDesignSurface(tester);      repo.failWith = true;
       await tester.pumpWidget(wrap(repo));
+      await tester.pumpAndSettle();
       await tester.tap(find.byKey(const Key('signUpToggle')));
       await tester.pumpAndSettle();
 
@@ -201,6 +284,7 @@ void main() {
     testWidgets('an empty name is refused before the repository is called',
         (tester) async {
       await tester.pumpWidget(wrap(repo));
+      await tester.pumpAndSettle();
       await tester.tap(find.byKey(const Key('signUpToggle')));
       await tester.pumpAndSettle();
 
