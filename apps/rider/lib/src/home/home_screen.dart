@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
 import 'package:mng_core/mng_core.dart';
 import '../data/location_service.dart';
+import '../data/place_service.dart';
 import 'widgets/category_chips.dart';
 import 'widgets/promo_banner.dart';
 
@@ -11,6 +12,7 @@ class HomeScreen extends StatefulWidget {
     required this.riderName,
     required this.promoCode,
     this.location,
+    this.place,
     this.onSearchTap,
     this.onNotificationsTap,
   });
@@ -34,6 +36,13 @@ class HomeScreen extends StatefulWidget {
   /// which is a lie whenever the rider is not in Osu and is worse than saying
   /// nothing at all.
   final DeviceLocation? location;
+
+  /// The place name for [location], when the geocoder has answered.
+  ///
+  /// Null for three separate reasons that the screen cannot tell apart and does
+  /// not need to: the geocoder has not been asked yet, it has not answered, or
+  /// it failed. All three render the coordinates, which are always true.
+  final PlaceName? place;
 
   final void Function(BuildContext context)? onSearchTap;
   final void Function(BuildContext context)? onNotificationsTap;
@@ -61,15 +70,17 @@ class _HomeScreenState extends State<HomeScreen> {
   /// [DeviceLocation.riderMessage] is the existing honest copy for the states
   /// where there is no fix, so it is reused here rather than rewritten.
   ///
-  /// With a fix, the coordinates are shown rather than a place name. Naming the
-  /// place needs reverse geocoding, and this build has no geocoder and no
-  /// billing: Google Geocoding is card-backed, and Nominatim is a shared free
-  /// service whose usage policy is explicitly not for app traffic. Coordinates
-  /// are the only thing that can be stated as fact here without either.
+  /// With a fix, the geocoder's answer is shown when there is one, and the
+  /// coordinates when there is not. The coordinates are the floor rather than
+  /// the ceiling: they are the one thing that is always true, and a geocoder
+  /// that is slow, blocked or simply wrong must not be able to blank the line
+  /// or, worse, put a name on screen that the rider is not in.
   String get _locationLine {
     final loc = widget.location;
     if (loc == null) return 'Finding your location';
     if (!loc.hasFix) return loc.riderMessage;
+    final place = widget.place;
+    if (place != null && place.line.isNotEmpty) return place.line;
     final point = loc.point!;
     return 'Near ${point.lat.toStringAsFixed(4)}, '
         '${point.lng.toStringAsFixed(4)}';

@@ -50,6 +50,14 @@ dependencies:
   # here, and it is why this list is read off this file, not the lock.)
   supabase_flutter: ^2.4.0
   geolocator: ^13.0.1
+  # Reverse geocoding for the home screen's location line. Free: no key, no
+  # account, no card, which is the only reason it is Nominatim and not Google's.
+  # Pure Dart -- no native code, so it cannot affect what the APK links -- and
+  # already in `pubspec.lock` as a transitive dependency of `supabase_flutter`,
+  # so naming it here resolves to the identical version already being shipped.
+  # `geolocator` 13.0.4 has no `placemarkFromCoordinates`, checked in the
+  # package source, so this is the only way to turn a coordinate into a place.
+  http: ^1.6.0
   provider: ^6.1.2
   flutter_map: ^7.0.2
   latlong2: ^0.9.1

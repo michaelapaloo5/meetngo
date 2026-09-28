@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:meetngo_rider/src/data/location_service.dart';
+import 'package:meetngo_rider/src/data/place_service.dart';
 import 'package:meetngo_rider/src/home/home_screen.dart';
 import 'package:meetngo_rider/src/home/widgets/category_chips.dart';
 import 'package:meetngo_rider/src/home/widgets/promo_banner.dart';
@@ -10,6 +11,7 @@ import 'package:mng_core/mng_core.dart';
 Widget wrap({
   String? riderName = 'Alex',
   DeviceLocation? location,
+  PlaceName? place,
   void Function(BuildContext context)? onSearchTap,
   void Function(BuildContext context)? onNotificationsTap,
 }) =>
@@ -23,6 +25,7 @@ Widget wrap({
           riderName: riderName,
           promoCode: 'RIDE30',
           location: location,
+          place: place,
           onSearchTap: onSearchTap,
           onNotificationsTap: onNotificationsTap,
         ),
@@ -71,6 +74,61 @@ void main() {
     ));
     expect(find.text('Near 5.6037, -0.1870'), findsOneWidget);
     expect(find.text('Osu, Accra, Ghana'), findsNothing);
+  });
+
+  // The geocoder's answer is preferred over coordinates, because "Oxford
+  // Street, Osu" is a thing a rider can act on and "5.6037, -0.1870" is not.
+  testWidgets('a geocoded place name is preferred over the coordinates', (
+    tester,
+  ) async {
+    useDesignSurface(tester);
+    await tester.pumpWidget(wrap(
+      location: const DeviceLocation(
+        LocationOutcome.granted,
+        GeoPoint(5.5600, -0.1800),
+      ),
+      place: const PlaceName(
+        locality: 'Osu',
+        country: 'Ghana',
+        thoroughfare: 'Oxford Street',
+      ),
+    ));
+    expect(find.text('Oxford Street, Osu, Ghana'), findsOneWidget);
+    expect(find.textContaining('5.56'), findsNothing);
+  });
+
+  // The geocoder is a third party on a metered volunteer service. It is allowed
+  // to be slow, blocked or wrong, and none of those may blank the line or leave
+  // it on a name the rider is not in -- the coordinates are the floor.
+  testWidgets('a geocoder that failed falls back to the coordinates', (
+    tester,
+  ) async {
+    useDesignSurface(tester);
+    await tester.pumpWidget(wrap(
+      location: const DeviceLocation(
+        LocationOutcome.granted,
+        GeoPoint(5.6037, -0.1870),
+      ),
+      place: null,
+    ));
+    expect(find.text('Near 5.6037, -0.1870'), findsOneWidget);
+  });
+
+  // A refused permission is a different failure from a failed geocode, and it
+  // must not be papered over with a name or a coordinate the rider never gave.
+  testWidgets('a refused permission is never replaced by a place name', (
+    tester,
+  ) async {
+    useDesignSurface(tester);
+    await tester.pumpWidget(wrap(
+      location: const DeviceLocation(LocationOutcome.denied),
+      place: const PlaceName(locality: 'Osu'),
+    ));
+    expect(
+      find.textContaining('not allowed to use your location'),
+      findsOneWidget,
+    );
+    expect(find.text('Osu'), findsNothing);
   });
 
   testWidgets('a refused permission says so instead of naming a place', (

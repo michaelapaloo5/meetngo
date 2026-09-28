@@ -14,6 +14,7 @@ import '../chat/chat_controller.dart';
 import '../chat/chat_screen.dart';
 import '../data/chat_repository.dart';
 import '../data/location_service.dart';
+import '../data/place_service.dart';
 import '../data/profile_repository.dart';
 import '../data/trip_repository.dart';
 import '../home/home_screen.dart';
@@ -61,6 +62,13 @@ class _RiderShellState extends State<RiderShell> {
   /// search-tap read do not both fire for one visit.
   bool _locating = false;
 
+  /// The place name for [_location], once a geocoder has answered.
+  ///
+  /// Held in the shell rather than read inside [HomeScreen] so the home screen
+  /// stays a pure view with no network in it, and so a failed lookup costs the
+  /// rider nothing: the screen falls back to the coordinates it already has.
+  PlaceName? _place;
+
   static const _tabs = ['Home', 'Bookings', 'Chat', 'Profile'];
 
   @override
@@ -82,6 +90,18 @@ class _RiderShellState extends State<RiderShell> {
       _location = reading;
       _locating = false;
     });
+    // Named second and separately, so a slow or refused geocoder never delays
+    // the position the rider can already see. A null answer is normal and is
+    // not an error: the home line falls back to coordinates.
+    await _readPlace(reading);
+  }
+
+  Future<void> _readPlace(DeviceLocation reading) async {
+    final point = reading.point;
+    if (point == null) return;
+    final place = await context.read<PlaceService>().reverse(point);
+    if (!mounted) return;
+    setState(() => _place = place);
   }
 
   @override
@@ -317,6 +337,7 @@ class _RiderShellState extends State<RiderShell> {
         riderName: context.watch<RiderProfileController>().greetingName,
         promoCode: kPromoCode,
         location: _location,
+        place: _place,
         onSearchTap: (_) => _openRouteEntry(),
         onNotificationsTap: (_) => _openNotifications(),
       );
