@@ -1,5 +1,21 @@
-create extension if not exists postgis;
-create extension if not exists "uuid-ossp";
+-- Hosted Supabase keeps its preinstalled extensions in an `extensions` schema,
+-- not `public`, and only exposes them to a session whose search_path includes
+-- it. `uuid-ossp` arrives that way already, so `uuid_generate_v4()` was
+-- unresolvable and the very first `create table` failed with
+-- `function uuid_generate_v4() does not exist`. The same applies to PostGIS,
+-- which is not preinstalled at all: `create extension if not exists postgis`
+-- without a schema lands wherever the search_path points first, which on
+-- hosted is `extensions` -- and then `geography` and `st_makepoint` are
+-- unresolvable in the table definitions and the distance functions below.
+--
+-- So: create both into `extensions` explicitly, put that schema on the
+-- search_path for the rest of the migration, and grant the client roles USAGE
+-- on it. Without the grant the tables would be created fine and then every
+-- read would fail on a permission error, since RLS does not grant privileges.
+create extension if not exists postgis with schema extensions;
+create extension if not exists "uuid-ossp" with schema extensions;
+grant usage on schema extensions to anon, authenticated, service_role;
+set search_path = public, extensions;
 
 create type trip_state as enum
   ('requested','matched','arriving','ongoing','completed','cancelled');
@@ -239,7 +255,7 @@ create or replace function match_offers_for_trip(target_trip uuid)
 returns table (driver_id uuid, pickup_distance_km numeric)
 language sql
 security definer
-set search_path = public
+set search_path = public, extensions
 as $$
   select d.id, driver_pickup_distance_km(target_trip, d.id)
   from profiles d
@@ -292,7 +308,7 @@ create or replace function accept_offer(p_offer uuid)
 returns table (accepted boolean, trip_id uuid, driver_id uuid)
 language plpgsql
 security definer
-set search_path = public
+set search_path = public, extensions
 as $$
 declare
   v_offer offers%rowtype;
@@ -432,7 +448,7 @@ create or replace function handle_new_user()
 returns trigger
 language plpgsql
 security definer
-set search_path = public
+set search_path = public, extensions
 as $$
 begin
   insert into public.profiles (id, role)
