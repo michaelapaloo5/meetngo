@@ -29,15 +29,12 @@ workflows:
   android-release:
     name: Meet 'N Go — both APKs
     max_build_duration: 60
-    config:
-      flutter:
-        # `channel` rather than a pinned `version`: Codemagic only offers the
-        # Flutter releases it has mirrored, and pinning a version it does not
-        # have fails the build before it starts. The test suites below run
-        # against whatever stable resolves to, so a newer Flutter that
-        # changes a lint or a widget's behaviour shows up as a red step
-        # rather than as a silently different APK.
-        channel: stable
+    # No `config:` block. Codemagic rejects it at the workflow level — the
+    # Flutter version is a project-wide setting chosen in the web interface
+    # (Project settings -> Flutter), not something a workflow may pin. The
+    # machine ships a recent stable, and the test suites below run against
+    # whatever it is, so a newer Flutter that changes a lint or a widget's
+    # behaviour surfaces as a red step rather than as a silently different APK.
     scripts:
       - name: Accept the Android SDK licences
         script: |
