@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
 import 'package:mng_core/mng_core.dart';
+import '../data/location_service.dart';
 import 'widgets/category_chips.dart';
 import 'widgets/promo_banner.dart';
 
@@ -9,6 +10,7 @@ class HomeScreen extends StatefulWidget {
     super.key,
     required this.riderName,
     required this.promoCode,
+    this.location,
     this.onSearchTap,
     this.onNotificationsTap,
   });
@@ -23,6 +25,16 @@ class HomeScreen extends StatefulWidget {
   final String? riderName;
 
   final String promoCode;
+
+  /// The rider's own position, as read by the shell.
+  ///
+  /// Null until the first read comes back, which is a real state rather than a
+  /// loading one to be papered over: this line used to be the literal
+  /// `'Osu, Accra, Ghana'`, printed on every launch for every rider anywhere,
+  /// which is a lie whenever the rider is not in Osu and is worse than saying
+  /// nothing at all.
+  final DeviceLocation? location;
+
   final void Function(BuildContext context)? onSearchTap;
   final void Function(BuildContext context)? onNotificationsTap;
 
@@ -38,6 +50,29 @@ class _HomeScreenState extends State<HomeScreen> {
     if (hour < 12) return 'Good morning';
     if (hour < 17) return 'Good afternoon';
     return 'Good evening';
+  }
+
+  /// The line under the greeting.
+  ///
+  /// It used to be the constant `'Osu, Accra, Ghana'`. That string is the app's
+  /// default pickup, not the rider's position, so it named a place the rider was
+  /// not in for every rider who was not standing in Osu -- and a demo shown
+  /// outside Accra would have displayed it as though it were a live reading.
+  /// [DeviceLocation.riderMessage] is the existing honest copy for the states
+  /// where there is no fix, so it is reused here rather than rewritten.
+  ///
+  /// With a fix, the coordinates are shown rather than a place name. Naming the
+  /// place needs reverse geocoding, and this build has no geocoder and no
+  /// billing: Google Geocoding is card-backed, and Nominatim is a shared free
+  /// service whose usage policy is explicitly not for app traffic. Coordinates
+  /// are the only thing that can be stated as fact here without either.
+  String get _locationLine {
+    final loc = widget.location;
+    if (loc == null) return 'Finding your location';
+    if (!loc.hasFix) return loc.riderMessage;
+    final point = loc.point!;
+    return 'Near ${point.lat.toStringAsFixed(4)}, '
+        '${point.lng.toStringAsFixed(4)}';
   }
 
   @override
@@ -63,7 +98,10 @@ class _HomeScreenState extends State<HomeScreen> {
                         ),
                         SizedBox(height: 2.h),
                         Text(
-                          'Osu, Accra, Ghana',
+                          _locationLine,
+                          key: const Key('locationLine'),
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
                           style: MngTheme.light.textTheme.bodySmall,
                         ),
                       ],

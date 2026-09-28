@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:meetngo_rider/src/data/location_service.dart';
 import 'package:meetngo_rider/src/home/home_screen.dart';
 import 'package:meetngo_rider/src/home/widgets/category_chips.dart';
 import 'package:meetngo_rider/src/home/widgets/promo_banner.dart';
@@ -8,6 +9,7 @@ import 'package:mng_core/mng_core.dart';
 
 Widget wrap({
   String? riderName = 'Alex',
+  DeviceLocation? location,
   void Function(BuildContext context)? onSearchTap,
   void Function(BuildContext context)? onNotificationsTap,
 }) =>
@@ -20,6 +22,7 @@ Widget wrap({
         home: HomeScreen(
           riderName: riderName,
           promoCode: 'RIDE30',
+          location: location,
           onSearchTap: onSearchTap,
           onNotificationsTap: onNotificationsTap,
         ),
@@ -39,10 +42,51 @@ void main() {
     expect(find.textContaining('Good'), findsOneWidget);
   });
 
-  testWidgets('shows the Accra locality line', (tester) async {
+  // The line under the greeting used to be the constant 'Osu, Accra, Ghana',
+  // printed on every launch for every rider, and this test pinned that
+  // constant as correct. It is not: that string is the app's default *pickup*,
+  // so it named a place the rider was not standing in, and a demo given
+  // anywhere but Osu would have shown it as a live reading. It is now the
+  // rider's own position, and these three cover every state it can be in.
+  testWidgets('the line under the greeting is never a hard-coded place name', (
+    tester,
+  ) async {
     useDesignSurface(tester);
     await tester.pumpWidget(wrap());
-    expect(find.text('Osu, Accra, Ghana'), findsOneWidget);
+    // Nothing read yet.
+    expect(find.text('Finding your location'), findsOneWidget);
+    // The regression this change exists to prevent: a fixed string that reads
+    // as a live location to anyone standing anywhere else.
+    expect(find.text('Osu, Accra, Ghana'), findsNothing);
+    expect(find.textContaining('Osu'), findsNothing);
+  });
+
+  testWidgets('a real fix is shown as the rider own coordinates', (tester) async {
+    useDesignSurface(tester);
+    await tester.pumpWidget(wrap(
+      location: const DeviceLocation(
+        LocationOutcome.granted,
+        GeoPoint(5.6037, -0.1870),
+      ),
+    ));
+    expect(find.text('Near 5.6037, -0.1870'), findsOneWidget);
+    expect(find.text('Osu, Accra, Ghana'), findsNothing);
+  });
+
+  testWidgets('a refused permission says so instead of naming a place', (
+    tester,
+  ) async {
+    useDesignSurface(tester);
+    await tester.pumpWidget(wrap(
+      location: const DeviceLocation(LocationOutcome.denied),
+    ));
+    // The existing shared copy, not a bespoke sentence, so the home line and
+    // the two map screens cannot drift apart.
+    expect(
+      find.textContaining('not allowed to use your location'),
+      findsOneWidget,
+    );
+    expect(find.text('Osu, Accra, Ghana'), findsNothing);
   });
 
   testWidgets('shows the where-would-you-go search field', (tester) async {

@@ -50,14 +50,39 @@ class _RiderShellState extends State<RiderShell> {
   Timer? _poll;
   bool _completing = false;
 
-  /// The rider's own position for the two map screens, read once when the
-  /// search sheet opens and once when a trip is booked. Held rather than read
-  /// inside the screens so a rider who declined permission sees the same
-  /// sentence on both, instead of one screen explaining itself and the other
-  /// being silent about it.
+  /// The rider's own position for the home line and the two map screens, read
+  /// once on launch and again when the search sheet opens and when a trip is
+  /// booked. Held rather than read inside the screens so a rider who declined
+  /// permission sees the same sentence everywhere, instead of one screen
+  /// explaining itself and the other being silent about it.
   DeviceLocation? _location;
 
+  /// Whether a read is already in flight, so the launch read and a later
+  /// search-tap read do not both fire for one visit.
+  bool _locating = false;
+
   static const _tabs = ['Home', 'Bookings', 'Chat', 'Profile'];
+
+  @override
+  void initState() {
+    super.initState();
+    // Asked here rather than on the first tap, because the home screen now
+    // shows the rider's position under the greeting. It used to print a
+    // hard-coded 'Osu, Accra, Ghana' there instead, so nothing needed this
+    // before and the rider was never asked.
+    _readLocation();
+  }
+
+  Future<void> _readLocation() async {
+    if (_locating || _location != null) return;
+    _locating = true;
+    final reading = await context.read<TripRepository>().locate();
+    if (!mounted) return;
+    setState(() {
+      _location = reading;
+      _locating = false;
+    });
+  }
 
   @override
   void dispose() {
@@ -107,6 +132,7 @@ class _RiderShellState extends State<RiderShell> {
     final reading = await context.read<TripRepository>().locate();
     if (!mounted) return;
     setState(() => _location = reading);
+    _locating = false;
     await showRouteEntrySheet(
       context,
       calc: flow.calc,
@@ -290,6 +316,7 @@ class _RiderShellState extends State<RiderShell> {
   Widget _home() => HomeScreen(
         riderName: context.watch<RiderProfileController>().greetingName,
         promoCode: kPromoCode,
+        location: _location,
         onSearchTap: (_) => _openRouteEntry(),
         onNotificationsTap: (_) => _openNotifications(),
       );
