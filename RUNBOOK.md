@@ -3,9 +3,16 @@
 Everything needed to get this running on your own laptop, in the order you need
 it. It is written for someone following it once, top to bottom, with a coffee.
 
-The build in this repository is complete and its test suites are green. What
-has **not** been done here is deployment, because deploying needs a Supabase
-account and a browser login. That part is you, and it is about 30 minutes.
+**If you just want the apps on your phone, read section A and stop.** It needs no
+laptop and no payment card.
+
+The build in this repository is complete and its test suites are green. As of the
+last commit the Supabase project is also created, migrated and live: the schema,
+the row level security policies, the promo seed, all five Edge Functions, both
+test accounts and the approved pilot driver are done. A full ride — request,
+accept, arrive, start, complete, settle — has been run against the live backend
+and balances to the cent. What is left is installing it on a phone.
+
 
 Two things to know before you start, because they are the two that surprise
 people:
@@ -17,6 +24,47 @@ people:
 2. **A driver has to be approved before the app will show them any work**, and
    no client is allowed to approve itself. `supabase/seed/pilot_driver.sql` does
    that for you. Without it no ride can ever happen.
+
+---
+
+## A. Just get the two APKs — no laptop, no card
+
+If you only want the apps on your phone and not the source, skip everything below
+this line. Sections 1–11 are for running the thing yourself.
+
+The APKs are built in the cloud from `codemagic.yaml` at the repo root. Two apps,
+one build, about 15 minutes.
+
+1. **Delete the card from GitHub.** Settings → Billing and licensing → Payment
+   → Remove. The build account has a billing lock and the card was added by
+   mistake; nothing in this project needs to spend money. A public repository's
+   GitHub Actions minutes are free, but the account is locked, so the APKs are
+   built by Codemagic instead, whose free tier asks for no payment method.
+2. **Sign up at [codemagic.com](https://codemagic.io)** with your GitHub
+   account. Free, no card.
+3. **Add the repository.** Codemagic → Team settings → Codemagic.yaml settings →
+   *Connect a repository* → pick `michaelapaloo5/meetngo`. Because the repository
+   is public, read-only access is enough.
+4. **Add two environment variables**, under *Team settings → Code signing &
+   environment variables*:
+   - `SB_URL` = `https://mkdbzddgafkqnejivikt.supabase.co`
+   - `SB_KEY` = the project's anon key from Supabase → Project Settings → API.
+
+   Both are baked into the APK at compile time by `--dart-define`. The anon key
+   is meant to ship inside the app — every read it authorises is already
+   filtered by the row level security policies in the migration, and the
+   service-role key is never read by either app.
+5. **Start the build.** Codemagic → your project → *Start new build* → workflow
+   *Meet 'N Go — both APKs*. The first run also runs both test suites and the
+   Edge Function tests; it fails if any of them is red.
+6. **Download.** When it goes green, the build page has both APKs as artifacts.
+   Install `rider-release.apk` on the phone you ride with and
+   `driver-release.apk` on the one that drives. Android will ask you to allow
+   installs from that app the first time; say yes.
+
+If the build goes red, open the step that failed and read its output — the same
+failures section 10 describes, and they are almost always the two environment
+variables being mistyped.
 
 ---
 
@@ -124,10 +172,17 @@ service role the platform injects.
 **Authentication → Users → Add user**, twice. Tick **Auto Confirm User** so
 there is no confirmation email to chase.
 
-| account | email | any password |
-|---|---|---|
-| rider | `rider@example.com` | `password123` |
-| driver | `pilot.driver@example.com` | `password123` |
+> **Already done on the project this runbook was written against.** If you are
+> using that project, do not create these — they exist, and creating a second
+> copy with the same address fails.
+>
+> | account | email | password |
+> |---|---|---|
+> | rider | `rider@meetngo.app` | `Meetngo2026` |
+> | driver | `driver@meetngo.app` | `Meetngo2026` |
+>
+> They are demo credentials in a demo project with demo money. Change them
+> before showing this to anyone, and do not reuse the password anywhere.
 
 ## 7. Seed the driver
 
@@ -140,6 +195,11 @@ to `driver`, sets `kyc_status` to `approved`, creates an approved Toyota Corolla
 for them, and parks them at Osu in Accra (which is where the rider app's default
 pickup pin is, so the pickup distance is zero and a ride resolves to them
 immediately).
+
+> **Already run on the project this runbook was written against**, with those two
+> accounts. The script raises if the accounts do not exist, which is why section 6
+> comes first. On that project the driver is already online and has one settled
+> trip in its wallet, so the driver app opens on a non-zero balance.
 
 You should see a notice like:
 

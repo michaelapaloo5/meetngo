@@ -1,0 +1,104 @@
+# Codemagic build for the Meet 'N Go phone pilot.
+#
+# This is a second, independent build path, not a replacement for
+# .github/workflows/ci.yml. GitHub Actions refused to start a job on the
+# build account because of a billing lock, and a card is not something this
+# project is willing to put on the line for two APKs. Codemagic's free tier
+# needs no payment method.
+#
+# What it produces: two unsigned-for-release-but-debug-signed APKs, the same
+# pair .github/workflows/ci.yml produces, built from the same commits with the
+# same --dart-define flags. Signing already uses the Android debug key
+# (apps/rider/android/app/build.gradle.kts), so no keystore is needed and
+# nothing has to be uploaded as a secret but the two public Supabase values.
+#
+# Set these in Codemagic under Environment variables, not in this file:
+#   SB_URL  = https://<project-ref>.supabase.co
+#   SB_KEY  = the project's anon (publishable) key
+# Both are baked into the APK by --dart-define at compile time. The anon key
+# is designed to ship inside the app: every read it authorises is already
+# filtered by the row level security policies in the migration, and the
+# service-role key is never read by either app. A build with neither value
+# still succeeds and launches into a screen naming the two missing values, so
+# the build step warns rather than fails.
+
+workflows:
+  android-release:
+    name: Meet 'N Go — both APKs
+    max_build_duration: 60
+    environment:
+      cloud: linux
+      linux_image: ubuntu2004
+      instance_type: medium
+    config:
+      flutter:
+        # The version both apps were developed and tested against. Pinning it
+        # keeps the build reproducible and keeps `flutter analyze --fatal-infos`
+        # reporting the same lint set as the machine that wrote the code.
+        version: 3.47.5
+    scripts:
+      - name: Accept the Android SDK licences
+        script: |
+          yes | flutter doctor --android-licenses > /dev/null 2>&1 || true
+          flutter --version
+
+      # Same gates as the `verify` job in .github/workflows/ci.yml, in the
+      # same order, so a red suite here means the same thing it means there.
+      - name: Core package
+        script: |
+          cd packages/mng_core
+          flutter pub get
+          flutter analyze --fatal-infos
+          flutter test
+
+      - name: Rider app — analyse and test
+        script: |
+          cd apps/rider
+          flutter pub get
+          flutter analyze --fatal-infos
+          flutter test
+
+      - name: Driver app — analyse and test
+        script: |
+          cd apps/driver
+          flutter pub get
+          flutter analyze --fatal-infos
+          flutter test
+
+      - name: Edge function tests
+        script: |
+          # The Edge functions are already deployed and were exercised
+          # end-to-end against the live project, so these are a regression
+          # gate rather than a first run.
+          curl -fsSL https://deno.land/install.sh | sh > /dev/null
+          export PATH="$HOME/.deno/bin:$PATH"
+          cd supabase
+          deno test --allow-env --allow-read=functions/ functions/_tests/
+
+      - name: Build both release APKs
+        script: |
+          set -e
+          if [ -z "${SB_URL:-}" ] || [ -z "${SB_KEY:-}" ]; then
+            echo "::warning::SB_URL or SB_KEY is not set. The APKs will build but"
+            echo "::warning::will launch into the 'not configured' screen."
+          fi
+          cd apps/rider
+          flutter build apk --release \
+            --dart-define=SUPABASE_URL="${SB_URL:-}" \
+            --dart-define=SUPABASE_ANON_KEY="${SB_KEY:-}"
+          mkdir -p "$CM_BUILD_DIR/dist"
+          cp build/app/outputs/flutter-apk/app-release.apk "$CM_BUILD_DIR/dist/rider-release.apk"
+
+          cd ../../apps/driver
+          flutter build apk --release \
+            --dart-define=SUPABASE_URL="${SB_URL:-}" \
+            --dart-define=SUPABASE_ANON_KEY="${SB_KEY:-}"
+          cp build/app/outputs/flutter-apk/app-release.apk "$CM_BUILD_DIR/dist/driver-release.apk"
+
+          ls -lh "$CM_BUILD_DIR/dist/"
+
+    artifacts:
+      - path: dist/rider-release.apk
+        type: android/app
+      - path: dist/driver-release.apk
+        type: android/app
