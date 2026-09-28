@@ -52,10 +52,11 @@ buildable here, which is what the pilot needs (a Samsung S10 Lite).
 from the Linux session. Use ordinary `git push`, or the GitHub Desktop client.
 Everything else in the repo is cross-platform.
 
-**All three Dart suites are green as of the first run on Windows.** `flutter
-analyze --fatal-infos` and `flutter test` both pass for `packages/mng_core`
-(48 tests), `apps/rider` (144) and `apps/driver` (217). Thirty-one genuine
-failures were fixed; see §5.
+**Every suite in the CI `verify` job is green as of the first run on Windows.**
+`deno test` passes 225 Edge Function tests, and `flutter analyze --fatal-infos`
+and `flutter test` pass for `packages\mng_core` (48 tests), `apps/rider` (144)
+and `apps/driver` (217). Thirty-one genuine Dart failures were fixed; see §5.
+The Deno suite needed no fixes — it had never failed.
 
 ---
 
@@ -103,9 +104,10 @@ Everything else was made real.
 
 ## 4. Known gaps
 
-- **The Dart test suites now run and pass on this branch** — see §5. The Deno
-  Edge Function tests (`supabase/functions/_tests/`, run by CI with `deno test`)
-  have **not** been run: Deno is not installed on this machine.
+- **Every test suite now runs and passes on this branch** — see §5. The Dart
+  suites (`mng_core` 48, `rider` 144, `driver` 217) and the Deno Edge Function
+  suite (225) are all green, so the whole `verify` job in CI is accounted for
+  locally for the first time.
 - **The deployed HTTP round trip for the Edge Functions has never been run
   against a live project** with a real phone. First thing a pilot does; it is in
   `RUNBOOK.md`.
@@ -127,9 +129,10 @@ free and **no swap**; `flutter test` on more than one file OOM-killed the
 terminal, and that virtual disk rejects `swapon` with `Invalid argument`. This
 machine has 7.7 GB and 216 GB free, so they ran in full.
 
-**First run: 31 failures out of 409. All fixed; all three packages now pass
-`flutter analyze --fatal-infos` and `flutter test`.** The counts now are
-`mng_core` 48, `rider` 144, `driver` 217.
+**First run: 31 failures out of 409 Dart tests. All fixed; all three packages
+now pass `flutter analyze --fatal-infos` and `flutter test`.** The counts now
+are `mng_core` 48, `rider` 144, `driver` 217. The Deno Edge Function suite ran
+clean on its first and only attempt: **225 passed, 0 failed**, no fixes needed.
 
 ### The four that were worth the run
 
@@ -200,6 +203,18 @@ Flutter was **not** installed and had to be installed to run any of this.
 - `.ps1` files will not run under the default execution policy. Use
     `powershell -NoProfile -ExecutionPolicy Bypass -File ...` per-process rather
   than loosening the machine's policy.
+- **Deno 2.9.7** is at `C:\dev\deno`, on the user `PATH`, for the Edge Function
+  tests. They are fast (2s) and need no network:
+
+  ```powershell
+  cd supabase
+  deno test --allow-env --allow-read=functions/ functions/_tests/
+  ```
+
+  `225 passed | 0 failed`. The `--allow-read=functions/` is deliberate and
+  scoped: `settlement_clients_wiring.test.ts` asserts over the *source text* of
+  the `clients.ts` files, which the port-level tests cannot otherwise reach, so
+  that one file is the only reason the flag is needed.
 
 ## 6. Traps that will bite you
 
