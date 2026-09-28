@@ -2,11 +2,14 @@ import 'package:flutter/material.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
 import 'package:mng_core/mng_core.dart';
 
+import '../location/location_banner.dart';
+import '../location/location_controller.dart';
+import '../map/driver_map_panel.dart';
 import 'availability_controller.dart';
 import 'offer_card.dart';
 import 'offer_queue_controller.dart';
 
-/// The home tab: the toggle, and whatever is in the queue.
+/// The home tab: the toggle, where the driver is, and whatever is in the queue.
 ///
 /// The two controllers are constructor arguments rather than read from
 /// `context`, so the screen can be driven by a fake with no provider above it
@@ -18,7 +21,7 @@ import 'offer_queue_controller.dart';
 /// Which means the listeners have to come from the arguments too. A screen that
 /// reads a `ChangeNotifier` it holds and never listens to it is a screen that
 /// does not change: the toggle writes `online` and the title still reads the
-/// value from before. `ListenableBuilder` over both controllers is the whole
+/// value from before. `ListenableBuilder` over all three is the whole
 /// subscription, and it needs no provider at all.
 class DriverHomeScreen extends StatelessWidget {
   const DriverHomeScreen({
@@ -26,12 +29,14 @@ class DriverHomeScreen extends StatelessWidget {
     required this.availability,
     required this.offers,
     required this.profile,
+    required this.location,
     this.onAccepted,
   });
 
   final AvailabilityController availability;
   final OfferQueueController offers;
   final DriverProfile? profile;
+  final LocationController location;
 
   /// Called after the server confirms the driver won an offer -- not when they
   /// pressed Accept, which is the difference between "I asked" and "it is mine".
@@ -40,7 +45,7 @@ class DriverHomeScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return ListenableBuilder(
-      listenable: Listenable.merge([availability, offers]),
+      listenable: Listenable.merge([availability, offers, location]),
       builder: (context, _) => Scaffold(
         appBar: AppBar(
           backgroundColor: MngColors.page,
@@ -93,6 +98,14 @@ class DriverHomeScreen extends StatelessWidget {
                       ),
                   ],
                 ),
+              ),
+              // The driver, on a real map. No pickup pin: the queue holds
+              // several trips at once and pinning one of them would claim it is
+              // the trip the driver is on.
+              LocationBanner(location: location),
+              Padding(
+                padding: EdgeInsets.symmetric(horizontal: 20.w),
+                child: DriverMapPanel(driverPoint: location.point),
               ),
               Expanded(
                 child: offers.offers.isEmpty

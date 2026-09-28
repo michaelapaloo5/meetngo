@@ -3,24 +3,37 @@ import 'package:flutter_screenutil/flutter_screenutil.dart';
 import 'package:mng_core/mng_core.dart';
 import 'package:provider/provider.dart';
 
+import '../location/location_banner.dart';
+import '../location/location_controller.dart';
+import '../map/driver_map_panel.dart';
 import 'active_trip_controller.dart';
 import 'pickup_otp_sheet.dart';
 
 class ActiveTripScreen extends StatelessWidget {
-  const ActiveTripScreen({super.key, required this.onFinished});
+  const ActiveTripScreen({
+    super.key,
+    required this.onFinished,
+    required this.location,
+  });
 
   /// Called when the driver presses the button on a finished trip.
   final VoidCallback onFinished;
 
+  /// The driver's own position, for the map. An argument rather than a
+  /// provider read, and the body is wrapped in a `ListenableBuilder` over it,
+  /// because a fix that arrives after the first frame has to move the pin.
+  final LocationController location;
+
   /// What the two buttons the plan put on this screen cannot do yet.
   ///
-  /// `google_maps_flutter` and `url_launcher` are not dependencies of this app
-  /// and a phone in the pilot has neither configured, so a button that launched
-  /// them would fail on the device that matters. The plan's `onPressed: () {}`
-  /// was worse: a live-looking control that does nothing at all. This says what
-  /// is missing instead.
+  /// `url_launcher` is not a dependency of this app and a phone in the pilot
+  /// has no navigation app configured, so a button that launched it would fail
+  /// on the device that matters. The plan's `onPressed: () {}` was worse: a
+  /// live-looking control that does nothing at all. This says what is missing
+  /// instead -- and the map above the buttons is what the driver uses to
+  /// navigate, which is the honest replacement.
   static const _notInThisBuild =
-      'Turn-by-turn navigation is not part of this build.';
+      'Turn-by-turn navigation is not part of this build. Follow the map above.';
 
   static const _callNotInThisBuild =
       'Calling from the app is not part of this build.';
@@ -54,108 +67,142 @@ class ActiveTripScreen extends StatelessWidget {
                 ),
               ),
             )
-          : SafeArea(
-              child: Column(
-                children: [
-                  Padding(
-                    padding: EdgeInsets.symmetric(horizontal: 20.w, vertical: 12.h),
-                    child: Row(
-                      children: [
-                        Container(
-                          key: const Key('tripStateChip'),
-                          padding: EdgeInsets.symmetric(
-                            horizontal: 12.w,
-                            vertical: 6.h,
-                          ),
-                          decoration: BoxDecoration(
-                            color: MngColors.muted,
-                            borderRadius: BorderRadius.circular(20),
-                          ),
-                          child: Text(
-                            trip.state.name,
-                            style: MngTheme.light.textTheme.bodySmall,
-                          ),
-                        ),
-                        const Spacer(),
-                        Text(
-                          'GHS ${trip.fareGhs.toStringAsFixed(2)}',
-                          style: MngTheme.light.textTheme.titleMedium,
-                        ),
-                      ],
+          : ListenableBuilder(
+              listenable: location,
+              builder: (context, _) => _tripBody(context, controller, trip),
+            ),
+    );
+  }
+
+  Widget _tripBody(
+    BuildContext context,
+    ActiveTripController controller,
+    Trip trip,
+  ) {
+    return SafeArea(
+      child: Column(
+        children: [
+          Padding(
+            padding: EdgeInsets.symmetric(horizontal: 20.w, vertical: 12.h),
+            child: Row(
+              children: [
+                // `Flexible` on the row, not inside the chip: the chip is a
+                // `Container`, and a `Flexible` inside one has no `Flex`
+                // ancestor to apply its parent data to. Out here it is what
+                // gives the chip a bounded width, so a long state name
+                // ellipsizes instead of pushing the fare off the row.
+                Flexible(
+                  child: Container(
+                    key: const Key('tripStateChip'),
+                    padding: EdgeInsets.symmetric(
+                      horizontal: 12.w,
+                      vertical: 6.h,
+                    ),
+                    decoration: BoxDecoration(
+                      color: MngColors.muted,
+                      borderRadius: BorderRadius.circular(20),
+                    ),
+                    child: Text(
+                      trip.state.name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: MngTheme.light.textTheme.bodySmall,
                     ),
                   ),
-                  Expanded(
-                    child: ListView(
-                      padding: EdgeInsets.symmetric(horizontal: 20.w),
-                      children: [
-                        _RouteStop(
-                          icon: Icons.trip_origin,
-                          title: trip.pickup.label,
-                          address: trip.pickup.address,
-                        ),
-                        _RouteStop(
-                          icon: Icons.place,
-                          title: trip.dropoff.label,
-                          address: trip.dropoff.address,
-                          last: true,
-                        ),
-                      ],
-                    ),
+                ),
+                const Spacer(),
+                Flexible(
+                  child: Text(
+                    'GHS ${trip.fareGhs.toStringAsFixed(2)}',
+                    overflow: TextOverflow.ellipsis,
+                    style: MngTheme.light.textTheme.titleMedium,
                   ),
-                  if (controller.error != null)
-                    Padding(
-                      padding: EdgeInsets.symmetric(horizontal: 20.w),
-                      child: Text(
-                        controller.error!,
-                        key: const Key('activeTripError'),
-                        style: const TextStyle(color: MngColors.error),
-                      ),
-                    ),
-                  Padding(
-                    padding: EdgeInsets.fromLTRB(20.w, 12.h, 20.w, 20.h),
-                    child: Column(
-                      children: [
-                        Row(
-                          children: [
-                            Expanded(
-                              child: OutlinedButton.icon(
-                                key: const Key('navigateButton'),
-                                onPressed: () => _say(
-                                  context,
-                                  _notInThisBuild,
-                                ),
-                                icon: const Icon(Icons.navigation),
-                                label: const Text('Navigate'),
-                              ),
-                            ),
-                            SizedBox(width: 12.w),
-                            Expanded(
-                              child: OutlinedButton.icon(
-                                key: const Key('callRiderButton'),
-                                onPressed: () =>
-                                    _say(context, _callNotInThisBuild),
-                                icon: const Icon(Icons.call),
-                                label: const Text('Call'),
-                              ),
-                            ),
-                          ],
-                        ),
-                        SizedBox(height: 12.h),
-                        FilledButton(
-                          key: const Key('primaryActionButton'),
-                          onPressed: controller.busy ||
-                                  (!controller.canAdvance &&
-                                      !controller.isFinished)
-                              ? null
-                              : () => _act(context, controller),
-                          child: Text(controller.primaryActionLabel),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
+                ),
+              ],
+            ),
+          ),
+          LocationBanner(location: location),
+          Padding(
+            padding: EdgeInsets.symmetric(horizontal: 20.w),
+            child: DriverMapPanel(
+              // The driver, the pickup and the drop-off, with a line from the
+              // driver to the pickup while collecting and from the pickup to
+              // the drop-off once the rider is aboard. Before the fix lands the
+              // panel says so rather than showing an empty rectangle.
+              driverPoint: location.point,
+              pickup: trip.pickup.point,
+              dropoff: trip.dropoff.point,
+              height: 200.h,
+            ),
+          ),
+          SizedBox(height: 8.h),
+          Expanded(
+            child: ListView(
+              padding: EdgeInsets.symmetric(horizontal: 20.w),
+              children: [
+                _RouteStop(
+                  icon: Icons.trip_origin,
+                  title: trip.pickup.label,
+                  address: trip.pickup.address,
+                ),
+                _RouteStop(
+                  icon: Icons.place,
+                  title: trip.dropoff.label,
+                  address: trip.dropoff.address,
+                  last: true,
+                ),
+              ],
+            ),
+          ),
+          if (controller.error != null)
+            Padding(
+              padding: EdgeInsets.symmetric(horizontal: 20.w),
+              child: Text(
+                controller.error!,
+                key: const Key('activeTripError'),
+                style: const TextStyle(color: MngColors.error),
               ),
             ),
+          Padding(
+            padding: EdgeInsets.fromLTRB(20.w, 12.h, 20.w, 20.h),
+            child: Column(
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        key: const Key('navigateButton'),
+                        onPressed: () => _say(context, _notInThisBuild),
+                        icon: const Icon(Icons.navigation),
+                        label: const Text('Navigate'),
+                      ),
+                    ),
+                    SizedBox(width: 12.w),
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        key: const Key('callRiderButton'),
+                        onPressed: () => _say(context, _callNotInThisBuild),
+                        icon: const Icon(Icons.call),
+                        label: const Text('Call'),
+                      ),
+                    ),
+                  ],
+                ),
+                SizedBox(height: 12.h),
+                FilledButton(
+                  key: const Key('primaryActionButton'),
+                  onPressed: controller.busy ||
+                          (!controller.canAdvance &&
+                              !controller.isFinished)
+                      ? null
+                      : () => _act(context, controller),
+                  child: Text(controller.primaryActionLabel),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
     );
   }
 

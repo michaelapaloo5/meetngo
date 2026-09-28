@@ -1,16 +1,31 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
+import 'package:flutter_map/flutter_map.dart';
 import 'package:mng_core/mng_core.dart';
+import '../data/location_service.dart';
+import '../map/ride_map.dart';
 
 class FindingDriverScreen extends StatelessWidget {
   const FindingDriverScreen({
     super.key,
     required this.trip,
     required this.onCancelSearch,
+    this.location,
+    this.tileProvider,
   });
 
   final Trip trip;
   final VoidCallback onCancelSearch;
+
+  /// The device fix, when there is one. Absent or refused still renders the
+  /// map, centred on the pickup the rider actually booked, with a note saying
+  /// why there is no blue dot — which is the point: a blank map and a map that
+  /// is confidently somewhere else are both worse than a map that is right
+  /// about the pickup and honest about the rider's own position.
+  final DeviceLocation? location;
+
+  /// Null in the app, a silent provider under test. See [RideMap.tileProvider].
+  final TileProvider? tileProvider;
 
   @override
   Widget build(BuildContext context) {
@@ -26,17 +41,15 @@ class FindingDriverScreen extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            // Map placeholder, for the same reason as the one on
-            // `TrackingScreen`: a fixed box, so a platform view is not needed
-            // to render this screen under test.
-            Container(
-              height: 300.h,
-              margin: EdgeInsets.symmetric(horizontal: 20.w),
-              decoration: BoxDecoration(
-                color: MngColors.muted,
-                borderRadius: BorderRadius.circular(MngRadius.large),
+            Padding(
+              padding: EdgeInsets.symmetric(horizontal: 20.w),
+              child: RideMap(
+                key: const Key('findingMap'),
+                pickup: trip.pickup.point,
+                location: location,
+                height: 300,
+                tileProvider: tileProvider,
               ),
-              child: const Center(child: Icon(Icons.map, size: 40)),
             ),
             SizedBox(height: 24.h),
             Padding(

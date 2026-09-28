@@ -4,16 +4,32 @@ import 'package:mng_core/mng_core.dart';
 import 'package:meetngo_driver/src/active_trip/active_trip_controller.dart';
 import 'package:meetngo_driver/src/active_trip/active_trip_screen.dart';
 import 'package:meetngo_driver/src/data/driver_repository.dart';
+import 'package:meetngo_driver/src/location/location_controller.dart';
 import 'package:provider/provider.dart';
 
 import '../support/fakes.dart';
 import '../support/harness.dart';
 
-Widget wrap(ActiveTripController c, {VoidCallback? onFinished}) =>
+/// The screen now draws the trip on a map, so it needs a
+/// [LocationController]. A stub reader with no fix is the case that matters
+/// here: the trip's own stops have to render whether or not the driver has a
+/// position, and a test that supplied a fix would never prove that.
+Widget wrap(
+  ActiveTripController c, {
+  VoidCallback? onFinished,
+  LocationController? location,
+}) =>
     appHarness(
       ChangeNotifierProvider<ActiveTripController>.value(
         value: c,
-        child: ActiveTripScreen(onFinished: onFinished ?? () {}),
+        child: ActiveTripScreen(
+          onFinished: onFinished ?? () {},
+          location: location ??
+              LocationController(
+                StubLocationReader(pointThrows: 'no fix'),
+                StubDriverRepository(),
+              ),
+        ),
       ),
     );
 

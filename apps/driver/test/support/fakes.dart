@@ -1,7 +1,10 @@
+import 'package:geolocator/geolocator.dart';
 import 'package:mng_core/mng_core.dart';
 import 'package:meetngo_driver/src/data/driver_auth_repository.dart';
 import 'package:meetngo_driver/src/data/driver_repository.dart';
+import 'package:meetngo_driver/src/data/driver_trip.dart';
 import 'package:meetngo_driver/src/earnings/earnings_repository.dart';
+import 'package:meetngo_driver/src/location/location_reader.dart';
 
 /// A driver repository that records what it was asked and answers from memory.
 ///
@@ -12,9 +15,15 @@ import 'package:meetngo_driver/src/earnings/earnings_repository.dart';
 /// have failed to compile rather than quietly returned null and made every
 /// "going offline is refused" test pass for the wrong reason.
 class StubDriverRepository implements DriverRepository {
-  StubDriverRepository({this.profile});
+  StubDriverRepository({this.profile, this.trips = const [], this.vehicle});
 
   DriverProfile? profile;
+
+  /// The history [myTrips] answers with. Mutable so a test can swap it between
+  /// a load and a refresh and prove the list is not cached.
+  List<DriverTrip> trips;
+
+  Vehicle? vehicle;
 
   String? cardNumber;
   String? cardExpiry;
@@ -34,6 +43,8 @@ class StubDriverRepository implements DriverRepository {
   int otpAttempts = 0;
   int meCalls = 0;
   int currentLocationCalls = 0;
+  int myTripsCalls = 0;
+  int myVehicleCalls = 0;
 
   bool otpPasses = true;
   bool availabilityFails = false;
@@ -42,6 +53,8 @@ class StubDriverRepository implements DriverRepository {
   bool activeTripFails = false;
   bool meFails = false;
   bool locationAvailable = true;
+  bool myTripsFails = false;
+  bool myVehicleFails = false;
 
   @override
   Future<DriverProfile?> me() async {
@@ -137,6 +150,22 @@ class StubDriverRepository implements DriverRepository {
   }
 
   @override
+  Future<List<DriverTrip>> myTrips({int limit = 50}) async {
+    myTripsCalls++;
+    if (myTripsFails) {
+      throw const DriverAuthFailure('could not read your trips');
+    }
+    return trips;
+  }
+
+  @override
+  Future<Vehicle?> myVehicle() async {
+    myVehicleCalls++;
+    if (myVehicleFails) throw const DriverAuthFailure('could not read your car');
+    return vehicle;
+  }
+
+  @override
   Stream<Offer> watchOffers() => const Stream<Offer>.empty();
 
   @override
@@ -192,6 +221,28 @@ class StubDriverAuthRepository implements DriverAuthRepository {
   bool googlePressed = false;
   String? failWith;
 
+  /// What [signUp] was asked for, so a test can prove the name reached the
+  /// repository rather than being validated and dropped on the way.
+  String? signUpEmail;
+  String? signUpPassword;
+  String? signUpName;
+  int signUpCalls = 0;
+
+  /// Answer "there is no session" the way a project with email confirmation on
+  /// does, so the screen's handling of that case is drivable.
+  bool signUpReturnsNoSession = false;
+
+  bool signedOut = false;
+  String? failSignOutWith;
+
+  /// What [currentEmail] answers. Null by default, which is the signed-out
+  /// case: the Profile tab omits its email row rather than rendering a blank,
+  /// so a test that wants the row has to say the account has an address.
+  String? email;
+
+  @override
+  String? get currentEmail => email;
+
   @override
   Future<void> signInWithPassword(String email, String password) async {
     lastEmail = email;
@@ -200,8 +251,89 @@ class StubDriverAuthRepository implements DriverAuthRepository {
   }
 
   @override
+  Future<void> signUp(String email, String password, String fullName) async {
+    signUpCalls++;
+    signUpEmail = email;
+    signUpPassword = password;
+    signUpName = fullName;
+    if (failWith != null) throw DriverAuthFailure(failWith!);
+    if (signUpReturnsNoSession) {
+      // The repository's own copy of this rule is in
+      // `SupabaseDriverAuthRepository.signUp`; the fake throws the same
+      // sentence rather than a bespoke one, so a test asserting on the text
+      // holds against both.
+      throw const DriverAuthFailure(
+        'Account created. Confirm the email we sent, then log in.',
+      );
+    }
+  }
+
+  @override
+  Future<void> signOut() async {
+    if (failSignOutWith != null) throw DriverAuthFailure(failSignOutWith!);
+    signedOut = true;
+  }
+
+  @override
   Future<void> signInWithGoogle() async {
     googlePressed = true;
     if (failWith != null) throw DriverAuthFailure(failWith!);
   }
 }
+
+/// A `LocationReader` that answers from fields rather than from the operating
+/// system.
+///
+/// `Geolocator` is a plugin: every call goes over a platform channel, and a test
+/// binding has no channel to answer on, so the real reader reports a missing
+/// plugin and nothing else. Every branch `LocationController` has -- service
+/// off, refused, refused permanently, no fix, failed -- has to be reachable, and
+/// a fake is the only way to reach them.
+class StubLocationReader implements LocationReader {
+  StubLocationReader({
+    this.serviceEnabled = true,
+    this.permission = LocationPermission.whileInUse,
+    this.requested = LocationPermission.whileInUse,
+    this.point = const GeoPoint(5.6037, -0.1870),
+    this.pointThrows,
+  });
+
+  bool serviceEnabled;
+  LocationPermission permission;
+
+  /// What [requestPermission] answers. Separate from [permission] because the
+  /// case worth testing is "denied, then the driver is asked and says yes".
+  LocationPermission requested;
+
+  GeoPoint? point;
+
+  /// Thrown by [currentPoint] when the test wants a failure or a timeout.
+  Object? pointThrows;
+
+  int checkCalls = 0;
+  int requestCalls = 0;
+  int pointCalls = 0;
+
+  @override
+  Future<bool> isServiceEnabled() async => serviceEnabled;
+
+  @override
+  Future<LocationPermission> checkPermission() async {
+    checkCalls++;
+    return permission;
+  }
+
+  @override
+  Future<LocationPermission> requestPermission() async {
+    requestCalls++;
+    return requested;
+  }
+
+  @override
+  Future<GeoPoint> currentPoint() async {
+    pointCalls++;
+    if (pointThrows != null) throw pointThrows!;
+    return point!;
+  }
+}
+

@@ -5,10 +5,21 @@ import 'package:flutter_screenutil/flutter_screenutil.dart';
 import 'package:mng_core/mng_core.dart';
 import 'package:provider/provider.dart';
 
+import '../auth/auth_controller.dart';
 import '../booking/choose_car_screen.dart';
 import '../booking/route_entry_sheet.dart';
+import '../bookings/bookings_controller.dart';
+import '../bookings/bookings_screen.dart';
+import '../chat/chat_controller.dart';
+import '../chat/chat_screen.dart';
+import '../data/chat_repository.dart';
+import '../data/location_service.dart';
+import '../data/profile_repository.dart';
 import '../data/trip_repository.dart';
 import '../home/home_screen.dart';
+import '../home/notifications_screen.dart';
+import '../profile/profile_controller.dart';
+import '../profile/profile_screen.dart';
 import '../tracking/finding_driver_screen.dart';
 import '../tracking/tracking_controller.dart';
 import '../tracking/tracking_screen.dart';
@@ -38,6 +49,13 @@ class _RiderShellState extends State<RiderShell> {
   Trip? _trip;
   Timer? _poll;
   bool _completing = false;
+
+  /// The rider's own position for the two map screens, read once when the
+  /// search sheet opens and once when a trip is booked. Held rather than read
+  /// inside the screens so a rider who declined permission sees the same
+  /// sentence on both, instead of one screen explaining itself and the other
+  /// being silent about it.
+  DeviceLocation? _location;
 
   static const _tabs = ['Home', 'Bookings', 'Chat', 'Profile'];
 
@@ -82,9 +100,17 @@ class _RiderShellState extends State<RiderShell> {
 
   Future<void> _openRouteEntry() async {
     final flow = context.read<RiderFlow>();
+    // Asked for before the sheet opens rather than inside it, so the permission
+    // dialog is not stacked under a modal bottom sheet on Android. A rider who
+    // says no still gets the sheet, with `kDefaultPickup` and the note that
+    // explains why — the sheet never blocks on this.
+    final reading = await context.read<TripRepository>().locate();
+    if (!mounted) return;
+    setState(() => _location = reading);
     await showRouteEntrySheet(
       context,
       calc: flow.calc,
+      pickup: reading.point == null ? null : pickupFromFix(reading.point!),
       onSubmit: (draft) => _openCarChoice(draft),
     );
   }
@@ -199,6 +225,7 @@ class _RiderShellState extends State<RiderShell> {
     } else if (_stage == _Stage.finding && trip != null) {
       body = FindingDriverScreen(
         trip: trip,
+        location: _location,
         onCancelSearch: _cancelTrip,
       );
     } else if (_stage == _Stage.tracking && trip != null) {
@@ -219,17 +246,68 @@ class _RiderShellState extends State<RiderShell> {
     );
   }
 
+  /// One of the four tabs, each with its own controller created here rather
+  /// than in `main.dart`.
+  ///
+  /// The repositories are app-wide, so they are provided once at the root. The
+  /// three per-screen controllers are not: each one owns a screen's own
+  /// loading state, and a single instance shared between two mounted copies of
+  /// the same tab would leave a stale list behind every time the tab was
+  /// rebuilt. They are also disposed with the tab, which is what stops a
+  /// bookings list from still holding yesterday's rows the moment the rider
+  /// signs out.
   Widget _tabBody() {
     switch (_tab) {
       case 0:
-        return HomeScreen(
-          nearby: kNearbyVehicles,
-          promoCode: kPromoCode,
-          onSearchTap: (_) => _openRouteEntry(),
+        return _home();
+      case 1:
+        return ChangeNotifierProvider<BookingsController>(
+          create: (c) => BookingsController(c.read<TripRepository>()),
+          child: const BookingsScreen(),
         );
+      case 2:
+        return ChangeNotifierProvider<ChatController>(
+          create: (c) => ChatController(
+            trips: c.read<TripRepository>(),
+            chat: c.read<ChatRepository>(),
+          )..selfId = c.read<AuthController>().uid,
+          child: const ChatScreen(),
+        );
+      case 3:
+        return ChangeNotifierProvider<RiderProfileController>(
+          create: (c) => RiderProfileController(c.read<ProfileRepository>()),
+          child: const ProfileScreen(),
+        );
+      // The nav builds an index from `_tabs` and nothing else assigns `_tab`,
+      // so this is unreachable. It falls back to home rather than throwing: a
+      // shell that dies on an impossible value takes the rider's session with
+      // it, and home is the one body that needs no provider of its own.
       default:
-        return _Placeholder(title: _tabs[_tab]);
+        return _home();
     }
+  }
+
+  Widget _home() => HomeScreen(
+        riderName: context.watch<RiderProfileController>().greetingName,
+        promoCode: kPromoCode,
+        onSearchTap: (_) => _openRouteEntry(),
+        onNotificationsTap: (_) => _openNotifications(),
+      );
+
+  Future<void> _openNotifications() async {
+    // Pushed with a bookings controller of its own rather than reusing the one
+    // the Bookings tab would build, so the list is read fresh when the bell is
+    // pressed and is not left holding whatever the bookings tab last fetched.
+    final bookings = BookingsController(context.read<TripRepository>())..load();
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => ChangeNotifierProvider<BookingsController>.value(
+          value: bookings,
+          child: const NotificationsScreen(),
+        ),
+      ),
+    );
+    bookings.dispose();
   }
 
   Widget _nav() {
@@ -286,42 +364,5 @@ class _RiderShellState extends State<RiderShell> {
       Icons.person_outline,
     ];
     return icons[index];
-  }
-}
-
-class _Placeholder extends StatelessWidget {
-  const _Placeholder({required this.title});
-
-  final String title;
-
-  @override
-  Widget build(BuildContext context) {
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(
-            Icons.construction_outlined,
-            size: 40,
-            color: MngColors.divider,
-          ),
-          SizedBox(height: 12.h),
-          Text(
-            title,
-            style: MngTheme.light.textTheme.titleMedium,
-          ),
-          SizedBox(height: 4.h),
-          Padding(
-            padding: EdgeInsets.symmetric(horizontal: 40.w),
-            child: Text(
-              'Not built yet. This round covers signing in, booking a ride '
-              'and taking the trip.',
-              textAlign: TextAlign.center,
-              style: MngTheme.light.textTheme.bodySmall,
-            ),
-          ),
-        ],
-      ),
-    );
   }
 }

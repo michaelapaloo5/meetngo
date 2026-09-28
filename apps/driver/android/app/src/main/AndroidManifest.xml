@@ -4,6 +4,14 @@
          hostname, and every Supabase call fails at DNS with "Failed host
          lookup ... OS Error: No address associated with hostname, errno = 7". -->
     <uses-permission android:name="android.permission.INTERNET"/>
+    <!-- The map and `match_offers_for_trip`. `driver_locations` has to hold a
+         row for this driver before the matcher will offer them a trip at all,
+         and nothing writes that row without a position from the device.
+         FINE is a GPS-grade fix for the pickup pin; COARSE is declared alongside
+         it because Android 12+ lets the user grant only the approximate one,
+         and a driver who does that still gets matched, just less precisely. -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>
     <application
         android:label="meetngo_driver"
         android:name="${applicationName}"

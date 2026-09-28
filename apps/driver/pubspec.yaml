@@ -51,6 +51,15 @@ dependencies:
   geolocator: ^13.0.1
   image_picker: ^1.1.2
   provider: ^6.1.2
+  # The map, on purpose OpenStreetMap raster tiles and not Google Maps.
+  # `google_maps_flutter` needs an API key, and an API key with Maps SDK for
+  # Android enabled is billed to a card. OSM's public tile servers need no key,
+  # no account and no billing, which is the only kind of thing this pilot can
+  # afford. `flutter_map` draws OpenStreetMap tiles; `latlong2` is its
+  # `LatLng` type, and `mng_core`'s `GeoPoint` is converted at the widget edge
+  # rather than in the shared package.
+  flutter_map: ^7.0.2
+  latlong2: ^0.9.1
 
 dev_dependencies:
   flutter_test:

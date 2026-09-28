@@ -5,6 +5,23 @@
          lookup ... OS Error: No address associated with hostname, errno = 7",
          which is what the first pilot build showed. -->
     <uses-permission android:name="android.permission.INTERNET"/>
+    <!-- Location. The pickup a rider is collected from is their real position:
+         `geolocator` reads it through the fused provider and the route sheet
+         uses it instead of a hardcoded Accra coordinate.
+
+         Both are declared because Android treats them as one user-facing
+         permission with two levels, and the OS dialog offers "Approximate" as
+         well as "Precise". An app that declares only `ACCESS_FINE_LOCATION`
+         is still granted approximate location when the rider picks it, and on
+         an API level that reports only the coarse grant the call can come back
+         denied. Declaring both is what makes the two answers the app then
+         branches on — denied once, or denied forever — reachable at all.
+
+         Neither is requested at install: `getCurrentPosition` needs a runtime
+         grant, and `LocationPermission` is what tells "not asked yet" from
+         "asked and refused", which are different screens to a rider. -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>
     <application
         android:label="meetngo_rider"
         android:name="${applicationName}"

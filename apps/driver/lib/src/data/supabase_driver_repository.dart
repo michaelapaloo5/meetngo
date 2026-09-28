@@ -5,6 +5,7 @@ import 'package:mng_core/mng_core.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'driver_repository.dart';
+import 'driver_trip.dart';
 import 'function_failure.dart';
 
 /// One model per row out of a realtime event.
@@ -274,6 +275,41 @@ class SupabaseDriverRepository implements DriverRepository {
         .limit(1);
     if (rows.isEmpty) return null;
     return Trip.fromJson(rows.first);
+  }
+
+  @override
+  Future<List<DriverTrip>> myTrips({int limit = 50}) async {
+    final uid = _uid;
+    // `created_at` rather than the enum: this list is ordered the way a driver
+    // remembers their work, and that is by day. A driver who took two trips in
+    // one afternoon must not see them in an order the database happened to
+    // return.
+    final List<dynamic> rows;
+    try {
+      rows = await _client
+          .from('trips')
+          .select('*')
+          .eq('driver_id', uid)
+          .order('created_at', ascending: false)
+          .limit(limit);
+    } on PostgrestException catch (e) {
+      throw DriverAuthFailure(e.message);
+    }
+    return rows
+        .map((row) => DriverTrip.fromRow(row as Map<String, dynamic>))
+        .toList();
+  }
+
+  @override
+  Future<Vehicle?> myVehicle() async {
+    final uid = _uid;
+    final rows = await _client
+        .from('vehicles')
+        .select('*')
+        .eq('owner_id', uid)
+        .limit(1);
+    if (rows.isEmpty) return null;
+    return Vehicle.fromJson(rows.first);
   }
 
   @override

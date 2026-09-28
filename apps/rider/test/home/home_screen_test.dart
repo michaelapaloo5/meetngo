@@ -6,21 +6,10 @@ import 'package:meetngo_rider/src/home/widgets/category_chips.dart';
 import 'package:meetngo_rider/src/home/widgets/promo_banner.dart';
 import 'package:mng_core/mng_core.dart';
 
-Vehicle vehicle(String id, RideCategory category, int seats) => Vehicle(
-      id: id,
-      ownerId: 'owner-$id',
-      category: VehicleCategory.sedan,
-      make: 'Toyota',
-      model: 'Corolla',
-      plate: 'GR-$id',
-      seats: seats,
-      photoUrl: '',
-      rideCategory: category,
-    );
-
 Widget wrap({
-  List<Vehicle> nearby = const [],
+  String? riderName = 'Alex',
   void Function(BuildContext context)? onSearchTap,
+  void Function(BuildContext context)? onNotificationsTap,
 }) =>
     ScreenUtilInit(
       designSize: const Size(390, 844),
@@ -29,9 +18,10 @@ Widget wrap({
       builder: (_, _) => MaterialApp(
         theme: MngTheme.light,
         home: HomeScreen(
-          nearby: nearby,
+          riderName: riderName,
           promoCode: 'RIDE30',
           onSearchTap: onSearchTap,
+          onNotificationsTap: onNotificationsTap,
         ),
       ),
     );
@@ -95,26 +85,64 @@ void main() {
     expect(find.text('Code RIDE30'), findsOneWidget);
   });
 
-  testWidgets('empty nearby list shows a friendly empty state', (tester) async {
+  // The "Available cars" section and the `kNearbyVehicles` constant behind it
+  // are gone: four seeded Toyotas, Nissans and a Mercedes with invented plates
+  // that are not rows in `vehicles` and are owned by nobody. These two tests
+  // replace the ones that listed them, and they assert the *absence*, which is
+  // a stronger claim than the presence they used to make -- a screen can only
+  // print a fake plate if the constant comes back.
+  testWidgets('no fake nearby-cars section is drawn', (tester) async {
     useDesignSurface(tester);
     await tester.pumpWidget(wrap());
-    expect(find.text('No cars nearby right now'), findsOneWidget);
+    expect(find.text('Available cars'), findsNothing);
+    expect(find.text('See all'), findsNothing);
+    expect(find.text('No cars nearby right now'), findsNothing);
+    expect(find.text('Toyota Corolla'), findsNothing);
+    expect(find.text('Nissan Note'), findsNothing);
+    expect(find.text('Mercedes-Benz C-Class'), findsNothing);
+    expect(find.text('Hyundai H100'), findsNothing);
+    // No seeded plate leaks through the ride picker either, and no car icon
+    // is drawn anywhere on the home screen.
+    expect(find.text('GR-1234-21'), findsNothing);
+    expect(find.text('GR-4417-22'), findsNothing);
+    expect(find.text('GR-9021-23'), findsNothing);
+    expect(find.text('GR-7788-24'), findsNothing);
+    expect(find.byIcon(Icons.directions_car), findsNothing);
+    expect(find.byType(ListTile), findsNothing);
   });
 
-  testWidgets('nearby cars are listed with category and seats', (tester) async {
+  testWidgets('the notification bell is live and reports its tap', (tester) async {
     useDesignSurface(tester);
-    await tester.pumpWidget(
-      wrap(nearby: [vehicle('v1', RideCategory.standard, 4)]),
-    );
-    expect(find.text('Toyota Corolla'), findsOneWidget);
-    expect(find.text('Standard · 4 seats'), findsOneWidget);
-    final avatar = tester.widget<Icon>(
-      find.descendant(
-        of: find.byType(CircleAvatar),
-        matching: find.byIcon(Icons.directions_car),
-      ),
-    );
-    expect(avatar.color, MngColors.onPrimary);
+    var taps = 0;
+    await tester.pumpWidget(wrap(onNotificationsTap: (_) => taps++));
+    final bell = find.byKey(const Key('notificationsButton'));
+    expect(bell, findsOneWidget);
+    // Not a bare `Icon`: an `Icon` with no `onPressed` is the dead control this
+    // replaces, and `IconButton` is what makes the tap real.
+    expect(find.byType(IconButton), findsOneWidget);
+    await tester.tap(bell);
+    await tester.pump();
+    expect(taps, 1);
+  });
+
+  testWidgets('the greeting names the signed-in rider', (tester) async {
+    useDesignSurface(tester);
+    await tester.pumpWidget(wrap(riderName: 'Adwoa'));
+    expect(find.textContaining('Adwoa'), findsOneWidget);
+    expect(find.textContaining('Alex'), findsNothing);
+  });
+
+  testWidgets('a blank rider name greets without a trailing comma',
+      (tester) async {
+    useDesignSurface(tester);
+    // `profiles.full_name` is `not null default ''`, so a blank name is a real
+    // value and the greeting must not render ", ".
+    for (final blank in [null, '', '   ']) {
+      await tester.pumpWidget(wrap(riderName: blank));
+      final text = tester.widget<Text>(find.byKey(const Key('greeting')));
+      expect(text.data, isNot(contains(',')), reason: '"${text.data}"');
+      expect(text.data!.startsWith('Good'), isTrue, reason: text.data!);
+    }
   });
 
   testWidgets('promo banner paints the 20px radius on the dark surface',
@@ -173,42 +201,24 @@ void main() {
     expect(label.style!.color, MngColors.onPrimary);
   });
 
-  testWidgets('a Van nearby avatar is legible against its own colour',
-      (tester) async {
-    useDesignSurface(tester);
-    await tester.pumpWidget(wrap(nearby: [vehicle('v1', RideCategory.van, 7)]));
-    final icon = tester.widget<Icon>(
-      find.descendant(
-        of: find.byType(CircleAvatar),
-        matching: find.byIcon(Icons.directions_car),
-      ),
-    );
-    expect(icon.color, MngColors.onPrimary);
-  });
-
-  testWidgets('a Premium nearby avatar is legible against its own colour',
-      (tester) async {
-    useDesignSurface(tester);
-    await tester.pumpWidget(
-      wrap(nearby: [vehicle('v1', RideCategory.premium, 4)]),
-    );
-    final icon = tester.widget<Icon>(
-      find.descendant(
-        of: find.byType(CircleAvatar),
-        matching: find.byIcon(Icons.directions_car),
-      ),
-    );
-    expect(icon.color, MngColors.page);
-  });
-
   testWidgets('the home screen has no overflow at 200% text scale',
       (tester) async {
     useDesignSurface(tester);
     tester.platformDispatcher.textScaleFactorTestValue = 2.0;
     addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
-    await tester.pumpWidget(wrap(
-      nearby: [vehicle('v1', RideCategory.van, 7)],
-    ));
+    await tester.pumpWidget(wrap());
     expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('a long rider name does not overflow the greeting row',
+      (tester) async {
+    useDesignSurface(tester);
+    // The greeting sits beside the bell, so an unbroken name is the case that
+    // would push the bell off a 390-wide row.
+    await tester.pumpWidget(
+      wrap(riderName: 'Kwabenantenomaa-Boateng-Sarpong'),
+    );
+    expect(tester.takeException(), isNull);
+    expect(find.byKey(const Key('notificationsButton')), findsOneWidget);
   });
 }

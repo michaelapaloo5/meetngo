@@ -2,6 +2,8 @@ import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:meetngo_rider/src/data/trip_functions.dart';
+import 'package:meetngo_rider/src/data/booked_trip.dart';
+import 'package:meetngo_rider/src/data/location_service.dart';
 import 'package:meetngo_rider/src/data/trip_repository.dart';
 import 'package:meetngo_rider/src/trip/trip_controller.dart';
 import 'package:mng_core/mng_core.dart';
@@ -83,6 +85,13 @@ class FakeTripFunctions implements TripFunctions {
 }
 
 class FakeTripRepository implements TripRepository {
+
+  @override
+  Future<List<BookedTrip>> history({int limit = 50}) async => const [];
+
+  @override
+  Future<DeviceLocation> locate() async =>
+      const DeviceLocation(LocationOutcome.denied);
   /// Thrown by `activeTrip` when set.
   Object? refreshFailure;
 

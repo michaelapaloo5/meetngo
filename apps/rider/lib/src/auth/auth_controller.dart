@@ -8,6 +8,12 @@ class AuthController extends ChangeNotifier {
   bool busy = false;
   String? error;
 
+  /// The signed-in account's address, or null when signed out.
+  String? get email => _repo.email;
+
+  /// The signed-in account's uuid, or null when signed out.
+  String? get uid => _repo.uid;
+
   Future<bool> submitPassword(String email, String password) async {
     error = null;
     if (email.isEmpty) {
@@ -94,5 +100,18 @@ class AuthController extends ChangeNotifier {
       busy = false;
       notifyListeners();
     }
+  }
+
+  /// Ends the session.
+  ///
+  /// Deliberately reports nothing on failure. `_AuthGate` swaps the shell for
+  /// the login screen off `onAuthStateChange`, which GoTrue fires as soon as
+  /// the local session is cleared and before the token revoke is attempted, so
+  /// the rider is already back at sign-in by the time this returns. Setting
+  /// [error] here would paint a red line on the *login* screen about a
+  /// failure in a screen the rider has already left.
+  Future<void> signOut() async {
+    error = null;
+    await _repo.signOut();
   }
 }

@@ -7,11 +7,17 @@ import 'package:provider/provider.dart';
 
 import '../active_trip/active_trip_controller.dart';
 import '../active_trip/active_trip_screen.dart';
+import '../auth/driver_auth_controller.dart';
+import '../data/driver_auth_repository.dart';
+import '../data/driver_repository.dart';
 import '../earnings/earnings_controller.dart';
 import '../earnings/wallet_screen.dart';
 import '../onboarding/kyc_controller.dart';
 import '../onboarding/kyc_screen.dart';
 import '../offers/driver_home_screen.dart';
+import '../profile/driver_profile_screen.dart';
+import '../trips/trips_controller.dart';
+import '../trips/trips_screen.dart';
 import 'driver_flow.dart';
 
 /// The driver's frame: the four bottom-nav tabs, and the flow that runs over
@@ -47,6 +53,8 @@ class _DriverShellState extends State<DriverShell> {
   StreamSubscription<Offer>? _offerWatch;
   KycController? _kyc;
   EarningsController? _earnings;
+  TripsController? _trips;
+  Vehicle? _vehicle;
 
   @override
   void initState() {
@@ -57,6 +65,11 @@ class _DriverShellState extends State<DriverShell> {
   Future<void> _boot() async {
     if (!mounted) return;
     final flow = context.read<DriverFlow>();
+    // Not awaited, and first: the map on the home tab and the pin on the live
+    // trip are both waiting on it, and a phone can take twenty seconds to find
+    // a satellite. Awaiting it here would hold the first frame for twenty
+    // seconds on a spinner.
+    unawaited(flow.refreshLocation());
     await flow.load();
     if (!mounted) return;
     flow.startProfileWatch();
@@ -155,6 +168,7 @@ class _DriverShellState extends State<DriverShell> {
     _offerWatch = null;
     _kyc?.dispose();
     _earnings?.dispose();
+    _trips?.dispose();
     super.dispose();
   }
 
@@ -184,7 +198,10 @@ class _DriverShellState extends State<DriverShell> {
     if (_stage == _Stage.trip) {
       return ChangeNotifierProvider<ActiveTripController>.value(
         value: flow.activeTrip,
-        child: ActiveTripScreen(onFinished: _finishTrip),
+        child: ActiveTripScreen(
+          onFinished: _finishTrip,
+          location: flow.location,
+        ),
       );
     }
 
@@ -201,7 +218,16 @@ class _DriverShellState extends State<DriverShell> {
           availability: flow.availability,
           offers: flow.offers,
           profile: flow.profile,
+          location: flow.location,
           onAccepted: _onOfferAccepted,
+        );
+      case 1:
+        // Provided rather than passed in, exactly as the wallet is: the list is
+        // reloaded on every visit to the tab, so the controller has to outlive
+        // the screen that reads it.
+        return ChangeNotifierProvider<TripsController>.value(
+          value: _tripsFor(flow),
+          child: const TripsScreen(),
         );
       case 2:
         final earnings = _earningsFor(flow);
@@ -209,13 +235,62 @@ class _DriverShellState extends State<DriverShell> {
           value: earnings,
           child: const WalletScreen(),
         );
+      case 3:
+        return DriverProfileScreen(
+          profile: flow.profile,
+          email: context.read<DriverAuthRepository>().currentEmail,
+          vehicle: _vehicleFor(flow),
+          busy: context.watch<DriverAuthController>().busy,
+          onSignOut: _signOut,
+        );
       default:
-        return _Placeholder(title: _tabs[_tab]);
+        return const SizedBox.shrink();
     }
   }
 
   EarningsController _earningsFor(DriverFlow flow) =>
       _earnings ??= EarningsController(flow.earnings);
+
+  TripsController _tripsFor(DriverFlow flow) =>
+      _trips ??= TripsController(flow.drivers);
+
+  /// The driver's one vehicle, read once per shell and kept.
+  ///
+  /// A `FutureBuilder` here would re-read on every rebuild, and this screen
+  /// rebuilds on every availability change. The row cannot change underneath
+  /// the driver -- a vehicle is added during onboarding, and the KYC gate means
+  /// a driver who has not added one never reaches this tab -- so one read per
+  /// session is the whole story.
+  Vehicle? _vehicleFor(DriverFlow flow) {
+    if (_readVehicle) return _vehicle;
+    _readVehicle = true;
+    unawaited(_loadVehicle(flow));
+    return _vehicle;
+  }
+
+  bool _readVehicle = false;
+
+  Future<void> _loadVehicle(DriverFlow flow) async {
+    try {
+      final vehicle = await flow.drivers.myVehicle();
+      if (!mounted || vehicle == null) return;
+      setState(() => _vehicle = vehicle);
+    } on DriverAuthFailure catch (e) {
+      _toast(e.message);
+    }
+  }
+
+  /// Ends the session.
+  ///
+  /// Handled by the auth controller rather than by `Supabase.instance` so the
+  /// failure has somewhere to go: a refused sign-out that is swallowed leaves
+  /// the driver looking at a Profile tab that no longer signs them out.
+  Future<void> _signOut() async {
+    final auth = context.read<DriverAuthController>();
+    if (await auth.submitSignOut()) return;
+    if (!mounted) return;
+    _toast(auth.error ?? 'Could not sign out');
+  }
 
   Widget _nav(DriverFlow flow) {
     return Container(
@@ -267,7 +342,11 @@ class _DriverShellState extends State<DriverShell> {
 
   void _selectTab(DriverFlow flow, int index) {
     setState(() => _tab = index);
-    if (index == 2) _earningsFor(flow).load();
+    // The two tabs that read from the server are read on arrival rather than
+    // on first build, so a driver who never opens Trips never pays for the
+    // query and a driver who does sees today's figures.
+    if (index == 1) unawaited(_tripsFor(flow).load());
+    if (index == 2) unawaited(_earningsFor(flow).load());
   }
 
   IconData _iconFor(int index) {
@@ -278,39 +357,5 @@ class _DriverShellState extends State<DriverShell> {
       Icons.person_outline,
     ];
     return icons[index];
-  }
-}
-
-class _Placeholder extends StatelessWidget {
-  const _Placeholder({required this.title});
-
-  final String title;
-
-  @override
-  Widget build(BuildContext context) {
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(
-            Icons.construction_outlined,
-            size: 40,
-            color: MngColors.divider,
-          ),
-          SizedBox(height: 12.h),
-          Text(title, style: MngTheme.light.textTheme.titleMedium),
-          SizedBox(height: 4.h),
-          Padding(
-            padding: EdgeInsets.symmetric(horizontal: 40.w),
-            child: Text(
-              'Not built yet. This round covers verification, going online, '
-              'taking a trip and the earnings wallet.',
-              textAlign: TextAlign.center,
-              style: MngTheme.light.textTheme.bodySmall,
-            ),
-          ),
-        ],
-      ),
-    );
   }
 }

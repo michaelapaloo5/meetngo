@@ -1,12 +1,16 @@
-import 'package:geolocator/geolocator.dart';
 import 'package:mng_core/mng_core.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'booked_trip.dart';
 import 'function_failure.dart';
+import 'location_service.dart';
 import 'trip_repository.dart';
 
 class SupabaseTripRepository implements TripRepository {
-  SupabaseTripRepository(this._client);
+  SupabaseTripRepository(this._client, {LocationService? locations})
+      : _locations = locations ?? const GeolocatorLocationService();
+
   final SupabaseClient _client;
+  final LocationService _locations;
 
   @override
   Future<Trip?> activeTrip() async {
@@ -51,6 +55,27 @@ class SupabaseTripRepository implements TripRepository {
       .stream(primaryKey: ['id'])
       .eq('id', tripId)
       .map((rows) => Trip.fromJson(rows.first));
+
+  @override
+  Future<List<BookedTrip>> history({int limit = 50}) async {
+    final user = _client.auth.currentUser;
+    if (user == null) return const [];
+    // Same two-arm RLS problem `activeTrip` documents, and the same fix. The
+    // `rider_id` filter is what makes the name true: without it a rider who is
+    // also the assigned driver on someone else's trip matches the driver arm
+    // and that trip sorts into their history by recency.
+    //
+    // `limit` is bound by the caller-supplied value, so it is clamped rather
+    // than passed through: an unbounded `.select()` on a rider with a long
+    // history is a response the phone cannot hold, and this is a list view.
+    final rows = await _client
+        .from('trips')
+        .select()
+        .eq('rider_id', user.id)
+        .order('created_at', ascending: false)
+        .limit(limit.clamp(1, 200));
+    return rows.map(BookedTrip.fromRow).toList();
+  }
 
   @override
   Future<Trip> requestRide({
@@ -98,18 +123,12 @@ class SupabaseTripRepository implements TripRepository {
   }
 
   @override
+  Future<DeviceLocation> locate() => _locations.current();
+
+  @override
   Future<GeoPoint?> currentLocation() async {
-    if (!await Geolocator.isLocationServiceEnabled()) return null;
-    var permission = await Geolocator.checkPermission();
-    if (permission == LocationPermission.denied) {
-      permission = await Geolocator.requestPermission();
-    }
-    if (permission == LocationPermission.denied ||
-        permission == LocationPermission.deniedForever) {
-      return null;
-    }
-    final pos = await Geolocator.getCurrentPosition();
-    return GeoPoint(pos.latitude, pos.longitude);
+    final reading = await _locations.current();
+    return reading.point;
   }
 
   @override

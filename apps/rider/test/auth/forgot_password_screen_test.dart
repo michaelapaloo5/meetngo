@@ -6,6 +6,15 @@ import 'package:meetngo_rider/src/data/auth_repository.dart';
 import 'package:provider/provider.dart';
 
 class SpyAuthRepository implements AuthRepository {
+
+  @override
+  String? get email => null;
+
+  @override
+  String? get uid => null;
+
+  @override
+  Future<void> signOut() async {}
   final sent = <String>[];
   String? failure;
 

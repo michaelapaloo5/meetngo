@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mng_core/mng_core.dart';
+import 'package:meetngo_driver/src/location/location_controller.dart';
 import 'package:meetngo_driver/src/offers/availability_controller.dart';
 import 'package:meetngo_driver/src/offers/driver_home_screen.dart';
 import 'package:meetngo_driver/src/offers/offer_queue_controller.dart';
@@ -8,11 +9,19 @@ import 'package:meetngo_driver/src/offers/offer_queue_controller.dart';
 import '../support/fakes.dart';
 import '../support/harness.dart';
 
+/// The home tab now carries the map, so it needs a [LocationController]. The
+/// stub reader is asked for no fix: what these tests are about is the toggle,
+/// and a location panel that quietly reported a fix would be a second thing
+/// being asserted by accident.
 Widget home(AvailabilityController availability, StubDriverRepository repo) =>
     DriverHomeScreen(
       availability: availability,
       offers: OfferQueueController(repo),
       profile: driverProfile(),
+      location: LocationController(
+        StubLocationReader(pointThrows: 'no fix'),
+        repo,
+      ),
     );
 
 void main() {

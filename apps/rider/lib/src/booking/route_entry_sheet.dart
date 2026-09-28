@@ -15,23 +15,45 @@ class RouteDraft {
   final RideCategory category;
 }
 
-/// Accra defaults used until live geocoding lands. Both are real coordinates
-/// inside the pilot area so the demo route renders on the map.
+/// Accra defaults used when the rider's own position is not available.
+///
+/// Both are real coordinates inside the pilot area so a route drafted without
+/// a location fix still renders on the map. `kDefaultPickup` is the fallback
+/// for "the rider declined or has no fix", not the normal path: the shell asks
+/// the OS for a fix first and passes the answer in.
 const kDefaultPickup =
     TripStop('Pickup', GeoPoint(5.6037, -0.1870), 'Osu, Accra');
 const kDefaultDropoff =
     TripStop('Dropoff', GeoPoint(5.6052, -0.1660), 'Airport Residential, Accra');
 
+/// A pickup built from a real device fix.
+///
+/// There is no reverse geocoder in this build, so the address is the
+/// coordinate itself rather than a street name. Saying "5.6037, -0.1870" is
+/// worse copy than "Osu, Accra" and it is still more honest than the reverse —
+/// the rider can see it is a coordinate, and the map below it is drawn from the
+/// same two numbers.
+TripStop pickupFromFix(GeoPoint point) => TripStop(
+      'Pickup',
+      point,
+      '${point.lat.toStringAsFixed(4)}, ${point.lng.toStringAsFixed(4)}',
+    );
+
 Future<void> showRouteEntrySheet(
   BuildContext context, {
   required FareCalculator calc,
   required void Function(RouteDraft draft) onSubmit,
+  TripStop? pickup,
 }) {
   return showModalBottomSheet<void>(
     context: context,
     isScrollControlled: true,
     useSafeArea: true,
-    builder: (_) => RouteEntrySheet(calc: calc, onSubmit: onSubmit),
+    builder: (_) => RouteEntrySheet(
+      calc: calc,
+      onSubmit: onSubmit,
+      pickup: pickup,
+    ),
   );
 }
 
@@ -40,17 +62,24 @@ class RouteEntrySheet extends StatefulWidget {
     super.key,
     required this.calc,
     required this.onSubmit,
+    this.pickup,
   });
 
   final FareCalculator calc;
   final void Function(RouteDraft draft) onSubmit;
+
+  /// Where the rider is, when the OS said so. Null falls back to
+  /// [kDefaultPickup] rather than refusing to open, because a rider who
+  /// refused location permission can still book a ride from a remembered
+  /// pickup, and a sheet that will not open is a worse answer than a default.
+  final TripStop? pickup;
 
   @override
   State<RouteEntrySheet> createState() => _RouteEntrySheetState();
 }
 
 class _RouteEntrySheetState extends State<RouteEntrySheet> {
-  final TripStop _pickup = kDefaultPickup;
+  late final TripStop _pickup = widget.pickup ?? kDefaultPickup;
   final TripStop _dropoff = kDefaultDropoff;
   RideCategory _category = RideCategory.standard;
 

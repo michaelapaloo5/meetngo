@@ -7,6 +7,12 @@ class SupabaseAuthRepository implements AuthRepository {
   final SupabaseClient _client;
 
   @override
+  String? get email => _client.auth.currentUser?.email;
+
+  @override
+  String? get uid => _client.auth.currentUser?.id;
+
+  @override
   Future<void> signInWithPassword(String email, String password) async {
     try {
       await _client.auth.signInWithPassword(email: email, password: password);
@@ -103,6 +109,9 @@ class SupabaseAuthRepository implements AuthRepository {
       await _discardTemporarySession();
     }
   }
+
+  @override
+  Future<void> signOut() => _discardTemporarySession();
 
   /// Signing out is cleanup, and cleanup must not be able to change the answer.
   ///

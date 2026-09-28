@@ -1,5 +1,6 @@
 import 'package:flutter/foundation.dart';
 import 'package:mng_core/mng_core.dart';
+import '../data/location_service.dart';
 import '../data/trip_repository.dart';
 
 /// What the tracking screen reads and what every button on it calls.
@@ -40,6 +41,22 @@ class TrackingController extends ChangeNotifier {
   bool sosRaised = false;
   String? error;
 
+  /// The device's last known position, for the map's "you are here" pin and
+  /// its rider-facing note when there is no fix.
+  ///
+  /// Null until the first [refresh], and null on a trip screen is not a bug:
+  /// the map is still correct, because it is fitted to the trip's own pickup
+  /// and dropoff rather than to the rider. Kept separate from [error] on
+  /// purpose — a refused location permission is not a failed trip, and putting
+  /// it in [error] would paint a live ride's screen red for something the
+  /// rider can fix in Settings without the ride being affected.
+  DeviceLocation? location;
+
+  /// How many times [refresh] has run. The location read is skipped until the
+  /// trip read has succeeded, because asking the OS for a fix before the map
+  /// has anything to draw it on spends a permission prompt on nothing.
+  bool _tripReadAtLeastOnce = false;
+
   /// The message for a call that never reached the server. `raiseSos` and
   /// `activeTrip` are direct PostgREST requests, so a dropped connection
   /// surfaces as the raw exception postgrest does not convert, and naming that
@@ -70,13 +87,30 @@ class TrackingController extends ChangeNotifier {
         // the whole of the old behaviour and they were never read off anything.
         etaMinutes = fresh.etaMinutes;
       }
+      _tripReadAtLeastOnce = true;
     } on Exception catch (e) {
       // The trip on screen is left as it was: a failed read is not evidence
       // about the trip, and replacing it with nothing would take the screen's
       // whole reason to exist away.
       _report(e);
     }
+    if (_tripReadAtLeastOnce) await _readLocation();
     notifyListeners();
+  }
+
+  /// Reads the device position for the map.
+  ///
+  /// Every failure is swallowed on purpose and the previous reading is kept:
+  /// a location that cannot be read is a map without a blue dot, and the trip
+  /// underneath it is unaffected. Letting a `SocketException` or a platform
+  /// channel error out of here would reach the framework as an unhandled async
+  /// error on a screen the rider is relying on to find their car.
+  Future<void> _readLocation() async {
+    try {
+      location = await trips.locate();
+    } on Object {
+      // Left as it was.
+    }
   }
 
   Future<void> cancel() async {

@@ -7,14 +7,24 @@ import 'widgets/promo_banner.dart';
 class HomeScreen extends StatefulWidget {
   const HomeScreen({
     super.key,
-    required this.nearby,
+    required this.riderName,
     required this.promoCode,
     this.onSearchTap,
+    this.onNotificationsTap,
   });
 
-  final List<Vehicle> nearby;
+  /// The signed-in rider's own first name.
+  ///
+  /// Null or blank when `profiles.full_name` is empty, which is a real value
+  /// for every account created before sign-up began persisting it, and also
+  /// when the profile row has not loaded or could not be read. The greeting
+  /// falls back rather than rendering ", ", because a screen that greets a
+  /// rider with a comma is worse than one that does not name them.
+  final String? riderName;
+
   final String promoCode;
   final void Function(BuildContext context)? onSearchTap;
+  final void Function(BuildContext context)? onNotificationsTap;
 
   @override
   State<HomeScreen> createState() => _HomeScreenState();
@@ -32,6 +42,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final name = widget.riderName?.trim() ?? '';
     return Scaffold(
       body: SafeArea(
         child: SingleChildScrollView(
@@ -45,15 +56,25 @@ class _HomeScreenState extends State<HomeScreen> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text('$_greeting, Alex',
-                            style: MngTheme.light.textTheme.titleLarge),
+                        Text(
+                          name.isEmpty ? _greeting : '$_greeting, $name',
+                          key: const Key('greeting'),
+                          style: MngTheme.light.textTheme.titleLarge,
+                        ),
                         SizedBox(height: 2.h),
-                        Text('Osu, Accra, Ghana',
-                            style: MngTheme.light.textTheme.bodySmall),
+                        Text(
+                          'Osu, Accra, Ghana',
+                          style: MngTheme.light.textTheme.bodySmall,
+                        ),
                       ],
                     ),
                   ),
-                  const Icon(Icons.notifications_none),
+                  IconButton(
+                    key: const Key('notificationsButton'),
+                    onPressed: () => widget.onNotificationsTap?.call(context),
+                    icon: const Icon(Icons.notifications_none),
+                    tooltip: 'Notifications',
+                  ),
                 ],
               ),
               SizedBox(height: 20.h),
@@ -91,39 +112,17 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
               SizedBox(height: 8.h),
               PromoBanner(code: widget.promoCode),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Flexible(
-                    child: Text('Available cars',
-                        style: MngTheme.light.textTheme.titleMedium),
-                  ),
-                  SizedBox(width: 8.w),
-                  Text('See all', style: MngTheme.light.textTheme.bodySmall),
-                ],
-              ),
-              SizedBox(height: 12.h),
-              if (widget.nearby.isEmpty)
-                Padding(
-                  padding: EdgeInsets.symmetric(vertical: 40.h),
-                  child: Center(
-                    child: Text('No cars nearby right now',
-                        style: MngTheme.light.textTheme.bodySmall),
-                  ),
-                )
-              else
-                for (final v in widget.nearby)
-                  ListTile(
-                    contentPadding: EdgeInsets.zero,
-                    leading: CircleAvatar(
-                      backgroundColor: v.rideCategory.color,
-                      child: Icon(Icons.directions_car,
-                          color: onCategoryColor(v.rideCategory)),
-                    ),
-                    title: Text(v.displayName),
-                    subtitle: Text('${v.rideCategory.label} · ${v.seats} seats'),
-                  ),
+              // No "Available cars" section, and nothing put in its place.
+              // The list it used to draw came from `kNearbyVehicles`, a
+              // constant in `rider_flow.dart`: four seeded Toyotas, Nissans
+              // and a Mercedes with invented plates, none of which is a row in
+              // `vehicles` and none of which any driver owns. It was not "the
+              // cars near you", it was four strings. `request-ride` matches
+              // against `driver_locations` on the server, so this build has no
+              // client-side source of real nearby cars at all, and the only
+              // honest thing to do with the space is to leave it empty. The
+              // fare quoted after a search tap is computed by
+              // `FareCalculator` from the drafted distance, not invented.
             ],
           ),
         ),

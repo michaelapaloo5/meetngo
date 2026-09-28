@@ -9,6 +9,15 @@ import 'package:mng_core/mng_core.dart';
 import 'package:provider/provider.dart';
 
 class FakeAuthRepository implements AuthRepository {
+
+  @override
+  String? get email => null;
+
+  @override
+  String? get uid => null;
+
+  @override
+  Future<void> signOut() async {}
   String? lastEmail;
   String? lastPassword;
   bool googlePressed = false;

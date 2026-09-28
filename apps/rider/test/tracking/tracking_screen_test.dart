@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:meetngo_rider/src/data/booked_trip.dart';
+import 'package:meetngo_rider/src/data/location_service.dart';
 import 'package:meetngo_rider/src/data/trip_repository.dart';
 import 'package:meetngo_rider/src/tracking/finding_driver_screen.dart';
 import 'package:meetngo_rider/src/tracking/tracking_controller.dart';
@@ -51,6 +53,13 @@ class FakeTransportException implements Exception {
 }
 
 class FakeTripRepository implements TripRepository {
+
+  @override
+  Future<List<BookedTrip>> history({int limit = 50}) async => const [];
+
+  @override
+  Future<DeviceLocation> locate() async =>
+      const DeviceLocation(LocationOutcome.denied);
   bool cancelled = false;
   bool sosRaised = false;
   String? cancelledTripId;

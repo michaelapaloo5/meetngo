@@ -6,6 +6,8 @@ import 'package:mng_core/mng_core.dart';
 import '../active_trip/active_trip_controller.dart';
 import '../data/driver_repository.dart';
 import '../earnings/earnings_repository.dart';
+import '../location/location_controller.dart';
+import '../location/location_reader.dart';
 import '../offers/availability_controller.dart';
 import '../offers/offer_queue_controller.dart';
 
@@ -25,11 +27,23 @@ import '../offers/offer_queue_controller.dart';
 /// inside a screen and thrown away with it: the toggle's state is the driver's,
 /// not the home tab's, and a controller rebuilt on every rebuild would drop an
 /// in-flight request and a pending error.
+///
+/// [LocationController] lives here for the same reason and one more: a fix is
+/// the driver's, not a screen's, so both the home tab and the live trip read
+/// the same one, and a driver who goes offline and back online does not have to
+/// wait for a second fix. [locationReader] is a constructor argument so the
+/// whole flow can be driven by a fake -- `Geolocator` is a plugin, and a test
+/// binding has no channel to answer on.
 class DriverFlow extends ChangeNotifier {
-  DriverFlow({required this.drivers, required this.earnings});
+  DriverFlow({
+    required this.drivers,
+    required this.earnings,
+    LocationReader? locationReader,
+  }) : _locationReader = locationReader ?? const GeolocatorLocationReader();
 
   final DriverRepository drivers;
   final EarningsRepository earnings;
+  final LocationReader _locationReader;
 
   DriverProfile? profile;
   bool loading = false;
@@ -46,6 +60,7 @@ class DriverFlow extends ChangeNotifier {
   AvailabilityController? _availability;
   OfferQueueController? _offers;
   ActiveTripController? _activeTrip;
+  LocationController? _location;
 
   AvailabilityController get availability =>
       _availability ??= AvailabilityController(drivers);
@@ -54,6 +69,16 @@ class DriverFlow extends ChangeNotifier {
 
   ActiveTripController get activeTrip =>
       _activeTrip ??= ActiveTripController(drivers);
+
+  LocationController get location =>
+      _location ??= LocationController(_locationReader, drivers);
+
+  /// Asks the operating system where the driver is.
+  ///
+  /// A convenience over [location] and [refresh] so the shell has one call to
+  /// make, and deliberately not awaited by the caller: a phone that takes
+  /// twenty seconds to find a satellite must not hold the first frame.
+  Future<void> refreshLocation() => location.refresh();
 
   /// Reads the profile, seeds the availability toggle, and reconciles a stored
   /// `onTrip` that no longer has a trip behind it.
@@ -142,6 +167,7 @@ class DriverFlow extends ChangeNotifier {
     _availability?.dispose();
     _offers?.dispose();
     _activeTrip?.dispose();
+    _location?.dispose();
     super.dispose();
   }
 }

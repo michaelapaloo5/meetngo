@@ -1,8 +1,11 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mng_core/mng_core.dart';
+import 'package:meetngo_driver/src/data/driver_trip.dart';
 import 'package:meetngo_driver/src/earnings/earnings_repository.dart';
+import 'package:meetngo_driver/src/map/driver_map_panel.dart';
 
 /// Puts a widget test on the device this app is designed for.
 ///
@@ -15,10 +18,19 @@ import 'package:meetngo_driver/src/earnings/earnings_repository.dart';
 /// wrapped off the widget. Every test that renders a screen calls this first.
 ///
 /// 1170x2532 at 3.0 is 390x844 logical, the design size in `main.dart`.
+///
+/// Also points the map at [StubTileProvider]. The home tab and the live trip both
+/// render a `DriverMapPanel`, and without this every test that reaches either
+/// one fails for a reason that has nothing to do with what it is testing:
+/// `flutter_test` answers every HTTP request with an empty 400, `NetworkImage`
+/// turns that into a load exception, and an `Image` with no `errorBuilder`
+/// reports it to `FlutterError.onError`.
 void useDesignSurface(WidgetTester tester) {
   tester.view.physicalSize = const Size(1170, 2532);
   tester.view.devicePixelRatio = 3.0;
+  DriverMapPanel.tileProviderOverride = () => StubTileProvider();
   addTearDown(tester.view.reset);
+  addTearDown(() => DriverMapPanel.tileProviderOverride = null);
 }
 
 /// [ScreenUtilInit] around [child] with the app's theme and no chrome.
@@ -119,3 +131,71 @@ LedgerEntry ledgerEntry(
       note: '',
       createdAt: createdAt ?? DateTime(2026, 9, 27),
     );
+
+/// A trip history row with both timestamps filled in.
+///
+/// The trips tab is the only place `created_at`, `started_at` and
+/// `completed_at` are read, and `TripStop` has no value equality -- so a test
+/// that wanted to compare two `Trip`s would compare identities and pass or fail
+/// for the wrong reason. Assert on `.address` and `.point`.
+DriverTrip driverTrip({
+  String id = 't1',
+  TripState state = TripState.completed,
+  double fareGhs = 12.50,
+  DateTime? createdAt,
+  DateTime? completedAt,
+  String pickupLabel = 'Osu Junction',
+  String dropoffLabel = 'Airport Residential',
+}) {
+  final created = createdAt ?? DateTime(2026, 9, 27, 9, 5);
+  return DriverTrip(
+    trip: tripIn(
+      state,
+      id: id,
+      pickupLabel: pickupLabel,
+      dropoffLabel: dropoffLabel,
+      fareGhs: fareGhs,
+    ),
+    createdAt: created,
+    startedAt: created,
+    completedAt: completedAt ?? created.add(const Duration(minutes: 24)),
+  );
+}
+
+/// The vehicle a driver owns in the Profile test.
+Vehicle driverVehicle({
+  String make = 'Toyota',
+  String model = 'Corolla',
+  String plate = 'GR-1234-25',
+  int seats = 4,
+}) =>
+    Vehicle(
+      id: 'v1',
+      ownerId: 'd1',
+      category: VehicleCategory.sedan,
+      make: make,
+      model: model,
+      plate: plate,
+      seats: seats,
+      photoUrl: '',
+      rideCategory: RideCategory.standard,
+    );
+
+/// Tiles that never touch the network.
+///
+/// `TileLayer` otherwise builds a `NetworkTileProvider`, and a widget test has
+/// no network: the build host has ~40 MB free and the test binding's HTTP
+/// override answers 400 for everything, so every tile would be a failed request
+/// logged during a test whose subject is something else. A transparent 1x1 PNG
+/// is a real `ImageProvider`, so `TileLayer` takes its normal code path.
+class StubTileProvider extends TileProvider {
+  StubTileProvider();
+
+  @override
+  ImageProvider<Object> getImage(
+    TileCoordinates coordinates,
+    TileLayer options,
+  ) =>
+      MemoryImage(TileProvider.transparentImage);
+}
+

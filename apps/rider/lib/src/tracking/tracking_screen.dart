@@ -1,13 +1,18 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
+import 'package:flutter_map/flutter_map.dart';
 import 'package:mng_core/mng_core.dart';
 import 'package:provider/provider.dart';
+import '../map/ride_map.dart';
 import 'tracking_controller.dart';
 import 'widgets/driver_summary.dart';
 import 'widgets/eta_badge.dart';
 
 class TrackingScreen extends StatelessWidget {
-  const TrackingScreen({super.key});
+  const TrackingScreen({super.key, this.tileProvider});
+
+  /// Null in the app and a silent provider in the tests. See [RideMap.tileProvider].
+  final TileProvider? tileProvider;
 
   static const _headlines = <TripState, String>{
     TripState.requested: 'Finding your driver',
@@ -57,18 +62,27 @@ class TrackingScreen extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-            // Map placeholder: the Google Maps widget is dropped into this
-            // Container in the integration pass. Keeping the box fixed means
-            // the widget tests never need a platform view.
-            Container(
-              height: 280.h,
-              margin: EdgeInsets.symmetric(horizontal: 20.w),
-              decoration: BoxDecoration(
-                color: MngColors.muted,
-                borderRadius: BorderRadius.circular(MngRadius.large),
-              ),
-              child: const Center(child: Icon(Icons.map, size: 40)),
-            ),
+            // The real map. This box used to be a flat `MngColors.muted`
+            // rectangle with a map icon in it and a comment saying the widget
+            // would be "dropped in" later; `RideMap` is that widget, drawing
+            // OpenStreetMap raster tiles with the pickup and dropoff pinned and
+            // a line between them, fitted to both.
+            //
+            // `tileProvider` is null here, so the real network provider is
+            // used. The seam exists for the tests, which would otherwise make
+            // one doomed HTTP request per visible tile per pump.
+                    Padding(
+                      padding: EdgeInsets.symmetric(horizontal: 20.w),
+                      child: RideMap(
+                        key: const Key('trackingMap'),
+                        pickup: trip.pickup.point,
+                        dropoff: trip.dropoff.point,
+                        location: c.location,
+                        height: 280,
+                        tileProvider: tileProvider,
+                      ),
+                    ),
+
             SizedBox(height: 20.h),
             Padding(
               padding: EdgeInsets.symmetric(horizontal: 20.w),

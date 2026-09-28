@@ -11,10 +11,16 @@ import 'src/auth/auth_controller.dart';
 import 'src/auth/login_screen.dart';
 import 'src/auth/splash_screen.dart';
 import 'src/data/auth_repository.dart';
+import 'src/data/chat_repository.dart';
+import 'src/data/location_service.dart';
+import 'src/data/profile_repository.dart';
 import 'src/data/supabase_auth_repository.dart';
+import 'src/data/supabase_chat_repository.dart';
+import 'src/data/supabase_profile_repository.dart';
 import 'src/data/supabase_trip_repository.dart';
 import 'src/data/trip_functions.dart';
 import 'src/data/trip_repository.dart';
+import 'src/profile/profile_controller.dart';
 
 class RideNGoApp extends StatelessWidget {
   const RideNGoApp({super.key});
@@ -30,11 +36,36 @@ class RideNGoApp extends StatelessWidget {
         final client = Supabase.instance.client;
         return MultiProvider(
           providers: [
+            // Repositories. All app-wide and all stateless, so one instance
+            // each: the four tabs share them, and a second `SupabaseClient`
+            // would mean a second realtime socket.
             Provider<AuthRepository>(create: (_) => SupabaseAuthRepository(client)),
-            Provider<TripRepository>(create: (_) => SupabaseTripRepository(client)),
+            Provider<LocationService>(
+              create: (_) => const GeolocatorLocationService(),
+            ),
+            Provider<TripRepository>(
+              create: (c) => SupabaseTripRepository(
+                client,
+                locations: c.read<LocationService>(),
+              ),
+            ),
             Provider<TripFunctions>(create: (_) => SupabaseTripFunctions(client)),
+            Provider<ProfileRepository>(
+              create: (_) => SupabaseProfileRepository(client),
+            ),
+            Provider<ChatRepository>(
+              create: (_) => SupabaseChatRepository(client),
+            ),
             ChangeNotifierProvider<AuthController>(
               create: (c) => AuthController(c.read<AuthRepository>()),
+            ),
+            // Above the shell rather than inside it: the home screen greets the
+            // rider by the name in this row, and a greeting that is only right
+            // after the Profile tab has been opened is not a greeting.
+            ChangeNotifierProvider<RiderProfileController>(
+              create: (c) => RiderProfileController(
+                c.read<ProfileRepository>(),
+              )..load(),
             ),
             ChangeNotifierProvider<RiderFlow>(
               create: (c) => RiderFlow(

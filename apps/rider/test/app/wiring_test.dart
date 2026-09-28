@@ -6,10 +6,19 @@ import 'package:meetngo_rider/src/app/rider_flow.dart';
 import 'package:meetngo_rider/src/booking/route_entry_sheet.dart';
 import 'package:mng_core/mng_core.dart';
 import 'package:meetngo_rider/src/data/trip_functions.dart';
+import 'package:meetngo_rider/src/data/booked_trip.dart';
+import 'package:meetngo_rider/src/data/location_service.dart';
 import 'package:meetngo_rider/src/data/trip_repository.dart';
 import 'package:meetngo_rider/src/trip/trip_controller.dart';
 
 class _StubTrips implements TripRepository {
+
+  @override
+  Future<List<BookedTrip>> history({int limit = 50}) async => const [];
+
+  @override
+  Future<DeviceLocation> locate() async =>
+      const DeviceLocation(LocationOutcome.denied);
   @override
   Future<Trip?> activeTrip() async => null;
 

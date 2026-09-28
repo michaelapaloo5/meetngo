@@ -7,6 +7,7 @@ import 'package:meetngo_driver/src/app/driver_flow.dart';
 import 'package:meetngo_driver/src/app/driver_shell.dart';
 import 'package:meetngo_driver/src/auth/driver_auth_controller.dart';
 import 'package:meetngo_driver/src/auth/driver_login_screen.dart';
+import 'package:meetngo_driver/src/data/driver_auth_repository.dart';
 import 'package:meetngo_driver/src/earnings/earnings_controller.dart';
 import 'package:meetngo_driver/src/offers/availability_controller.dart';
 import 'package:provider/provider.dart';
@@ -298,17 +299,37 @@ void main() {
     /// The shell owns two timers, so the tree is torn down at the end of every
     /// test: a pending periodic timer is a test failure, and a shell left
     /// running would keep ticking against a disposed flow.
+    ///
+    /// The auth repository and controller are here because the shell reads them
+    /// for the Profile tab -- the email on the driver's own session, and the
+    /// sign-out call -- and `main.dart` registers exactly these two. Leaving
+    /// them out would be a test that only passes because the Profile tab is
+    /// never opened.
     Future<void> pumpShell(
       WidgetTester tester,
-      StubDriverRepository repo,
-    ) async {
+      StubDriverRepository repo, {
+      StubDriverAuthRepository? auth,
+    }) async {
+      final flow = DriverFlow(
+        drivers: repo,
+        earnings: StubEarningsRepository(),
+        // A fake reader, so the boot-time location check does not go out to a
+        // platform channel the test binding has no answer for.
+        locationReader: StubLocationReader(),
+      );
+      addTearDown(flow.dispose);
       await tester.pumpWidget(
         appHarness(
-          ChangeNotifierProvider<DriverFlow>(
-            create: (_) => DriverFlow(
-              drivers: repo,
-              earnings: StubEarningsRepository(),
-            ),
+          MultiProvider(
+            providers: [
+              ChangeNotifierProvider<DriverFlow>.value(value: flow),
+              Provider<DriverAuthRepository>.value(
+                value: auth ?? StubDriverAuthRepository(),
+              ),
+              ChangeNotifierProvider<DriverAuthController>(
+                create: (c) => DriverAuthController(c.read<DriverAuthRepository>()),
+              ),
+            ],
             child: const DriverShell(),
           ),
         ),
@@ -379,17 +400,85 @@ void main() {
       expect(find.byKey(const Key('lifetimeEarnings')), findsOneWidget);
     });
 
-    testWidgets('Trips and Profile are not built in this pass', (tester) async {
+    testWidgets('Trips is the second tab and opens the trip history', (
+      tester,
+    ) async {
       useDesignSurface(tester);
-      await pumpShell(tester, StubDriverRepository(profile: driverProfile()));
+      final repo = StubDriverRepository(
+        profile: driverProfile(),
+        trips: [driverTrip(id: 't1')],
+      );
+      await pumpShell(tester, repo);
 
       await tester.tap(find.text('Trips'));
       await settle(tester);
-      expect(find.textContaining('Not built yet'), findsOneWidget);
+
+      // The read happens on arrival, so the row can only be there if the tab
+      // asked for it -- the placeholder this replaced never asked for anything.
+      expect(repo.myTripsCalls, 1);
+      expect(find.byKey(const Key('tripsList')), findsOneWidget);
+      expect(find.byKey(const Key('tripRow-t1')), findsOneWidget);
+      expect(find.text('Not built yet'), findsNothing);
+    });
+
+    testWidgets('Profile is the fourth tab and reads the driver own row', (
+      tester,
+    ) async {
+      useDesignSurface(tester);
+      final repo = StubDriverRepository(
+        profile: driverProfile(fullName: 'Ama Mensah'),
+        vehicle: driverVehicle(),
+      );
+      final auth = StubDriverAuthRepository()..email = 'ama@example.com';
+      await pumpShell(tester, repo, auth: auth);
 
       await tester.tap(find.text('Profile'));
       await settle(tester);
-      expect(find.textContaining('Not built yet'), findsOneWidget);
+
+      expect(find.text('Ama Mensah'), findsOneWidget);
+      // The email comes from the driver's own session, not from `profiles`:
+      // that table has no email column, so the repository is the only place it
+      // can come from and a fake with none has to render no row at all.
+      expect(find.text('ama@example.com'), findsOneWidget);
+      expect(find.byKey(const Key('signOutButton')), findsOneWidget);
+      expect(find.text('Not built yet'), findsNothing);
+    });
+
+    testWidgets('Sign out on the Profile tab ends the session', (tester) async {
+      useDesignSurface(tester);
+      final auth = StubDriverAuthRepository()..email = 'ama@example.com';
+      await pumpShell(
+        tester,
+        StubDriverRepository(profile: driverProfile(), vehicle: driverVehicle()),
+        auth: auth,
+      );
+
+      await tester.tap(find.text('Profile'));
+      await settle(tester);
+      await tester.tap(find.byKey(const Key('signOutButton')));
+      await settle(tester);
+
+      expect(auth.signedOut, isTrue);
+    });
+
+    testWidgets('a refused sign out is shown, not swallowed', (tester) async {
+      useDesignSurface(tester);
+      final auth = StubDriverAuthRepository()
+        ..email = 'ama@example.com'
+        ..failSignOutWith = 'Could not sign out';
+      await pumpShell(
+        tester,
+        StubDriverRepository(profile: driverProfile(), vehicle: driverVehicle()),
+        auth: auth,
+      );
+
+      await tester.tap(find.text('Profile'));
+      await settle(tester);
+      await tester.tap(find.byKey(const Key('signOutButton')));
+      await settle(tester);
+
+      expect(auth.signedOut, isFalse);
+      expect(find.text('Could not sign out'), findsOneWidget);
     });
 
     testWidgets('a live trip opens the trip screen over the tabs', (

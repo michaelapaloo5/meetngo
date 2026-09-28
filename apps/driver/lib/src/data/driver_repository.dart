@@ -1,5 +1,7 @@
 import 'package:mng_core/mng_core.dart';
 
+import 'driver_trip.dart';
+
 /// A failure the driver can be shown.
 ///
 /// Every repository in this app speaks in these rather than in `PostgrestException`
@@ -74,6 +76,21 @@ abstract class DriverRepository {
 
   /// The driver's live trip, or null when they have none.
   Future<Trip?> activeTrip();
+
+  /// The driver's own trip history, newest first.
+  ///
+  /// Scoped to `driver_id = auth.uid()` rather than to "trips I can see":
+  /// `trips` carries two SELECT policies and RLS ORs permissive policies, so a
+  /// driver who is also a rider of somebody else's trip can read that row too.
+  /// The filter is what makes this the driver's history and not their
+  /// passenger history.
+  Future<List<DriverTrip>> myTrips({int limit});
+
+  /// The vehicle this driver owns, or null when they have not added one.
+  ///
+  /// A driver can read exactly one `vehicles` row -- `owner_id` is `unique` --
+  /// and only their own, so this is not a query that can leak.
+  Future<Vehicle?> myVehicle();
 
   /// Pending offers addressed to this driver.
   Stream<Offer> watchOffers();
