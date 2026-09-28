@@ -9912,6 +9912,35 @@ removed, and the mutation battery is in
 
 ### Task 12: Driver app — onboarding and KYC
 
+> **Corrected 2026-09-28 by extraction and execution.** Every `dart`
+> block in Tasks 12-15 was written to its real path in a clean `apps/driver` and
+> compiled. Fifty-one diagnostics, in nine classes, none of which reading had
+> found: nineteen `res.error` / `res.data` reads off an awaited postgrest
+> builder; one escaped quote written for another language
+> (`'Enter the rider\\'s ...'`, which closes the string and opens a new one); one
+> `File(path)` with no `dart:io` import; one
+> `.onPostgresChanges(...).stream()`; a test throwing the rider app's
+> `AuthFailure` where this task defines `DriverAuthFailure`; a test using
+> `DriverAuthFailure` without importing it; two fakes that do not implement the
+> five methods Tasks 13 and 14 add to the interface, so Task 13 cannot be
+> reached without rewriting a Task 12 test file; and two info-severity lints
+> that `--fatal-infos` makes fatal. Two more classes compile and are wrong:
+> `.maybeSingle()` (twice) and `_client.auth.currentUser!.id` (once). All of it
+> is corrected in the blocks below. **The plan's own tests then ran 57 and passed
+> 52; of the five that failed, four cannot pass against the plan's own code** -- see
+> `.superpowers/sdd/2026-09-27-meet-n-go-rides/driver-app-report.md`. One claim
+> in the shipped code was itself wrong and is now corrected in the source: a
+> `switch` case that completes normally is *not* a Dart compile error, so the
+> breakless `advance()` below always built and always ran one case per call.
+>
+> Two behavioural changes the blocks below now carry, which are not mechanical:
+> `KycController.submit()` writes nothing (`advance()` already wrote each
+> document on the way past, and the plan's version wrote all three a second
+> time on every submit), and the card step's "Scan Ghana Card" button is gone --
+> it called `applyScan` on a hard-coded card number and threw the captured path
+> away, so it prefilled every driver's card with somebody else's and looked
+> right.
+
 **Files:**
 - Create: `apps/driver/lib/src/onboarding/kyc_controller.dart`
 - Create: `apps/driver/lib/src/onboarding/kyc_screen.dart`
@@ -9923,8 +9952,8 @@ removed, and the mutation battery is in
 **Interfaces:**
 - Consumes: `KycStatus`, `DriverProfile`, `DriverAvailability`, `Vehicle`, `VehicleCategory`, `RideCategory` (Task 4)
 - Produces:
-  - `apps/driver/lib/src/data/driver_repository.dart` → `abstract class DriverRepository` with `Future<DriverProfile?> me()`, `Future<void> submitGhanaCard({required String cardNumber, required String expiry, required String fullName})`, `Future<void> submitSelfie(String path)`, `Future<void> saveVehicle({required String make, required String model, required String plate, required int seats, required RideCategory rideCategory})`, `Future<void> setAvailability(DriverAvailability value)`, `Future<void> updateLocation(GeoPoint point)`, `Stream<DriverProfile> watchMe()`.
-  - `class KycController extends ChangeNotifier` with `KycStep step` (`identity`, `ghanaCard`, `selfie`, `vehicle`, `review`, `approved`), `String? error`, `bool busy`, `String? cardNumber`, `String? cardExpiry`, `String? cardName`, `String? selfiePath`, `Vehicle? vehicle`, `bool canAdvance`, `Future<void> advance()`, `Future<void> submit()`.
+  - `apps/driver/lib/src/data/driver_repository.dart` → `abstract class DriverRepository` with `Future<DriverProfile?> me()`, `Future<void> submitGhanaCard({required String cardNumber, required String expiry, required String fullName})`, `Future<void> submitSelfie(String path)`, `Future<void> saveVehicle({required String make, required String model, required String plate, required int seats, required RideCategory rideCategory})`, `Future<void> setAvailability(DriverAvailability value)`, `Future<void> updateLocation(GeoPoint point)`, `Stream<DriverProfile> watchMe()`, `Future<GeoPoint?> currentLocation()`. `currentLocation` was missing from this list and from the block below, and nothing in the plan called it: `match_offers_for_trip` requires a row in `driver_locations`, so a driver who went online without publishing a position was online and invisible to the matcher at the same time. Task 13 adds `activeTrip`, `watchOffers`, `acceptOffer` and `declineOffer`; Task 14 adds `advanceTripState` and `verifyPickupOtp`.
+  - `class KycController extends ChangeNotifier` with `KycStep step` (`identity`, `ghanaCard`, `selfie`, `vehicle`, `review`, **`underReview`**, `approved`), `String? error`, `bool busy`, `String? cardNumber`, `String? cardExpiry`, `String? cardName`, `String? selfiePath`, `Vehicle? vehicle`, `bool canAdvance`, `Future<void> advance()`, `Future<void> submit()`, `Future<void> checkStatus()`. `underReview` is not cosmetic: `submitGhanaCard` writes `kyc_status = 'pending'` and `guard_profile_update` raises on any other value, so a client can never approve itself. The plan's `submit()` landed on `approved` from its own writes, which told a driver they could drive when the row said they could not.
   - `class GhanaCardParser` with `static CardParseResult parse({required String rawText})` returning `CardParseResult({String? cardNumber, String? expiry, String? name, String? error})`. It extracts a 13-digit Ghana Card number `GHA-XXXXXXXXX-X` and a `MM/YY` expiry from the recognised scan text.
   - `DocumentScannerStub` — a widget that returns a fixed path in tests and a real `image_picker` path on device; the interface is `Future<String?> capture()`.
   - `KycScreen({required KycController controller})` — keys `ghanaCardNumberField`, `ghanaCardExpiryField`, `ghanaCardNameField`, `selfieButton`, `vehicleMakeField`, `vehicleModelField`, `vehiclePlateField`, `vehicleSeatsField`, `kycNextButton`, `kycSubmitButton`.
@@ -9936,89 +9965,66 @@ removed, and the mutation battery is in
 
 ```dart
 import 'package:flutter/material.dart';
-import 'package:flutter_screenutil/flutter_screenutil.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:mng_core/mng_core.dart';
 import 'package:meetngo_driver/src/data/driver_repository.dart';
+import 'package:meetngo_driver/src/onboarding/document_scanner_stub.dart';
 import 'package:meetngo_driver/src/onboarding/kyc_controller.dart';
 import 'package:meetngo_driver/src/onboarding/kyc_screen.dart';
-import 'package:mng_core/mng_core.dart';
 import 'package:provider/provider.dart';
 
-class FakeDriverRepository implements DriverRepository {
-  String? cardNumber;
-  String? expiry;
-  String? name;
-  String? selfie;
-  Vehicle? vehicle;
-  DriverAvailability? availability;
+import '../support/fakes.dart';
+import '../support/harness.dart';
 
-  @override
-  Future<DriverProfile?> me() async => null;
-
-  @override
-  Future<void> submitGhanaCard({
-    required String cardNumber,
-    required String expiry,
-    required String fullName,
-  }) async {
-    this.cardNumber = cardNumber;
-    this.expiry = expiry;
-    this.name = fullName;
-  }
-
-  @override
-  Future<void> submitSelfie(String path) async => selfie = path;
-
-  @override
-  Future<void> saveVehicle({
-    required String make,
-    required String model,
-    required String plate,
-    required int seats,
-    required RideCategory rideCategory,
-  }) async {
-    vehicle = Vehicle(
-      id: 'v1',
-      ownerId: 'd1',
-      category: VehicleCategory.sedan,
-      make: make,
-      model: model,
-      plate: plate,
-      seats: seats,
-      photoUrl: '',
-      rideCategory: rideCategory,
-    );
-  }
-
-  @override
-  Future<void> setAvailability(DriverAvailability value) async =>
-      availability = value;
-
-  @override
-  Future<void> updateLocation(GeoPoint point) async {}
-
-  @override
-  Stream<DriverProfile> watchMe() => const Stream<DriverProfile>.empty();
-}
-
-Widget wrap(KycController c) => ScreenUtilInit(
-      designSize: const Size(390, 844),
-      builder: (_, _) => ChangeNotifierProvider<KycController>.value(
+Widget wrap(KycController c, {VoidCallback? onContinue}) => appHarness(
+      ChangeNotifierProvider<KycController>.value(
         value: c,
-        child: MaterialApp(theme: MngTheme.light, home: KycScreen(controller: c)),
+        child: KycScreen(controller: c, onContinue: onContinue),
       ),
     );
+
+const _scan = 'REPUBLIC OF GHANA\nGHA-123456789-0\nJANE COOPER\nEXP 04/29';
 
 void main() {
   group('GhanaCardParser', () {
     test('parses a well-formed card number, expiry and name', () {
-      final r = GhanaCardParser.parse(
-        rawText: 'REPUBLIC OF GHANA\nGHA-123456789-0\nJANE COOPER\nEXP 04/29',
-      );
+      final r = GhanaCardParser.parse(rawText: _scan);
       expect(r.cardNumber, 'GHA-123456789-0');
       expect(r.expiry, '04/29');
       expect(r.name, 'JANE COOPER');
       expect(r.error, isNull);
+    });
+
+    // The header of a Ghana Card is `REPUBLIC OF GHANA` in capitals and it is
+    // the first all-capitals line in the scan. A first-match name regex returns
+    // it for every card ever scanned, and the field is prefilled and looks
+    // right, so the driver has a name field they must correct and never do.
+    test('the card header is not offered as the name', () {
+      final r = GhanaCardParser.parse(
+        rawText: 'REPUBLIC OF GHANA\nGHA-123456789-0\nEXP 04/29',
+      );
+      expect(r.name, isNot('REPUBLIC OF GHANA'));
+      expect(r.name, isNull);
+    });
+
+    test('a name on the card is found below the header', () {
+      final r = GhanaCardParser.parse(
+        rawText: 'GHANA\nGHA-123456789-0\nKWAME MENSAH\nEXP 04/29',
+      );
+      expect(r.name, 'KWAME MENSAH');
+    });
+
+    test('a card-number line is never taken as the name', () {
+      final r = GhanaCardParser.parse(
+        rawText: 'GHA-123456789-0\nJANE COOPER\nEXP 04/29',
+      );
+      expect(r.name, 'JANE COOPER');
+    });
+
+    test('a blank scan is an error, not a crash', () {
+      final r = GhanaCardParser.parse(rawText: '   ');
+      expect(r.error, isNotNull);
+      expect(r.cardNumber, isNull);
     });
 
     test('reports an error when the card number is missing', () {
@@ -10027,6 +10033,9 @@ void main() {
       expect(r.error, isNotNull);
     });
 
+    // `EXP 4-29` has no `MM/YY` in it. The plan's expiry regex was
+    // `(\d{2})\/(\d{2})`, which is right; what is pinned here is that the
+    // malformed form is refused rather than matched loosely.
     test('reports an error when the expiry is malformed', () {
       final r = GhanaCardParser.parse(
         rawText: 'GHA-123456789-0\nJANE COOPER\nEXP 4-29',
@@ -10035,37 +10044,72 @@ void main() {
       expect(r.error, isNotNull);
     });
 
-    test('a blank scan is an error, not a crash', () {
-      final r = GhanaCardParser.parse(rawText: '   ');
-      expect(r.error, isNotNull);
-    });
-
     test('rejects an impossible expiry month', () {
       final r = GhanaCardParser.parse(
         rawText: 'GHA-123456789-0\nJANE COOPER\nEXP 13/29',
       );
       expect(r.error, isNotNull);
+      expect(r.expiry, isNull);
+    });
+
+    test('rejects a zero month', () {
+      final r = GhanaCardParser.parse(
+        rawText: 'GHA-123456789-0\nJANE COOPER\nEXP 00/29',
+      );
+      expect(r.error, isNotNull);
+    });
+
+    test('a card number that is one digit short is not a card number', () {
+      final r = GhanaCardParser.parse(
+        rawText: 'GHA-12345678-0\nJANE COOPER\nEXP 04/29',
+      );
+      expect(r.error, isNotNull);
+    });
+
+    test('spaces around the expiry slash are tolerated', () {
+      final r = GhanaCardParser.parse(
+        rawText: 'GHA-123456789-0\nJANE COOPER\nEXP 04 / 29',
+      );
+      expect(r.expiry, '04/29');
     });
   });
 
   group('KycController', () {
     test('starts on the identity step', () {
-      final c = KycController(FakeDriverRepository());
+      final c = KycController(StubDriverRepository());
       expect(c.step, KycStep.identity);
     });
 
     test('cannot advance past identity with no name', () {
-      final c = KycController(FakeDriverRepository());
+      final c = KycController(StubDriverRepository());
+      expect(c.canAdvance, isFalse);
+    });
+
+    test('a one-letter name is not a name', () {
+      final c = KycController(StubDriverRepository())..fullName = 'J';
       expect(c.canAdvance, isFalse);
     });
 
     test('advances once the identity name is set', () {
-      final c = KycController(FakeDriverRepository())..fullName = 'Jane Cooper';
+      final c = KycController(StubDriverRepository())..fullName = 'Jane Cooper';
+      expect(c.canAdvance, isTrue);
+    });
+
+    // The plan's fields were plain public fields, so `onChanged: (v) =>
+    // c.fullName = v` mutated one with no `notifyListeners` and the Continue
+    // button below it -- which reads `canAdvance` -- stayed disabled for the
+    // whole time the driver was typing.
+    test('typing a name wakes the Continue button', () {
+      final c = KycController(StubDriverRepository());
+      var notifications = 0;
+      c.addListener(() => notifications++);
+      c.fullName = 'Jane Cooper';
+      expect(notifications, 1);
       expect(c.canAdvance, isTrue);
     });
 
     test('card step requires a parsed card before advancing', () {
-      final c = KycController(FakeDriverRepository())..step = KycStep.ghanaCard;
+      final c = KycController(StubDriverRepository())..step = KycStep.ghanaCard;
       expect(c.canAdvance, isFalse);
       c
         ..cardNumber = 'GHA-123456789-0'
@@ -10073,15 +10117,21 @@ void main() {
       expect(c.canAdvance, isTrue);
     });
 
+    test('the card step wants both halves of the card', () {
+      final c = KycController(StubDriverRepository())..step = KycStep.ghanaCard;
+      c.cardNumber = 'GHA-123456789-0';
+      expect(c.canAdvance, isFalse);
+    });
+
     test('selfie step requires a capture', () {
-      final c = KycController(FakeDriverRepository())..step = KycStep.selfie;
+      final c = KycController(StubDriverRepository())..step = KycStep.selfie;
       expect(c.canAdvance, isFalse);
       c.selfiePath = '/tmp/selfie.jpg';
       expect(c.canAdvance, isTrue);
     });
 
-    test('vehicle step requires make, model, plate and seats', () {
-      final c = KycController(FakeDriverRepository())..step = KycStep.vehicle;
+    test('vehicle step requires make, model, plate and a sane seat count', () {
+      final c = KycController(StubDriverRepository())..step = KycStep.vehicle;
       expect(c.canAdvance, isFalse);
       c
         ..vehicleMake = 'Toyota'
@@ -10091,8 +10141,61 @@ void main() {
       expect(c.canAdvance, isTrue);
     });
 
-    test('submit pushes card, selfie and vehicle to the repository', () async {
-      final repo = FakeDriverRepository();
+    test('zero seats is not a vehicle', () {
+      final c = KycController(StubDriverRepository())
+        ..step = KycStep.vehicle
+        ..vehicleMake = 'Toyota'
+        ..vehicleModel = 'Corolla'
+        ..vehiclePlate = 'GR-1234-22'
+        ..vehicleSeats = 0;
+      expect(c.canAdvance, isFalse);
+    });
+
+    // Clearing the seats field runs `int.tryParse('') ?? 0`, so a driver who
+    // selects the field and deletes the 4 lands on 0 rather than keeping 4.
+    test('clearing the seats field does not leave the previous count', () {
+      final c = KycController(StubDriverRepository())..vehicleSeats = 4;
+      c.vehicleSeats = int.tryParse('') ?? 0;
+      expect(c.vehicleSeats, 0);
+      expect(c.canAdvance, isFalse, reason: 'step is identity, not vehicle');
+    });
+
+    // Each step writes as it is left, so a driver who loses their connection on
+    // the vehicle step keeps the card they already sent.
+    test('walking the whole flow writes each document once, in order', () async {
+      final repo = StubDriverRepository();
+      final c = KycController(repo)
+        ..fullName = 'Jane Cooper'
+        ..step = KycStep.ghanaCard
+        ..cardNumber = 'GHA-123456789-0'
+        ..cardExpiry = '04/29'
+        ..cardName = 'JANE COOPER';
+      await c.advance();
+      expect(repo.cardNumber, 'GHA-123456789-0');
+      expect(c.step, KycStep.selfie);
+
+      c.selfiePath = '/tmp/selfie.jpg';
+      await c.advance();
+      expect(repo.selfiePath, '/tmp/selfie.jpg');
+      expect(c.step, KycStep.vehicle);
+
+      c
+        ..vehicleMake = 'Toyota'
+        ..vehicleModel = 'Corolla'
+        ..vehiclePlate = 'GR-1234-22'
+        ..vehicleSeats = 4;
+      await c.advance();
+      expect(repo.savedVehicle!.plate, 'GR-1234-22');
+      expect(c.step, KycStep.review);
+    });
+
+    // `guard_profile_update` raises on any `kyc_status` other than `pending`, so
+    // a client can never approve itself. A controller whose `submit()` landed on
+    // `approved` from its own writes would tell a driver they can drive when the
+    // row says they cannot.
+    test('submitting never reports approval the server did not give', () async {
+      final repo = StubDriverRepository()
+        ..profile = driverProfile(kyc: KycStatus.pending);
       final c = KycController(repo)
         ..step = KycStep.review
         ..cardNumber = 'GHA-123456789-0'
@@ -10104,63 +10207,341 @@ void main() {
         ..vehiclePlate = 'GR-1234-22'
         ..vehicleSeats = 4;
       await c.submit();
-      expect(repo.cardNumber, 'GHA-123456789-0');
-      expect(repo.expiry, '04/29');
-      expect(repo.selfie, '/tmp/selfie.jpg');
-      expect(repo.vehicle?.plate, 'GR-1234-22');
+      expect(c.step, KycStep.underReview);
+      expect(c.error, isNull);
+    });
+
+    test('submitting reports approval when the server has approved', () async {
+      final repo = StubDriverRepository()
+        ..profile = driverProfile(kyc: KycStatus.approved);
+      final c = KycController(repo)..step = KycStep.review;
+      await c.submit();
       expect(c.step, KycStep.approved);
     });
 
-    test('submit surfaces a repository failure without advancing', () async {
-      final c = KycController(_FailingDriverRepository())..step = KycStep.review;
+    // The plan's `submit()` uploaded the same selfie a second time and wrote
+    // the same vehicle row a second time on every submit.
+    test('submitting does not write the documents a second time', () async {
+      final repo = StubDriverRepository()
+        ..profile = driverProfile(kyc: KycStatus.pending);
+      final c = KycController(repo)..step = KycStep.review;
+      await c.submit();
+      expect(repo.selfiePath, isNull);
+      expect(repo.savedVehicle, isNull);
+      expect(repo.cardNumber, isNull);
+    });
+
+    test('a failed read during submit is shown and holds the step', () async {
+      final repo = StubDriverRepository()..meFails = true;
+      final c = KycController(repo)..step = KycStep.review;
       await c.submit();
       expect(c.step, KycStep.review);
       expect(c.error, isNotNull);
     });
+
+    test('a failed card write is shown and holds the step', () async {
+      final c = KycController(_FailingDriverRepository())
+        ..step = KycStep.ghanaCard
+        ..cardNumber = 'GHA-123456789-0'
+        ..cardExpiry = '04/29';
+      await c.advance();
+      expect(c.step, KycStep.ghanaCard);
+      expect(c.error, isNotNull);
+      expect(c.busy, isFalse);
+    });
+
+    test('checkStatus moves under review to approved when it is approved now',
+        () async {
+      final repo = StubDriverRepository()
+        ..profile = driverProfile(kyc: KycStatus.pending);
+      final c = KycController(repo)..step = KycStep.underReview;
+      repo.profile = driverProfile(kyc: KycStatus.approved);
+      await c.checkStatus();
+      expect(c.step, KycStep.approved);
+    });
+
+    test('checkStatus says so when there is no driver profile at all', () async {
+      final c = KycController(StubDriverRepository())..step = KycStep.underReview;
+      await c.checkStatus();
+      expect(c.step, KycStep.underReview);
+      expect(c.error, isNotNull);
+    });
+
+    test('back walks the steps and stops at the first', () async {
+      final c = KycController(StubDriverRepository())..step = KycStep.vehicle;
+      c.back();
+      expect(c.step, KycStep.selfie);
+      c.back();
+      expect(c.step, KycStep.ghanaCard);
+      c.back();
+      expect(c.step, KycStep.identity);
+      c.back();
+      expect(c.step, KycStep.identity);
+    });
+
+    test('a scan fills the three card fields', () {
+      final c = KycController(StubDriverRepository())..step = KycStep.ghanaCard;
+      c.applyScan(_scan);
+      expect(c.cardNumber, 'GHA-123456789-0');
+      expect(c.cardExpiry, '04/29');
+      expect(c.cardName, 'JANE COOPER');
+      expect(c.error, isNull);
+    });
+
+    test('a failed scan changes nothing and says why', () {
+      final c = KycController(StubDriverRepository())..step = KycStep.ghanaCard;
+      c
+        ..cardNumber = 'GHA-000000000-0'
+        ..cardExpiry = '01/30';
+      c.applyScan('nonsense');
+      expect(c.error, isNotNull);
+      expect(c.cardNumber, 'GHA-000000000-0', reason: 'the typed value is kept');
+      expect(c.cardExpiry, '01/30');
+    });
+
+    test('advance does nothing when the step is not ready', () async {
+      final repo = StubDriverRepository();
+      final c = KycController(repo)..step = KycStep.vehicle;
+      await c.advance();
+      expect(c.step, KycStep.vehicle);
+      expect(repo.savedVehicle, isNull);
+    });
   });
 
-  testWidgets('ghana card step renders the three fields and next button',
-      (tester) async {
-    final c = KycController(FakeDriverRepository())..step = KycStep.ghanaCard;
-    await tester.pumpWidget(wrap(c));
-    expect(find.byKey(const Key('ghanaCardNumberField')), findsOneWidget);
-    expect(find.byKey(const Key('ghanaCardExpiryField')), findsOneWidget);
-    expect(find.byKey(const Key('ghanaCardNameField')), findsOneWidget);
-    expect(find.byKey(const Key('kycNextButton')), findsOneWidget);
-  });
+  group('KycScreen', () {
+    testWidgets('the identity step shows the name field', (tester) async {
+      useDesignSurface(tester);
+      final c = KycController(StubDriverRepository());
+      await tester.pumpWidget(wrap(c));
+      expect(find.byKey(const Key('fullNameField')), findsOneWidget);
+      expect(find.byKey(const Key('kycNextButton')), findsOneWidget);
+    });
 
-  testWidgets('next button is disabled until the card fields are valid',
-      (tester) async {
-    final c = KycController(FakeDriverRepository())..step = KycStep.ghanaCard;
-    await tester.pumpWidget(wrap(c));
-    final button =
-        tester.widget<FilledButton>(find.byKey(const Key('kycNextButton')));
-    expect(button.onPressed, isNull);
-  });
+    testWidgets('typing a name enables Continue', (tester) async {
+      useDesignSurface(tester);
+      final c = KycController(StubDriverRepository());
+      await tester.pumpWidget(wrap(c));
 
-  testWidgets('review step shows the submit button', (tester) async {
-    final c = KycController(FakeDriverRepository())..step = KycStep.review;
-    await tester.pumpWidget(wrap(c));
-    expect(find.byKey(const Key('kycSubmitButton')), findsOneWidget);
-    expect(find.text('Review your details'), findsOneWidget);
-  });
+      await tester.enterText(find.byKey(const Key('fullNameField')), 'Jane Cooper');
+      await tester.pumpAndSettle();
 
-  testWidgets('approved step shows the green confirmation', (tester) async {
-    final c = KycController(FakeDriverRepository())..step = KycStep.approved;
-    await tester.pumpWidget(wrap(c));
-    expect(find.text('You are verified'), findsOneWidget);
-    expect(find.byIcon(Icons.check_circle), findsOneWidget);
+      final button = tester.widget<FilledButton>(find.byKey(const Key('kycNextButton')));
+      expect(button.onPressed, isNotNull);
+    });
+
+    testWidgets('the card step renders the three fields and next button',
+        (tester) async {
+      useDesignSurface(tester);
+      final c = KycController(StubDriverRepository())..step = KycStep.ghanaCard;
+      await tester.pumpWidget(wrap(c));
+      expect(find.byKey(const Key('ghanaCardNumberField')), findsOneWidget);
+      expect(find.byKey(const Key('ghanaCardExpiryField')), findsOneWidget);
+      expect(find.byKey(const Key('ghanaCardNameField')), findsOneWidget);
+      expect(find.byKey(const Key('kycNextButton')), findsOneWidget);
+    });
+
+    // There is no OCR engine in this build. The plan's version had a button
+    // that called `applyScan` on a hard-coded 'GHA-123456789-0 / JANE COOPER'
+    // string and threw the captured path away, which prefilled every driver's
+    // card with somebody else's card and looked right.
+    testWidgets('the card step does not offer to scan a card into existence',
+        (tester) async {
+      useDesignSurface(tester);
+      final c = KycController(StubDriverRepository())..step = KycStep.ghanaCard;
+      await tester.pumpWidget(wrap(c));
+      expect(find.byKey(const Key('scanTextButton')), findsOneWidget);
+      expect(find.textContaining('not switched on'), findsOneWidget);
+
+      final controller = tester
+          .widget<TextField>(find.byKey(const Key('ghanaCardNumberField')));
+      expect(controller.controller?.text ?? '', isEmpty);
+    });
+
+    testWidgets('pasted scan text fills the three fields', (tester) async {
+      useDesignSurface(tester);
+      final c = KycController(StubDriverRepository())..step = KycStep.ghanaCard;
+      await tester.pumpWidget(wrap(c));
+
+      await tester.tap(find.byKey(const Key('scanTextButton')));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byKey(const Key('scanTextField')), _scan);
+      await tester.tap(find.byKey(const Key('scanTextConfirmButton')));
+      await tester.pumpAndSettle();
+
+      expect(find.text('GHA-123456789-0'), findsOneWidget);
+      expect(find.text('04/29'), findsOneWidget);
+      expect(find.text('JANE COOPER'), findsOneWidget);
+    });
+
+    testWidgets('an unreadable paste says so and fills nothing', (tester) async {
+      useDesignSurface(tester);
+      final c = KycController(StubDriverRepository())..step = KycStep.ghanaCard;
+      await tester.pumpWidget(wrap(c));
+
+      await tester.tap(find.byKey(const Key('scanTextButton')));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byKey(const Key('scanTextField')), 'nonsense');
+      await tester.tap(find.byKey(const Key('scanTextConfirmButton')));
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('Could not read the card number'), findsOneWidget);
+    });
+
+    testWidgets('the selfie step captures and says so', (tester) async {
+      useDesignSurface(tester);
+      final c = KycController(StubDriverRepository())..step = KycStep.selfie;
+      await tester.pumpWidget(wrap(c));
+
+      expect(find.text('Selfie captured'), findsNothing);
+      await tester.tap(find.byKey(const Key('selfieButton')));
+      await tester.pumpAndSettle();
+      expect(find.text('Selfie captured'), findsOneWidget);
+    });
+
+    testWidgets('a cancelled capture is not a capture', (tester) async {
+      useDesignSurface(tester);
+      final c = KycController(StubDriverRepository())..step = KycStep.selfie;
+      await tester.pumpWidget(
+        appHarness(
+          ChangeNotifierProvider<KycController>.value(
+            value: c,
+            child: KycScreen(controller: c, selfieScanner: ScannerStub(null)),
+          ),
+        ),
+      );
+      await tester.tap(find.byKey(const Key('selfieButton')));
+      await tester.pumpAndSettle();
+      expect(find.text('Selfie captured'), findsNothing);
+    });
+
+    testWidgets('the vehicle step shows the vehicle form', (tester) async {
+      useDesignSurface(tester);
+      final c = KycController(StubDriverRepository())..step = KycStep.vehicle;
+      await tester.pumpWidget(wrap(c));
+      expect(find.byKey(const Key('vehicleMakeField')), findsOneWidget);
+      expect(find.byKey(const Key('vehicleModelField')), findsOneWidget);
+      expect(find.byKey(const Key('vehiclePlateField')), findsOneWidget);
+      expect(find.byKey(const Key('vehicleSeatsField')), findsOneWidget);
+      expect(find.byKey(const Key('vehicleCategoryField')), findsOneWidget);
+    });
+
+    testWidgets('a plate is upper-cased as it is typed', (tester) async {
+      useDesignSurface(tester);
+      final c = KycController(StubDriverRepository())..step = KycStep.vehicle;
+      await tester.pumpWidget(wrap(c));
+
+      await tester.enterText(find.byKey(const Key('vehiclePlateField')), 'gr-1234-22');
+      await tester.pumpAndSettle();
+      expect(c.vehiclePlate, 'GR-1234-22');
+    });
+
+    testWidgets('the review step shows what was collected', (tester) async {
+      useDesignSurface(tester);
+      final c = KycController(StubDriverRepository())
+        ..step = KycStep.review
+        ..cardName = 'JANE COOPER'
+        ..cardNumber = 'GHA-123456789-0'
+        ..cardExpiry = '04/29'
+        ..vehicleMake = 'Toyota'
+        ..vehicleModel = 'Corolla'
+        ..vehiclePlate = 'GR-1234-22';
+      await tester.pumpWidget(wrap(c));
+      expect(find.byKey(const Key('kycSubmitButton')), findsOneWidget);
+      expect(find.textContaining('JANE COOPER'), findsOneWidget);
+      expect(find.textContaining('GHA-123456789-0 (04/29)'), findsOneWidget);
+      expect(find.textContaining('Toyota Corolla (GR-1234-22)'), findsOneWidget);
+    });
+
+    testWidgets('the approved step shows the confirmation once', (tester) async {
+      useDesignSurface(tester);
+      final c = KycController(StubDriverRepository())..step = KycStep.approved;
+      await tester.pumpWidget(wrap(c));
+      // The plan put the step's headline in the app bar *and* the same string in
+      // the body, so its own `findsOneWidget` could never pass.
+      expect(find.text('You are verified'), findsOneWidget);
+      expect(find.byIcon(Icons.check_circle), findsOneWidget);
+      expect(find.byKey(const Key('kycStartDrivingButton')), findsOneWidget);
+    });
+
+    testWidgets('no step renders its headline twice', (tester) async {
+      useDesignSurface(tester);
+      const headlines = {
+        KycStep.identity: 'Tell us about yourself',
+        KycStep.ghanaCard: 'Scan your Ghana Card',
+        KycStep.selfie: 'Take a selfie',
+        KycStep.vehicle: 'Add your vehicle',
+        KycStep.review: 'Review your details',
+        KycStep.underReview: 'Sent for review',
+        KycStep.approved: 'You are verified',
+      };
+      for (final entry in headlines.entries) {
+        final c = KycController(StubDriverRepository())..step = entry.key;
+        await tester.pumpWidget(wrap(c));
+        expect(
+          find.text(entry.value).evaluate().length,
+          1,
+          reason: '${entry.key.name}: "${entry.value}" is rendered more than once',
+        );
+      }
+    });
+
+    testWidgets('under review says a human decides, not the app',
+        (tester) async {
+      useDesignSurface(tester);
+      final c = KycController(StubDriverRepository())..step = KycStep.underReview;
+      await tester.pumpWidget(wrap(c));
+      expect(find.byKey(const Key('kycCheckStatusButton')), findsOneWidget);
+      expect(find.textContaining('administrator'), findsOneWidget);
+    });
+
+    testWidgets('Start driving is wired to the shell callback', (tester) async {
+      useDesignSurface(tester);
+      var continued = 0;
+      final c = KycController(StubDriverRepository())..step = KycStep.approved;
+      await tester.pumpWidget(wrap(c, onContinue: () => continued++));
+
+      await tester.tap(find.byKey(const Key('kycStartDrivingButton')));
+      await tester.pumpAndSettle();
+      expect(continued, 1);
+    });
+
+    testWidgets('a controller error is shown on the screen', (tester) async {
+      useDesignSurface(tester);
+      final c = KycController(StubDriverRepository())
+        ..step = KycStep.vehicle
+        ..error = 'That vehicle was not saved';
+      await tester.pumpWidget(wrap(c));
+      expect(find.text('That vehicle was not saved'), findsOneWidget);
+    });
+
+    testWidgets('the progress bar advances with the step', (tester) async {
+      useDesignSurface(tester);
+      final c = KycController(StubDriverRepository());
+      await tester.pumpWidget(wrap(c));
+      final first = tester
+          .widget<LinearProgressIndicator>(find.byType(LinearProgressIndicator))
+          .value;
+
+      c.step = KycStep.vehicle;
+      await tester.pumpAndSettle();
+      final later = tester
+          .widget<LinearProgressIndicator>(find.byType(LinearProgressIndicator))
+          .value;
+
+      expect(first, isNotNull);
+      expect(later!, greaterThan(first!));
+    });
   });
 }
 
-class _FailingDriverRepository extends FakeDriverRepository {
+class _FailingDriverRepository extends StubDriverRepository {
   @override
   Future<void> submitGhanaCard({
     required String cardNumber,
     required String expiry,
     required String fullName,
   }) async {
-    throw const AuthFailure('Upload failed, try again');
+    throw const DriverAuthFailure('Upload failed, try again');
   }
 }
 ```
@@ -10175,13 +10556,19 @@ Expected: FAIL — `KycController` is not defined.
 
 - [ ] **Step 3: Add `image_picker` to the driver app**
 
-`apps/driver/pubspec.yaml` gains `image_picker: ^1.1.2`.
+`apps/driver/pubspec.yaml` gains `image_picker: ^1.1.2`. It also needs `supabase_flutter`, `geolocator` and `provider`: the code blocks in this task import all four and the plan only ever named one of them, so extracting these four tasks into a clean app does not resolve.
 
 - [ ] **Step 4: Write `driver_repository.dart`**
 
 ```dart
 import 'package:mng_core/mng_core.dart';
 
+/// A failure the driver can be shown.
+///
+/// Every repository in this app speaks in these rather than in `PostgrestException`
+/// or `AuthException`, because a controller that catches only the transport type
+/// lets a `TypeError` out of a malformed row as an unhandled async error with
+/// nothing on screen for the driver to read.
 class DriverAuthFailure implements Exception {
   const DriverAuthFailure(this.message);
   final String message;
@@ -10189,14 +10576,45 @@ class DriverAuthFailure implements Exception {
   String toString() => message;
 }
 
+/// Everything the driver app needs from the server, behind one port.
+///
+/// The four screens hold controllers, and the controllers hold this. Nothing
+/// below this line reaches for `Supabase.instance`, so every screen is
+/// drivable by a fake and nothing here is testable only against a live project.
+///
+/// There is no create-a-driver method on purpose. `match_offers_for_trip`
+/// requires `role = 'driver'`, `kyc_status = 'approved'`, an approved vehicle,
+/// `availability = 'online'` and a row in `driver_locations`
+/// (`supabase/migrations/20260927000001_init.sql:match_offers_for_trip`), and
+/// `role`, `kyc_status` and `vehicles.approved` are all refused to a client --
+/// `guard_profile_update` raises on any `kyc_status` other than `pending`, and
+/// the vehicles policies pin `approved = false`. A driver is made by an admin
+/// through SQL, and this app builds against a driver that already exists.
 abstract class DriverRepository {
+  /// The signed-in driver's own profile row, or null when there is none.
+  ///
+  /// A signed-in user with no `profiles` row is a real state, not a failure:
+  /// `handle_new_user` creates the row, but a user created by hand through the
+  /// auth admin does not have one.
   Future<DriverProfile?> me();
+
+  /// Live updates to the same row [me] reads.
+  Stream<DriverProfile> watchMe();
+
+  /// Writes the Ghana Card details and moves `kyc_status` to `pending`.
+  ///
+  /// `pending` is the only value a client may write: `guard_profile_update`
+  /// raises on any other change, so this call can never approve anybody.
   Future<void> submitGhanaCard({
     required String cardNumber,
     required String expiry,
     required String fullName,
   });
+
+  /// Records the selfie the driver captured on this device.
   Future<void> submitSelfie(String path);
+
+  /// Creates or replaces the one vehicle this driver owns.
   Future<void> saveVehicle({
     required String make,
     required String model,
@@ -10204,50 +10622,124 @@ abstract class DriverRepository {
     required int seats,
     required RideCategory rideCategory,
   });
+
   Future<void> setAvailability(DriverAvailability value);
+
+  /// The driver's current position, or null when location is unavailable.
+  Future<GeoPoint?> currentLocation();
+
+  /// Publishes [point] to `driver_locations`.
+  ///
+  /// `match_offers_for_trip` requires `exists (select 1 from driver_locations l
+  /// where l.driver_id = d.id)`, so a driver who has never published a position
+  /// is invisible to the matcher however online and approved they are.
   Future<void> updateLocation(GeoPoint point);
-  Stream<DriverProfile> watchMe();
+
+  /// The driver's live trip, or null when they have none.
+  Future<Trip?> activeTrip();
+
+  /// Pending offers addressed to this driver.
+  Stream<Offer> watchOffers();
+
+  Future<void> acceptOffer(String offerId);
+
+  Future<void> declineOffer(String offerId);
+
+  /// Moves [tripId] to [to], or throws [DriverAuthFailure].
+  ///
+  /// The database refuses an illegal move in `enforce_trip_transition`, so a
+  /// failure here is the transition rule answering and not a network fault.
+  Future<void> advanceTripState(String tripId, TripState to);
+
+  /// Throws [DriverAuthFailure] unless [code] is the rider's pickup code.
+  Future<void> verifyPickupOtp(String tripId, String code);
 }
 ```
 
 `apps/driver/lib/src/data/supabase_driver_repository.dart`:
 
 ```dart
-import 'package:supabase_flutter/supabase_flutter.dart';
+import 'dart:io';
+
+import 'package:geolocator/geolocator.dart';
 import 'package:mng_core/mng_core.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+
 import 'driver_repository.dart';
+import 'function_failure.dart';
+
+/// One model per row out of a realtime event.
+///
+/// A `SupabaseStreamBuilder` yields a whole row list per event
+/// (`SupabaseStreamEvent` is `List<Map<String, dynamic>>`,
+/// `supabase-2.16.1/lib/src/supabase_stream_builder.dart:31`) and the stream
+/// operations on it all fold a future in rather than a stream, so `expand` and
+/// `asyncMap` cannot flatten one stream of lists into one stream of rows. An
+/// `await for` is the only thing that can.
+Stream<DriverProfile> _profilesOf(Stream<List<Map<String, dynamic>>> events) async* {
+  await for (final rows in events) {
+    for (final row in rows) {
+      yield DriverProfile.fromJson(row);
+    }
+  }
+}
+
+Stream<Offer> _offersOf(Stream<List<Map<String, dynamic>>> events) async* {
+  await for (final rows in events) {
+    for (final row in rows) {
+      yield Offer.fromJson(row);
+    }
+  }
+}
 
 class SupabaseDriverRepository implements DriverRepository {
   SupabaseDriverRepository(this._client);
   final SupabaseClient _client;
 
-  DriverProfile? _map(Map<String, dynamic> row) => DriverProfile.fromJson({
-        'id': row['id'],
-        'full_name': row['full_name'],
-        'phone': row['phone'],
-        'photo_url': row['photo_url'],
-        'rating': row['rating'],
-        'trip_count': row['trip_count'],
-        'kyc_status': row['kyc_status'],
-        'availability': row['availability'],
-        'vehicle_id': row['vehicle_id'],
-      });
-
-  @override
-  Future<DriverProfile?> me() async {
-    final res = await _client.from('profiles').select().eq('id', _uid).maybeSingle();
-    if (res.error != null) throw DriverAuthFailure(res.error!.message);
-    return res.data == null ? null : _map(res.data!);
+  /// The signed-in driver's id, or a failure the driver can read.
+  ///
+  /// Read into a local and checked rather than `_client.auth.currentUser!.id`.
+  /// A null assertion throws a `TypeError`, and a `TypeError` is an `Error`, so
+  /// the `on PostgrestException` catch around every caller of this would not
+  /// catch it: the failure would escape to the framework as an unhandled async
+  /// error with nothing on the driver's screen. `raiseSos` in the rider app is
+  /// the same fix at
+  /// `apps/rider/lib/src/data/supabase_trip_repository.dart:127-130`.
+  String get _uid {
+    final user = _client.auth.currentUser;
+    if (user == null) throw const DriverAuthFailure('Not signed in');
+    return user.id;
   }
 
   @override
-  Stream<DriverProfile> watchMe() => _client
-      .from('profiles')
-      .stream(primaryKey: ['id'])
-      .eq('id', _uid)
-      .map((row) => _map(row.first))
-      .where((p) => p != null)
-      .map((p) => p!);
+  Future<DriverProfile?> me() async {
+    final uid = _uid;
+    // Awaiting a postgrest builder yields the rows -- `T` is `PostgrestList`
+    // for a `select` (`postgrest_builder.dart:150`, and the `return converted
+    // as T` at `:549`) -- and a failed read throws `PostgrestException` rather
+    // than handing back an error field, so there is nothing to check here and
+    // nothing that could make a failure look like a success.
+    //
+    // `.limit(1)` then `rows.first` rather than `.maybeSingle()`: on a GET
+    // `maybeSingle` sends `Accept: application/json` and a zero-row read is a
+    // 200 `[]` coerced client-side, so the null branch it depends on is one a
+    // GET never takes. This shape depends on no response shape at all.
+    final rows = await _client.from('profiles').select().eq('id', uid).limit(1);
+    if (rows.isEmpty) return null;
+    return DriverProfile.fromJson(rows.first);
+  }
+
+  @override
+  Stream<DriverProfile> watchMe() {
+    final user = _client.auth.currentUser;
+    // An empty stream rather than a thrown getter: this is read from `build`,
+    // and a synchronous throw out of a stream factory is a crash with no
+    // message. Signed out, there is nothing to watch.
+    if (user == null) return const Stream<DriverProfile>.empty();
+    return _profilesOf(
+      _client.from('profiles').stream(primaryKey: ['id']).eq('id', user.id),
+    );
+  }
 
   @override
   Future<void> submitGhanaCard({
@@ -10255,27 +10747,52 @@ class SupabaseDriverRepository implements DriverRepository {
     required String expiry,
     required String fullName,
   }) async {
-    final res = await _client.from('profiles').update({
-      'kyc_status': 'pending',
-      'ghana_card_last4': cardNumber.replaceAll(RegExp(r'[^0-9]'), '').length >= 4
-          ? cardNumber.replaceAll(RegExp(r'[^0-9]'), '').substring(0, 4)
-          : null,
-      'ghana_card_expiry': expiry,
-      'full_name': fullName,
-    }).eq('id', _uid);
-    if (res.error != null) throw DriverAuthFailure(res.error!.message);
+    final uid = _uid;
+    final digits = cardNumber.replaceAll(RegExp(r'[^0-9]'), '');
+    try {
+      final rows = await _client
+          .from('profiles')
+          .update({
+            'kyc_status': 'pending',
+            'ghana_card_last4': digits.length >= 4 ? digits.substring(0, 4) : null,
+            'ghana_card_expiry': expiry,
+            'full_name': fullName,
+          })
+          .eq('id', uid)
+          .select('id')
+          .limit(1);
+      // A refused write throws, but an UPDATE that matches no row does not: it
+      // is a 200 with an empty body. Checking the row count is what stops a
+      // "submitted" that nothing accepted.
+      if (rows.isEmpty) {
+        throw const DriverAuthFailure('That Ghana Card was not saved');
+      }
+    } on PostgrestException catch (e) {
+      throw DriverAuthFailure(e.message);
+    }
   }
 
   @override
   Future<void> submitSelfie(String path) async {
-    await _client.storage.from('kyc').upload(
-          'selfies/$_uid.jpg',
-          File(path).readAsBytesSync(),
-          fileOptions: const FileOptions(contentType: 'image/jpeg'),
-        );
-    final url = _client.storage.from('kyc').getPublicUrl('selfies/$_uid.jpg');
-    final res = await _client.from('profiles').update({'selfie_url': url}).eq('id', _uid);
-    if (res.error != null) throw DriverAuthFailure(res.error!.message);
+    // There is no `kyc` storage bucket. `20260927000001_init.sql` creates ten
+    // tables and no bucket, and `supabase/config.toml` has every
+    // `[storage.buckets.*]` block commented out, so an upload here would fail
+    // against a project this repo builds.
+    //
+    // It is left as a read-and-check rather than an upload, on purpose: writing
+    // a `selfie_url` the driver never uploaded, or uploading into a bucket that
+    // may not exist and reporting success either way, both report a selfie the
+    // server does not hold. The capture stays on the device, the KYC screen says
+    // so, and when the bucket is provisioned this becomes the three lines the
+    // dropped upload was. A path that is not a readable file is refused here so
+    // a driver is never told their photo was taken when it was not.
+    if (path.isEmpty) {
+      throw const DriverAuthFailure('No selfie was captured');
+    }
+    final file = File(path);
+    if (!file.existsSync()) {
+      throw const DriverAuthFailure('The selfie could not be read back');
+    }
   }
 
   @override
@@ -10286,9 +10803,27 @@ class SupabaseDriverRepository implements DriverRepository {
     required int seats,
     required RideCategory rideCategory,
   }) async {
-    final existing = await _client.from('vehicles').select('id').eq('owner_id', _uid).maybeSingle();
-    final payload = {
-      'owner_id': _uid,
+    final uid = _uid;
+    final existing = await _client
+        .from('vehicles')
+        .select('id, approved')
+        .eq('owner_id', uid)
+        .limit(1);
+    final current = existing.isEmpty ? null : existing.first;
+
+    if (current != null && current['approved'] == true) {
+      // `update own vehicle unapproved` has `with check (owner_id = auth.uid()
+      // and approved = false)`, so an approved vehicle matches the UPDATE's
+      // using-clause and then fails its with-check: PostgREST answers 200 with
+      // an empty body. Without this the driver would be told the edit was saved
+      // and it was not.
+      throw const DriverAuthFailure(
+        'This vehicle is already approved and cannot be edited in the app',
+      );
+    }
+
+    final payload = <String, dynamic>{
+      'owner_id': uid,
       'vehicle_category': seats > 4 ? 'van' : 'sedan',
       'ride_category': rideCategory.name,
       'make': make,
@@ -10297,30 +10832,217 @@ class SupabaseDriverRepository implements DriverRepository {
       'seats': seats,
       'approved': false,
     };
-    final res = existing.data == null
-        ? await _client.from('vehicles').insert(payload).select('id').single()
-        : await _client.from('vehicles').update(payload).eq('id', existing.data!['id']).select('id').single();
-    if (res.error != null) throw DriverAuthFailure(res.error!.message);
-    await _client.from('profiles').update({'vehicle_id': res.data!['id']}).eq('id', _uid);
+
+    final PostgrestList saved;
+    try {
+      if (current == null) {
+        saved = await _client.from('vehicles').insert(payload).select('id').limit(1);
+      } else {
+        saved = await _client
+            .from('vehicles')
+            .update(payload)
+            .eq('id', current['id'])
+            .select('id')
+            .limit(1);
+      }
+    } on PostgrestException catch (e) {
+      throw DriverAuthFailure(e.message);
+    }
+    if (saved.isEmpty) {
+      throw const DriverAuthFailure('That vehicle was not saved');
+    }
+
+    try {
+      final linked = await _client
+          .from('profiles')
+          .update({'vehicle_id': saved.first['id']})
+          .eq('id', uid)
+          .select('id')
+          .limit(1);
+      if (linked.isEmpty) {
+        throw const DriverAuthFailure('The vehicle was saved but not linked');
+      }
+    } on PostgrestException catch (e) {
+      throw DriverAuthFailure(e.message);
+    }
   }
 
   @override
   Future<void> setAvailability(DriverAvailability value) async {
-    final res = await _client.from('profiles').update({'availability': value.name}).eq('id', _uid);
-    if (res.error != null) throw DriverAuthFailure(res.error!.message);
+    final uid = _uid;
+    try {
+      final rows = await _client
+          .from('profiles')
+          .update({'availability': value.name})
+          .eq('id', uid)
+          .select('id')
+          .limit(1);
+      if (rows.isEmpty) {
+        throw const DriverAuthFailure('That change was not saved');
+      }
+    } on PostgrestException catch (e) {
+      throw DriverAuthFailure(e.message);
+    }
+  }
+
+  @override
+  Future<GeoPoint?> currentLocation() async {
+    if (!await Geolocator.isLocationServiceEnabled()) return null;
+    var permission = await Geolocator.checkPermission();
+    if (permission == LocationPermission.denied) {
+      permission = await Geolocator.requestPermission();
+    }
+    if (permission == LocationPermission.denied ||
+        permission == LocationPermission.deniedForever) {
+      return null;
+    }
+    final position = await Geolocator.getCurrentPosition();
+    return GeoPoint(position.latitude, position.longitude);
   }
 
   @override
   Future<void> updateLocation(GeoPoint point) async {
-    final res = await _client.from('driver_locations').upsert({
-      'driver_id': _uid,
-      'point': 'POINT(${point.lng} ${point.lat})',
-      'updated_at': DateTime.now().toIso8601String(),
-    });
-    if (res.error != null) throw DriverAuthFailure(res.error!.message);
+    final uid = _uid;
+    try {
+      await _client.from('driver_locations').upsert({
+        'driver_id': uid,
+        'point': 'POINT(${point.lng} ${point.lat})',
+        'updated_at': DateTime.now().toIso8601String(),
+      });
+    } on PostgrestException catch (e) {
+      throw DriverAuthFailure(e.message);
+    }
   }
 
-  String get _uid => _client.auth.currentUser!.id;
+  @override
+  Future<Trip?> activeTrip() async {
+    final uid = _uid;
+    // The `driver_id` filter is load-bearing, and it is here because `trips`
+    // carries two SELECT policies -- `rider reads own trips` and `driver reads
+    // assigned trips` (`init.sql:518-521`) -- and RLS ORs permissive policies.
+    // Dropping it let a driver who is also a rider of a live trip match both
+    // arms, and the ordering below would then pick by recency rather than by
+    // role. Both arms are self-scoped, so the filter is here because the name
+    // is a claim and the claim has to be exact.
+    final rows = await _client
+        .from('trips')
+        .select('*')
+        .eq('driver_id', uid)
+        // `inFilter`, not `in`: `in` is a reserved word, and postgrest 2.9.1
+        // spells the filter `inFilter` (`postgrest_filter_builder.dart:239`).
+        .inFilter('state', ['requested', 'matched', 'arriving', 'ongoing'])
+        .order('created_at', ascending: false)
+        .limit(1);
+    if (rows.isEmpty) return null;
+    return Trip.fromJson(rows.first);
+  }
+
+  @override
+  Stream<Offer> watchOffers() {
+    final user = _client.auth.currentUser;
+    if (user == null) return const Stream<Offer>.empty();
+    // `offers` is in the realtime publication (`init.sql:632`), and
+    // `driver reads own offers` (`init.sql:530`) is what makes each row
+    // evidence about this driver. The `state` filter is on the client because
+    // the stream fires on every change to a matched row, and a driver does not
+    // need to be told their own offer was released.
+    return _offersOf(
+      _client
+          .from('offers')
+          .stream(primaryKey: ['id'])
+          .eq('driver_id', user.id)
+          .eq('state', 'pending'),
+    );
+  }
+
+  @override
+  Future<void> acceptOffer(String offerId) async {
+    // `offers` answers a lost race as a 200 with `accepted: false` and a win as
+    // a 200 with `accepted: true`; it throws only for the 404/409 refusals it
+    // answers itself. So both are read here: the throw for the refusal, and
+    // the `accepted` flag for the race the RPC decides.
+    dynamic data;
+    try {
+      final res = await _client.functions.invoke(
+        'offers',
+        body: {'action': 'accept', 'offerId': offerId},
+      );
+      data = res.data;
+    } on FunctionException catch (e) {
+      throw DriverAuthFailure(describeFunctionFailure(e));
+    }
+    if (data is! Map || data['accepted'] != true) {
+      throw const DriverAuthFailure('That trip was taken by another driver');
+    }
+  }
+
+  @override
+  Future<void> declineOffer(String offerId) async {
+    dynamic data;
+    try {
+      final res = await _client.functions.invoke(
+        'offers',
+        body: {'action': 'decline', 'offerId': offerId},
+      );
+      data = res.data;
+    } on FunctionException catch (e) {
+      throw DriverAuthFailure(describeFunctionFailure(e));
+    }
+    // The write is filtered on `id`, `driver_id` and `state = 'pending'`, and
+    // all three can stop matching between the read and the write, so a decline
+    // that changed nothing must not answer "declined" (`offers/resolve.ts`,
+    // `confirmDecline`). The row count is the only evidence.
+    if (data is! Map || data['declined'] != true) {
+      throw const DriverAuthFailure('That offer is no longer pending');
+    }
+  }
+
+  @override
+  Future<void> advanceTripState(String tripId, TripState to) async {
+    try {
+      final rows = await _client
+          .from('trips')
+          .update({'state': to.name})
+          .eq('id', tripId)
+          .select('id')
+          .limit(1);
+      if (rows.isEmpty) {
+        throw const DriverAuthFailure('This trip is no longer yours to move');
+      }
+    } on PostgrestException catch (e) {
+      // `enforce_trip_transition` raises on an illegal move, and PostgREST
+      // hands that back as a 400, so the rule the database enforces arrives
+      // here as an exception rather than as a quiet success.
+      throw DriverAuthFailure(_readableTransition(e.message));
+    }
+  }
+
+  /// The database's refusal is `illegal trip transition matched -> completed`;
+  /// a driver reading that learns nothing about what to press next.
+  String _readableTransition(String message) {
+    final match = RegExp(
+      r'illegal trip transition (\w+) -> (\w+)',
+    ).firstMatch(message);
+    if (match == null) return message;
+    return 'This trip moved from ${match.group(1)} to ${match.group(2)} '
+        'without you. Pull the latest trip state before trying again.';
+  }
+
+  @override
+  Future<void> verifyPickupOtp(String tripId, String code) async {
+    final rows = await _client
+        .from('trips')
+        .select('pickup_otp')
+        .eq('id', tripId)
+        .limit(1);
+    if (rows.isEmpty) {
+      throw const DriverAuthFailure('That code is not right');
+    }
+    final expected = rows.first['pickup_otp'] as String?;
+    if (expected == null || expected.isEmpty || expected != code.trim()) {
+      throw const DriverAuthFailure('That code is not right');
+    }
+  }
 }
 ```
 
@@ -10329,9 +11051,19 @@ class SupabaseDriverRepository implements DriverRepository {
 ```dart
 import 'package:flutter/foundation.dart';
 import 'package:mng_core/mng_core.dart';
+
 import '../data/driver_repository.dart';
 
-enum KycStep { identity, ghanaCard, selfie, vehicle, review, approved }
+/// The steps of driver onboarding, in the order the driver walks them.
+///
+/// `underReview` is not in the plan's list and is the reason [submit] cannot
+/// land on `approved` by itself. `submitGhanaCard` writes `kyc_status =
+/// 'pending'` -- `guard_profile_update` raises on any other value, so `pending`
+/// is the only one a client can write -- and an admin moves it to `approved`
+/// through the service role. A controller that reported "You are verified" from
+/// its own `submit()` would be telling a driver they can drive when the row
+/// says they cannot.
+enum KycStep { identity, ghanaCard, selfie, vehicle, review, underReview, approved }
 
 class CardParseResult {
   const CardParseResult({this.cardNumber, this.expiry, this.name, this.error});
@@ -10341,10 +11073,35 @@ class CardParseResult {
   final String? error;
 }
 
+/// Reads the three things a Ghana Card scan carries.
+///
+/// There is no OCR engine in this build, so nothing calls [parse] from the
+/// camera path: the app has a seam for a capture and no way to turn a picture
+/// into text. What the parser gives the driver is the other half -- a
+/// handwriting- and paste-proof way to fill the three fields in from whatever
+/// text a scan produces, and the only place the shape of a Ghana Card number
+/// and expiry is written down.
 class GhanaCardParser {
   static final _cardNumber = RegExp(r'GHA-\d{9}-\d');
-  static final _expiry = RegExp(r'(\d{2})/(\d{2})');
-  static final _name = RegExp(r'^([A-Z][A-Z\s]{4,})$', multiLine: true);
+  static final _expiry = RegExp(r'(\d{2})\s*/\s*(\d{2})');
+  static final _name = RegExp(r'^([A-Z][A-Z ]+)$');
+
+  /// Lines that are all capitals and are not the name.
+  ///
+  /// The header of a Ghana Card is `REPUBLIC OF GHANA` in capitals, and it is
+  /// the first all-capitals line in the scan. A first-match name regex
+  /// therefore returns `REPUBLIC OF GHANA` for every card ever scanned, which is
+  /// a name field the driver has to correct by hand and never has to -- because
+  /// the field is prefilled and looks right.
+  static const _notNames = <String>{
+    'REPUBLIC OF GHANA',
+    'GHANA',
+    'REPUBLIC',
+    'EXP',
+    'EXPIRY',
+    'DATE OF EXPIRY',
+    'NAME',
+  };
 
   static CardParseResult parse({required String rawText}) {
     if (rawText.trim().isEmpty) {
@@ -10364,50 +11121,138 @@ class GhanaCardParser {
     if (month < 1 || month > 12) {
       return const CardParseResult(error: 'Expiry month is not valid');
     }
-    final name = _name.firstMatch(rawText)?.group(1)?.trim();
     return CardParseResult(
       cardNumber: number.group(0),
       expiry: '${expiry.group(1)}/${expiry.group(2)}',
-      name: name,
+      name: _nameOf(rawText),
     );
+  }
+
+  static String? _nameOf(String rawText) {
+    for (final line in rawText.split('\n')) {
+      final candidate = line.trim();
+      if (candidate.isEmpty) continue;
+      if (_cardNumber.hasMatch(candidate)) continue;
+      if (_notNames.contains(candidate.toUpperCase())) continue;
+      final match = _name.firstMatch(candidate);
+      if (match != null) return match.group(1)!.trim();
+    }
+    return null;
   }
 }
 
+/// The KYC flow, as state a screen can read and a test can drive.
+///
+/// Every field is a notifying setter. The plan's version had them as plain
+/// public fields, and the screen's `onChanged: (v) => c.fullName = v` then
+/// mutated one with no `notifyListeners`, so the "Continue" button below it --
+/// which reads `canAdvance` -- stayed disabled for the whole time the driver
+/// was typing their name. Nothing on the screen was wrong; the button simply
+/// never woke up.
 class KycController extends ChangeNotifier {
   KycController(this._repo);
 
   final DriverRepository _repo;
 
-  KycStep step = KycStep.identity;
+  KycStep _step = KycStep.identity;
+  KycStep get step => _step;
+  set step(KycStep value) {
+    if (_step == value) return;
+    _step = value;
+    notifyListeners();
+  }
+
   String? error;
   bool busy = false;
 
-  String? fullName;
-  String? cardNumber;
-  String? cardExpiry;
-  String? cardName;
-  String? selfiePath;
-  String? vehicleMake;
-  String? vehicleModel;
-  String? vehiclePlate;
-  int vehicleSeats = 4;
-  RideCategory vehicleCategory = RideCategory.standard;
+  String? _fullName;
+  String? get fullName => _fullName;
+  set fullName(String? value) {
+    _fullName = value;
+    notifyListeners();
+  }
+
+  String? _cardNumber;
+  String? get cardNumber => _cardNumber;
+  set cardNumber(String? value) {
+    _cardNumber = value;
+    notifyListeners();
+  }
+
+  String? _cardExpiry;
+  String? get cardExpiry => _cardExpiry;
+  set cardExpiry(String? value) {
+    _cardExpiry = value;
+    notifyListeners();
+  }
+
+  String? _cardName;
+  String? get cardName => _cardName;
+  set cardName(String? value) {
+    _cardName = value;
+    notifyListeners();
+  }
+
+  String? _selfiePath;
+  String? get selfiePath => _selfiePath;
+  set selfiePath(String? value) {
+    _selfiePath = value;
+    notifyListeners();
+  }
+
+  String? _vehicleMake;
+  String? get vehicleMake => _vehicleMake;
+  set vehicleMake(String? value) {
+    _vehicleMake = value;
+    notifyListeners();
+  }
+
+  String? _vehicleModel;
+  String? get vehicleModel => _vehicleModel;
+  set vehicleModel(String? value) {
+    _vehicleModel = value;
+    notifyListeners();
+  }
+
+  String? _vehiclePlate;
+  String? get vehiclePlate => _vehiclePlate;
+  set vehiclePlate(String? value) {
+    _vehiclePlate = value;
+    notifyListeners();
+  }
+
+  int _vehicleSeats = 4;
+  int get vehicleSeats => _vehicleSeats;
+  set vehicleSeats(int value) {
+    _vehicleSeats = value;
+    notifyListeners();
+  }
+
+  RideCategory _vehicleCategory = RideCategory.standard;
+  RideCategory get vehicleCategory => _vehicleCategory;
+  set vehicleCategory(RideCategory value) {
+    _vehicleCategory = value;
+    notifyListeners();
+  }
 
   bool get canAdvance => switch (step) {
-        KycStep.identity => (fullName ?? '').trim().length >= 3,
+        KycStep.identity => (_fullName ?? '').trim().length >= 3,
         KycStep.ghanaCard =>
-          (cardNumber ?? '').isNotEmpty && (cardExpiry ?? '').isNotEmpty,
-        KycStep.selfie => (selfiePath ?? '').isNotEmpty,
+          (_cardNumber ?? '').isNotEmpty && (_cardExpiry ?? '').isNotEmpty,
+        KycStep.selfie => (_selfiePath ?? '').isNotEmpty,
         KycStep.vehicle =>
-          (vehicleMake ?? '').isNotEmpty &&
-              (vehicleModel ?? '').isNotEmpty &&
-              (vehiclePlate ?? '').isNotEmpty &&
-              vehicleSeats >= 1 &&
-              vehicleSeats <= 8,
-        KycStep.review => false,
-        KycStep.approved => false,
+          (_vehicleMake ?? '').isNotEmpty &&
+              (_vehicleModel ?? '').isNotEmpty &&
+              (_vehiclePlate ?? '').isNotEmpty &&
+              _vehicleSeats >= 1 &&
+              _vehicleSeats <= 8,
+        KycStep.review ||
+        KycStep.underReview ||
+        KycStep.approved =>
+          false,
       };
 
+  /// Fills the card fields from scan text, or sets [error] and changes nothing.
   void applyScan(String rawText) {
     error = null;
     final parsed = GhanaCardParser.parse(rawText: rawText);
@@ -10416,72 +11261,115 @@ class KycController extends ChangeNotifier {
       notifyListeners();
       return;
     }
-    cardNumber = parsed.cardNumber;
-    cardExpiry = parsed.expiry;
-    cardName = parsed.name;
+    _cardNumber = parsed.cardNumber;
+    _cardExpiry = parsed.expiry;
+    _cardName = parsed.name ?? _cardName;
     notifyListeners();
   }
 
+  /// Walks one step forward, writing whatever that step owns to the server.
+  ///
+  /// Each step writes as it is left, not at the end, so a driver who loses
+  /// their connection on the vehicle step keeps the card they already sent.
+  ///
+  /// Every case ends in a `break` for readability, not because it has to: under
+  /// Dart 3 a `switch` statement case that completes normally simply leaves the
+  /// switch, and a probe over this exact shape confirms one case runs per call.
+  /// (An earlier note in this file claimed the plan's breakless version was a
+  /// compile error. It is not -- `dart analyze` accepts it and the tests below
+  /// pass against it.)
   Future<void> advance() async {
     if (!canAdvance) return;
-    switch (step) {
-      case KycStep.identity:
-        step = KycStep.ghanaCard;
-      case KycStep.ghanaCard:
-        await _repo.submitGhanaCard(
-          cardNumber: cardNumber!,
-          expiry: cardExpiry!,
-          fullName: cardName ?? fullName ?? '',
-        );
-        step = KycStep.selfie;
-      case KycStep.selfie:
-        await _repo.submitSelfie(selfiePath!);
-        step = KycStep.vehicle;
-      case KycStep.vehicle:
-        await _repo.saveVehicle(
-          make: vehicleMake!,
-          model: vehicleModel!,
-          plate: vehiclePlate!,
-          seats: vehicleSeats,
-          rideCategory: vehicleCategory,
-        );
-        step = KycStep.review;
-      case KycStep.review:
-      case KycStep.approved:
-        return;
-    }
+    error = null;
+    busy = true;
     notifyListeners();
+    try {
+      switch (step) {
+        case KycStep.identity:
+          step = KycStep.ghanaCard;
+          break;
+        case KycStep.ghanaCard:
+          await _repo.submitGhanaCard(
+            cardNumber: _cardNumber!,
+            expiry: _cardExpiry!,
+            fullName: _cardName ?? _fullName ?? '',
+          );
+          step = KycStep.selfie;
+          break;
+        case KycStep.selfie:
+          await _repo.submitSelfie(_selfiePath!);
+          step = KycStep.vehicle;
+          break;
+        case KycStep.vehicle:
+          await _repo.saveVehicle(
+            make: _vehicleMake!,
+            model: _vehicleModel!,
+            plate: _vehiclePlate!,
+            seats: _vehicleSeats,
+            rideCategory: _vehicleCategory,
+          );
+          step = KycStep.review;
+          break;
+        case KycStep.review:
+        case KycStep.underReview:
+        case KycStep.approved:
+          return;
+      }
+    } on DriverAuthFailure catch (e) {
+      error = e.message;
+    } finally {
+      busy = false;
+      notifyListeners();
+    }
   }
 
   void back() {
-    if (step == KycStep.approved) return;
+    if (step == KycStep.approved || step == KycStep.underReview) return;
     final order = KycStep.values.indexOf(step);
     if (order == 0) return;
     step = KycStep.values[order - 1];
     error = null;
-    notifyListeners();
   }
 
+  /// Hands the finished application over and reads the server's answer.
+  ///
+  /// It writes nothing, and that is the change from the plan. By the time the
+  /// driver reaches `review` the card, the selfie and the vehicle are all
+  /// already on the server -- [advance] sent each of them on the way past --
+  /// so the plan's version uploaded the same selfie a second time and wrote the
+  /// same vehicle row a second time on every submit. What is left to do is the
+  /// only part that was never done: ask whether the driver is approved yet.
   Future<void> submit() async {
     if (step != KycStep.review) return;
     error = null;
     busy = true;
     notifyListeners();
     try {
-      await _repo.submitGhanaCard(
-        cardNumber: cardNumber!,
-        expiry: cardExpiry!,
-        fullName: cardName ?? fullName ?? '',
-      );
-      await _repo.submitSelfie(selfiePath!);
-      await _repo.saveVehicle(
-        make: vehicleMake!,
-        model: vehicleModel!,
-        plate: vehiclePlate!,
-        seats: vehicleSeats,
-        rideCategory: vehicleCategory,
-      );
-      step = KycStep.approved;
+      final profile = await _repo.me();
+      step = (profile?.isApproved ?? false)
+          ? KycStep.approved
+          : KycStep.underReview;
+    } on DriverAuthFailure catch (e) {
+      error = e.message;
+    } finally {
+      busy = false;
+      notifyListeners();
+    }
+  }
+
+  /// Re-reads the server's answer after an admin has looked at the application.
+  Future<void> checkStatus() async {
+    if (step != KycStep.underReview) return;
+    error = null;
+    busy = true;
+    notifyListeners();
+    try {
+      final profile = await _repo.me();
+      if (profile?.isApproved ?? false) {
+        step = KycStep.approved;
+      } else if (profile == null) {
+        error = 'This account has no driver profile yet';
+      }
     } on DriverAuthFailure catch (e) {
       error = e.message;
     } finally {
@@ -10498,16 +11386,21 @@ class KycController extends ChangeNotifier {
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 
-/// Thin seam over image_picker so widget tests never touch a platform view.
-/// Tests pass a [ScannerStub] that returns a fixed path; the app uses
-/// [ImagePickerScanner].
+/// The one place the app touches the camera.
+///
+/// A widget test must never reach a platform view, so [DocumentScanner] is the
+/// seam: [ScannerStub] answers a fixed path and the app uses
+/// [ImagePickerScanner]. Nothing in this app reads the bytes a capture
+/// produced -- see `SupabaseDriverRepository.submitSelfie` for why.
 abstract class DocumentScanner {
+  /// A path on this device, or null when the driver cancelled.
   Future<String?> capture();
 }
 
 class ImagePickerScanner implements DocumentScanner {
-  final ImagePicker _picker;
   ImagePickerScanner([ImagePicker? picker]) : _picker = picker ?? ImagePicker();
+
+  final ImagePicker _picker;
 
   @override
   Future<String?> capture() async {
@@ -10527,7 +11420,7 @@ class ScannerStub implements DocumentScanner {
   Future<String?> capture() async => path;
 }
 
-/// Button used by both the Ghana Card and selfie steps.
+/// The button both capture steps use.
 class CaptureButton extends StatelessWidget {
   const CaptureButton({
     super.key,
@@ -10560,9 +11453,14 @@ class CaptureButton extends StatelessWidget {
 
 ```dart
 import 'package:flutter/material.dart';
+import 'package:flutter_screenutil/flutter_screenutil.dart';
 import 'package:mng_core/mng_core.dart';
+
 import 'kyc_controller.dart';
 
+/// The vehicle half of [KycScreen], on its own so a driver whose vehicle was
+/// rejected can come back and fix it without walking the card and selfie steps
+/// again.
 class VehicleForm extends StatelessWidget {
   const VehicleForm({super.key, required this.controller});
 
@@ -10578,35 +11476,40 @@ class VehicleForm extends StatelessWidget {
           onChanged: (v) => controller.vehicleMake = v,
           decoration: const InputDecoration(hintText: 'Make (Toyota)'),
         ),
-        const SizedBox(height: 12),
+        SizedBox(height: 12.h),
         TextField(
           key: const Key('vehicleModelField'),
           onChanged: (v) => controller.vehicleModel = v,
           decoration: const InputDecoration(hintText: 'Model (Corolla)'),
         ),
-        const SizedBox(height: 12),
+        SizedBox(height: 12.h),
         TextField(
           key: const Key('vehiclePlateField'),
           onChanged: (v) => controller.vehiclePlate = v.toUpperCase(),
           decoration: const InputDecoration(hintText: 'Plate (GR-1234-22)'),
         ),
-        const SizedBox(height: 12),
+        SizedBox(height: 12.h),
         TextField(
           key: const Key('vehicleSeatsField'),
           keyboardType: TextInputType.number,
           onChanged: (v) => controller.vehicleSeats = int.tryParse(v) ?? 0,
           decoration: const InputDecoration(hintText: 'Seats (4)'),
         ),
-        const SizedBox(height: 12),
+        SizedBox(height: 12.h),
         DropdownButtonFormField<RideCategory>(
           key: const Key('vehicleCategoryField'),
           initialValue: controller.vehicleCategory,
           items: [
-            for (final c in RideCategory.values)
-              DropdownMenuItem(value: c, child: Text(c.label)),
+            for (final category in RideCategory.values)
+              DropdownMenuItem(value: category, child: Text(category.label)),
           ],
           onChanged: (v) =>
               controller.vehicleCategory = v ?? RideCategory.standard,
+        ),
+        SizedBox(height: 12.h),
+        Text(
+          'A human checks your vehicle before you can take rides.',
+          style: MngTheme.light.textTheme.bodySmall,
         ),
       ],
     );
@@ -10620,6 +11523,8 @@ class VehicleForm extends StatelessWidget {
 import 'package:flutter/material.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
 import 'package:mng_core/mng_core.dart';
+import 'package:provider/provider.dart';
+
 import 'document_scanner_stub.dart';
 import 'kyc_controller.dart';
 import 'vehicle_form.dart';
@@ -10630,11 +11535,26 @@ class KycScreen extends StatelessWidget {
     required this.controller,
     this.cardScanner,
     this.selfieScanner,
+    this.onContinue,
   });
 
   final KycController controller;
+
+  /// Not wired to a card scan. There is no OCR engine in this build, so
+  /// `KycScreen` never offers to scan a card: the plan's version had a button
+  /// that called `applyScan` on a hard-coded `'GHA-123456789-0 / JANE COOPER'`
+  /// string and threw the captured path away, which prefilled every driver's
+  /// card with somebody else's card and looked correct. What is here instead
+  /// takes the scan text as text, which is honest about where it came from and
+  /// exercises the same parser.
   final DocumentScanner? cardScanner;
+
   final DocumentScanner? selfieScanner;
+
+  /// Called from the `approved` step's button. The shell wires this to a
+  /// profile re-read, so the app only leaves the KYC flow when the server
+  /// agrees the driver is approved.
+  final VoidCallback? onContinue;
 
   static const _headlines = <KycStep, String>{
     KycStep.identity: 'Tell us about yourself',
@@ -10642,17 +11562,19 @@ class KycScreen extends StatelessWidget {
     KycStep.selfie: 'Take a selfie',
     KycStep.vehicle: 'Add your vehicle',
     KycStep.review: 'Review your details',
+    KycStep.underReview: 'Sent for review',
     KycStep.approved: 'You are verified',
   };
 
   @override
   Widget build(BuildContext context) {
+    final c = context.watch<KycController>();
     return Scaffold(
       appBar: AppBar(
         backgroundColor: MngColors.page,
         surfaceTintColor: Colors.transparent,
         elevation: 0,
-        title: Text(_headlines[controller.step] ?? 'Verification'),
+        title: Text(_headlines[c.step] ?? 'Verification'),
       ),
       body: SafeArea(
         child: Padding(
@@ -10661,34 +11583,17 @@ class KycScreen extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               LinearProgressIndicator(
-                value: (controller.step.index + 1) / KycStep.values.length,
+                value: (c.step.index + 1) / KycStep.values.length,
                 backgroundColor: MngColors.muted,
                 color: MngColors.primary,
               ),
               SizedBox(height: 24.h),
-              Expanded(child: _body(controller)),
-              if (controller.error != null) ...[
-                Text(controller.error!,
-                    style: const TextStyle(color: MngColors.error)),
+              Expanded(child: _body(context, c)),
+              if (c.error != null) ...[
+                Text(c.error!, style: const TextStyle(color: MngColors.error)),
                 SizedBox(height: 8.h),
               ],
-              if (controller.step == KycStep.approved)
-                FilledButton(
-                  onPressed: () {},
-                  child: const Text('Start driving'),
-                )
-              else if (controller.step == KycStep.review)
-                FilledButton(
-                  key: const Key('kycSubmitButton'),
-                  onPressed: controller.busy ? null : controller.submit,
-                  child: const Text('Submit for review'),
-                )
-              else
-                FilledButton(
-                  key: const Key('kycNextButton'),
-                  onPressed: controller.canAdvance ? controller.advance : null,
-                  child: const Text('Continue'),
-                ),
+              _action(c),
               SizedBox(height: 20.h),
             ],
           ),
@@ -10697,49 +11602,64 @@ class KycScreen extends StatelessWidget {
     );
   }
 
-  Widget _body(KycController c) {
+  Widget _action(KycController c) {
+    switch (c.step) {
+      case KycStep.review:
+        return FilledButton(
+          key: const Key('kycSubmitButton'),
+          onPressed: c.busy ? null : c.submit,
+          child: const Text('Submit for review'),
+        );
+      case KycStep.underReview:
+        return FilledButton(
+          key: const Key('kycCheckStatusButton'),
+          onPressed: c.busy ? null : c.checkStatus,
+          child: const Text('Check status'),
+        );
+      case KycStep.approved:
+        return FilledButton(
+          key: const Key('kycStartDrivingButton'),
+          onPressed: c.busy ? null : onContinue,
+          child: const Text('Start driving'),
+        );
+      case KycStep.identity:
+      case KycStep.ghanaCard:
+      case KycStep.selfie:
+      case KycStep.vehicle:
+        return FilledButton(
+          key: const Key('kycNextButton'),
+          onPressed: c.canAdvance && !c.busy ? c.advance : null,
+          child: const Text('Continue'),
+        );
+    }
+  }
+
+  Widget _body(BuildContext context, KycController c) {
     switch (c.step) {
       case KycStep.identity:
-        return TextField(
-          key: const Key('fullNameField'),
-          onChanged: (v) => c.fullName = v,
-          decoration: const InputDecoration(hintText: 'Full legal name'),
-        );
-      case KycStep.ghanaCard:
-        return ListView(
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            CaptureButton(
-              label: 'Scan Ghana Card',
-              scanner: cardScanner ?? ScannerStub('raw-scan'),
-              onCaptured: (path) => c.applyScan(
-                'REPUBLIC OF GHANA\nGHA-123456789-0\nJANE COOPER\nEXP 04/29',
-              ),
-            ),
-            const SizedBox(height: 12),
             TextField(
-              key: const Key('ghanaCardNumberField'),
-              onChanged: (v) => c.cardNumber = v,
-              decoration: const InputDecoration(hintText: 'GHA-000000000-0'),
+              key: const Key('fullNameField'),
+              onChanged: (v) => c.fullName = v,
+              decoration: const InputDecoration(hintText: 'Full legal name'),
             ),
-            const SizedBox(height: 12),
-            TextField(
-              key: const Key('ghanaCardExpiryField'),
-              onChanged: (v) => c.cardExpiry = v,
-              decoration: const InputDecoration(hintText: 'MM/YY'),
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              key: const Key('ghanaCardNameField'),
-              onChanged: (v) => c.cardName = v,
-              decoration: const InputDecoration(hintText: 'Name on card'),
+            SizedBox(height: 12.h),
+            Text(
+              'This is the name on your Ghana Card.',
+              style: MngTheme.light.textTheme.bodySmall,
             ),
           ],
         );
+      case KycStep.ghanaCard:
+        return _CardStep(controller: c);
       case KycStep.selfie:
         return ListView(
           children: [
             Text(
-              'Hold your face in the light. This is a demo, so the selfie is only stored, never matched against anything.',
+              'Hold your face in the light. This is a demo, so the selfie is '
+              'only stored, never matched against anything.',
               style: MngTheme.light.textTheme.bodySmall,
             ),
             const SizedBox(height: 16),
@@ -10751,7 +11671,10 @@ class KycScreen extends StatelessWidget {
             ),
             if (c.selfiePath != null) ...[
               const SizedBox(height: 12),
-              Text('Selfie captured', style: MngTheme.light.textTheme.bodySmall),
+              Text(
+                'Selfie captured',
+                style: MngTheme.light.textTheme.bodySmall,
+              ),
             ],
           ],
         );
@@ -10760,30 +11683,250 @@ class KycScreen extends StatelessWidget {
       case KycStep.review:
         return ListView(
           children: [
-            Text('Name: ${c.cardName ?? c.fullName ?? ''}',
-                style: MngTheme.light.textTheme.bodyMedium),
-            Text('Ghana Card: ${c.cardNumber ?? ''} (${c.cardExpiry ?? ''})',
-                style: MngTheme.light.textTheme.bodyMedium),
             Text(
-              'Vehicle: ${c.vehicleMake ?? ''} ${c.vehicleModel ?? ''} (${c.vehiclePlate ?? ''})',
+              'Name: ${c.cardName ?? c.fullName ?? ''}',
               style: MngTheme.light.textTheme.bodyMedium,
             ),
-            Text('Demo verification. A human reviews this before launch.',
-                style: MngTheme.light.textTheme.bodySmall),
+            Text(
+              'Ghana Card: ${c.cardNumber ?? ''} (${c.cardExpiry ?? ''})',
+              style: MngTheme.light.textTheme.bodyMedium,
+            ),
+            Text(
+              'Vehicle: ${c.vehicleMake ?? ''} ${c.vehicleModel ?? ''} '
+              '(${c.vehiclePlate ?? ''})',
+              style: MngTheme.light.textTheme.bodyMedium,
+            ),
+            Text(
+              'Demo verification. A human reviews this before launch.',
+              style: MngTheme.light.textTheme.bodySmall,
+            ),
           ],
+        );
+      case KycStep.underReview:
+        return Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(
+                Icons.hourglass_top,
+                color: MngColors.primary,
+                size: 64,
+              ),
+              SizedBox(height: 12.h),
+              Text(
+                'An administrator checks every driver by hand. You can go '
+                'online as soon as they approve you.',
+                textAlign: TextAlign.center,
+                style: MngTheme.light.textTheme.bodySmall,
+              ),
+            ],
+          ),
         );
       case KycStep.approved:
         return Center(
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Icon(Icons.check_circle, color: MngColors.success, size: 64),
+              const Icon(
+                Icons.check_circle,
+                color: MngColors.success,
+                size: 64,
+              ),
               SizedBox(height: 12.h),
-              Text('You are verified', style: MngTheme.light.textTheme.titleLarge),
+              // Not the step's headline: the app bar already carries it. The
+              // plan's version rendered 'You are verified' in both, which made
+              // its own `findsOneWidget` unsatisfiable and gave the driver the
+              // same sentence twice on the same screen.
+              Text(
+                'Start driving below. We will stop asking for these.',
+                textAlign: TextAlign.center,
+                style: MngTheme.light.textTheme.bodySmall,
+              ),
             ],
           ),
         );
     }
+  }
+}
+
+/// The three Ghana Card fields, bound to the controller in both directions.
+///
+/// A `TextField` with only an `onChanged` shows what the driver typed and
+/// nothing else, so a value that arrived any other way -- `applyScan` filling
+/// the fields from parsed text -- was applied to the model and never appeared on
+/// screen. The driver watched three empty boxes, pressed Continue, and was
+/// walked to the selfie step with a card the screen claimed was empty and the
+/// server had accepted.
+class _CardStep extends StatefulWidget {
+  const _CardStep({required this.controller});
+
+  final KycController controller;
+
+  @override
+  State<_CardStep> createState() => _CardStepState();
+}
+
+class _CardStepState extends State<_CardStep> {
+  final _number = TextEditingController();
+  final _expiry = TextEditingController();
+  final _name = TextEditingController();
+  final _numberFocus = FocusNode();
+  final _expiryFocus = FocusNode();
+  final _nameFocus = FocusNode();
+
+  @override
+  void initState() {
+    super.initState();
+    _pull();
+    widget.controller.addListener(_pull);
+  }
+
+  @override
+  void dispose() {
+    widget.controller.removeListener(_pull);
+    _number.dispose();
+    _expiry.dispose();
+    _name.dispose();
+    _numberFocus.dispose();
+    _expiryFocus.dispose();
+    _nameFocus.dispose();
+    super.dispose();
+  }
+
+  /// Pushes the controller's values into the fields, skipping any the driver is
+  /// part-way through typing into: a notification fires for every keystroke, and
+  /// writing the field's own text back over it would fight the driver's cursor.
+  void _pull() {
+    final c = widget.controller;
+    _sync(_number, _numberFocus, c.cardNumber);
+    _sync(_expiry, _expiryFocus, c.cardExpiry);
+    _sync(_name, _nameFocus, c.cardName);
+  }
+
+  void _sync(TextEditingController field, FocusNode node, String? value) {
+    if (_isFocused(node)) return;
+    if (field.text == (value ?? '')) return;
+    field.value = TextEditingValue(
+      text: value ?? '',
+      selection: TextSelection.collapsed(offset: (value ?? '').length),
+    );
+  }
+
+  /// True while the driver is typing in this field, which is the only time a
+  /// notification must not overwrite it.
+  static bool _isFocused(FocusNode node) => node.hasFocus;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = widget.controller;
+    return ListView(
+      children: [
+        OutlinedButton.icon(
+          key: const Key('scanTextButton'),
+          onPressed: () => _enterScanText(context),
+          icon: const Icon(Icons.text_snippet_outlined, size: 18),
+          label: const Text('Enter scan text'),
+        ),
+        const SizedBox(height: 12),
+        TextField(
+          key: const Key('ghanaCardNumberField'),
+          controller: _number,
+          focusNode: _numberFocus,
+          onChanged: (v) => c.cardNumber = v,
+          decoration: const InputDecoration(hintText: 'GHA-000000000-0'),
+        ),
+        const SizedBox(height: 12),
+        TextField(
+          key: const Key('ghanaCardExpiryField'),
+          controller: _expiry,
+          focusNode: _expiryFocus,
+          onChanged: (v) => c.cardExpiry = v,
+          decoration: const InputDecoration(hintText: 'MM/YY'),
+        ),
+        const SizedBox(height: 12),
+        TextField(
+          key: const Key('ghanaCardNameField'),
+          controller: _name,
+          focusNode: _nameFocus,
+          onChanged: (v) => c.cardName = v,
+          decoration: const InputDecoration(hintText: 'Name on card'),
+        ),
+        const SizedBox(height: 12),
+        Text(
+          'Automatic card reading is not switched on in this build. Enter '
+          'the three fields by hand, or paste the text a scan produced.',
+          style: MngTheme.light.textTheme.bodySmall,
+        ),
+      ],
+    );
+  }
+
+  Future<void> _enterScanText(BuildContext context) async {
+    final text = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => _ScanTextDialog(
+        onCancel: () => Navigator.of(dialogContext).pop(),
+        onUse: (value) => Navigator.of(dialogContext).pop(value),
+      ),
+    );
+    if (text != null && text.trim().isNotEmpty) {
+      widget.controller.applyScan(text);
+    }
+  }
+}
+
+/// The dialog owns the controller, and that is the whole point of it being a
+/// widget.
+///
+/// A controller created in the caller and disposed as soon as `showDialog`
+/// returns is disposed one frame too early: the route is still animating out,
+/// so the `TextField` rebuilds once more against a disposed controller and
+/// throws "A TextEditingController was used after being disposed" during a
+/// frame. The throw lands in the middle of the pop, so the screen below is left
+/// half-built and the fields the driver had just filled never appear. A
+/// `StatefulWidget`'s `dispose` runs when the element is actually torn down,
+/// which is after that frame.
+class _ScanTextDialog extends StatefulWidget {
+  const _ScanTextDialog({required this.onCancel, required this.onUse});
+
+  final VoidCallback onCancel;
+  final void Function(String text) onUse;
+
+  @override
+  State<_ScanTextDialog> createState() => _ScanTextDialogState();
+}
+
+class _ScanTextDialogState extends State<_ScanTextDialog> {
+  final _field = TextEditingController();
+
+  @override
+  void dispose() {
+    _field.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      key: const Key('scanTextDialog'),
+      title: const Text('Scan text'),
+      content: TextField(
+        key: const Key('scanTextField'),
+        controller: _field,
+        maxLines: 5,
+        decoration: const InputDecoration(
+          hintText: 'REPUBLIC OF GHANA\nGHA-...\nNAME\nEXP MM/YY',
+        ),
+      ),
+      actions: [
+        TextButton(onPressed: widget.onCancel, child: const Text('Cancel')),
+        TextButton(
+          key: const Key('scanTextConfirmButton'),
+          onPressed: () => widget.onUse(_field.text),
+          child: const Text('Use this'),
+        ),
+      ],
+    );
   }
 }
 ```
@@ -10794,7 +11937,9 @@ class KycScreen extends StatelessWidget {
 cd ~/meet-n-go/apps/driver && flutter test test/onboarding/ && flutter analyze
 ```
 
-Expected: 19 tests pass.
+Expected: 51 tests pass, `flutter analyze --fatal-infos` clean. The runner's own
+total, measured 2026-09-28. The plan's block declared 17, and three of those
+could not pass against the plan's own code.
 
 - [ ] **Step 9: Commit**
 
@@ -10806,6 +11951,26 @@ git -c user.email=opencode@local -c user.name=opencode commit -m "feat(driver): 
 ---
 
 ### Task 13: Driver app — online toggle and offer queue
+
+> **Corrected 2026-09-28 by extraction and execution.** See Task 12's
+> note for the full class list. The two that belong here specifically: the
+> `availability_test.dart` in this task asserts two things that cannot both
+> hold, and it is the plan's **named** required test
+> `go_offline_refused_during_active_trip_test`. It expects
+> `repo.stored == DriverAvailability.online` with the reason "repository must
+> not be touched", and in the same test `repo.setAvailabilityCalls == 0`;
+> `stored` starts at `offline` and only `setAvailability` writes it, so on the
+> branch under test it is still `offline`. Extracted and run it fails with
+> `Expected: DriverAvailability.online  Actual: DriverAvailability.offline`.
+> The block below keeps the call count, which is the assertion that carries the
+> meaning, and reads the toggle from the controller.
+>
+> The second: `DriverHomeScreen` takes `availability` and `offers` as
+> constructor arguments and this task's version then reads *both from `context`*,
+> so the arguments are decoration. Taking them as arguments without also
+> listening to them is worse, not better: the screen never rebuilds. The block
+> below keeps the arguments and adds the `ListenableBuilder` that makes them
+> live. No test in this task rendered this screen at all.
 
 **Files:**
 - Create: `apps/driver/lib/src/offers/availability_controller.dart`
@@ -10830,65 +11995,21 @@ git -c user.email=opencode@local -c user.name=opencode commit -m "feat(driver): 
 `apps/driver/test/offers/availability_test.dart`:
 
 ```dart
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:meetngo_driver/src/data/driver_repository.dart';
-import 'package:meetngo_driver/src/offers/availability_controller.dart';
 import 'package:mng_core/mng_core.dart';
+import 'package:meetngo_driver/src/offers/availability_controller.dart';
+import 'package:meetngo_driver/src/offers/driver_home_screen.dart';
+import 'package:meetngo_driver/src/offers/offer_queue_controller.dart';
 
-class StubDriverRepository implements DriverRepository {
-  Trip? active;
-  DriverAvailability stored = DriverAvailability.offline;
-  int setAvailabilityCalls = 0;
+import '../support/fakes.dart';
+import '../support/harness.dart';
 
-  @override
-  Future<Trip?> activeTrip() async => active;
-
-  @override
-  Future<void> setAvailability(DriverAvailability value) async {
-    setAvailabilityCalls++;
-    stored = value;
-  }
-
-  @override
-  Future<DriverProfile?> me() async => null;
-
-  @override
-  Future<void> submitGhanaCard({
-    required String cardNumber,
-    required String expiry,
-    required String fullName,
-  }) async {}
-
-  @override
-  Future<void> submitSelfie(String path) async {}
-
-  @override
-  Future<void> saveVehicle({
-    required String make,
-    required String model,
-    required String plate,
-    required int seats,
-    required RideCategory rideCategory,
-  }) async {}
-
-  @override
-  Future<void> updateLocation(GeoPoint point) async {}
-
-  @override
-  Stream<DriverProfile> watchMe() => const Stream<DriverProfile>.empty();
-}
-
-Trip tripIn(TripState state) => Trip(
-      id: 't1',
-      riderId: 'r1',
-      driverId: 'd1',
-      category: RideCategory.standard,
-      state: state,
-      pickup: const TripStop('P', GeoPoint(5.6037, -0.1870), 'Osu'),
-      dropoff: const TripStop('D', GeoPoint(5.6200, -0.1870), 'Airport'),
-      distanceKm: 2.02,
-      fareGhs: 12.50,
-      isDemo: true,
+Widget home(AvailabilityController availability, StubDriverRepository repo) =>
+    DriverHomeScreen(
+      availability: availability,
+      offers: OfferQueueController(repo),
+      profile: driverProfile(),
     );
 
 void main() {
@@ -10897,35 +12018,67 @@ void main() {
   setUp(() => repo = StubDriverRepository());
 
   test('goes online when no trip is active', () async {
-    final c = AvailabilityController(repo)..online = false;
+    final c = AvailabilityController(repo, online: false);
     final ok = await c.setOnline(true);
     expect(ok, isTrue);
-    expect(repo.stored, DriverAvailability.online);
+    expect(repo.availability, DriverAvailability.online);
     expect(c.online, isTrue);
   });
 
+  test('going offline with no trip is allowed', () async {
+    final c = AvailabilityController(repo, online: true);
+    expect(await c.setOnline(false), isTrue);
+    expect(repo.availability, DriverAvailability.offline);
+  });
+
+  // The plan named this one. It is the refusal that stops a driver leaving the
+  // queue mid-ride, so it is the one test in the file that has to be right.
+  //
+  // The plan's version asserted two things that cannot both hold:
+  // `repo.stored == DriverAvailability.online` with the reason "repository must
+  // not be touched", and `repo.setAvailabilityCalls == 0`. `stored` starts at
+  // `offline` and only `setAvailability` ever writes it, so on the branch under
+  // test it is still `offline`. Extracted and run, it fails with
+  // `Expected: DriverAvailability.online  Actual: DriverAvailability.offline`.
+  // The call count is the assertion that carries the meaning; the toggle state
+  // is read from the controller and not from the fake's copy of a value the
+  // refused write never delivered.
   test('go_offline_refused_during_active_trip_test', () async {
     repo.active = tripIn(TripState.arriving);
-    final c = AvailabilityController(repo)..online = true;
+    final c = AvailabilityController(repo, online: true);
+
     final ok = await c.setOnline(false);
+
     expect(ok, isFalse, reason: 'a driver with a live trip must not go offline');
-    expect(repo.stored, DriverAvailability.online, reason: 'repository must not be touched');
-    expect(repo.setAvailabilityCalls, 0);
+    expect(
+      repo.setAvailabilityCalls,
+      0,
+      reason: 'repository must not be touched',
+    );
     expect(c.online, isTrue, reason: 'toggle springs back');
-    expect(c.refusalReason, contains('Finish or cancel your current trip'));
+    expect(
+      c.refusalReason,
+      contains('Finish or cancel your current trip'),
+    );
+  });
+
+  test('going online is never refused by a live trip', () async {
+    repo.active = tripIn(TripState.ongoing);
+    final c = AvailabilityController(repo, online: false);
+    expect(await c.setOnline(true), isTrue);
+    expect(c.refusalReason, isNull);
   });
 
   test('a completed trip does not block going offline', () async {
     repo.active = tripIn(TripState.completed);
-    final c = AvailabilityController(repo)..online = true;
-    final ok = await c.setOnline(false);
-    expect(ok, isTrue);
-    expect(repo.stored, DriverAvailability.offline);
+    final c = AvailabilityController(repo, online: true);
+    expect(await c.setOnline(false), isTrue);
+    expect(repo.availability, DriverAvailability.offline);
   });
 
   test('a cancelled trip does not block going offline', () async {
     repo.active = tripIn(TripState.cancelled);
-    final c = AvailabilityController(repo)..online = true;
+    final c = AvailabilityController(repo, online: true);
     expect(await c.setOnline(false), isTrue);
   });
 
@@ -10937,25 +12090,159 @@ void main() {
       TripState.ongoing,
     ]) {
       repo.active = tripIn(state);
-      final c = AvailabilityController(repo)..online = true;
-      expect(await c.setOnline(false), isFalse, reason: '$state must block going offline');
+      final c = AvailabilityController(repo, online: true);
+      expect(
+        await c.setOnline(false),
+        isFalse,
+        reason: '$state must block going offline',
+      );
+      expect(repo.setAvailabilityCalls, 0, reason: state.name);
     }
   });
 
-  test('a repository failure surfaces an error and keeps the old value', () async {
-    final failing = _FailingAvailabilityRepository();
-    final c = AvailabilityController(failing)..online = false;
+  test('a repository failure surfaces an error and keeps the old value',
+      () async {
+    repo.availabilityFails = true;
+    final c = AvailabilityController(repo, online: false);
     expect(await c.setOnline(true), isFalse);
     expect(c.error, isNotNull);
     expect(c.online, isFalse);
   });
-}
 
-class _FailingAvailabilityRepository extends StubDriverRepository {
-  @override
-  Future<void> setAvailability(DriverAvailability value) async {
-    throw const DriverAuthFailure('network down');
-  }
+  test('a failed trip read refuses rather than going offline blind', () async {
+    repo.activeTripFails = true;
+    final c = AvailabilityController(repo, online: true);
+    expect(await c.setOnline(false), isFalse);
+    expect(c.error, contains('Could not check your current trip'));
+    expect(repo.setAvailabilityCalls, 0);
+    expect(c.online, isTrue);
+  });
+
+  // `match_offers_for_trip` requires a row in `driver_locations`, and nothing
+  // else in this app ever writes one, so a driver who goes online without a
+  // position is online and invisible at the same time.
+  test('going online publishes a position so the matcher can see the driver',
+      () async {
+    final c = AvailabilityController(repo, online: false);
+    expect(await c.setOnline(true), isTrue);
+    expect(repo.updateLocationCalls, 1);
+    expect(repo.lastLocation, const GeoPoint(5.6037, -0.1870));
+  });
+
+  test('an unavailable position does not undo going online', () async {
+    repo.locationAvailable = false;
+    final c = AvailabilityController(repo, online: false);
+    expect(await c.setOnline(true), isTrue);
+    expect(c.online, isTrue);
+    expect(repo.updateLocationCalls, 0);
+    expect(c.error, contains('location is not available'));
+  });
+
+  test('adopting a stored onTrip value leaves the toggle off', () {
+    final c = AvailabilityController(repo)
+      ..adoptStored(DriverAvailability.onTrip);
+    expect(c.online, isFalse, reason: 'onTrip is not on the queue');
+  });
+
+  test('adopting a stored online value shows the toggle on', () {
+    final c = AvailabilityController(repo)
+      ..adoptStored(DriverAvailability.online);
+    expect(c.online, isTrue);
+  });
+
+  // `onTrip` is the third value of the enum and the plan never wrote it, so a
+  // driver who accepted an offer still read `online` -- the exact value
+  // `match_offers_for_trip` filters on, and the same driver could be offered a
+  // second trip while already driving the first.
+  test('accepting an offer takes the driver off the queue', () async {
+    final c = AvailabilityController(repo, online: true);
+    await c.beginTrip();
+    expect(c.online, isFalse);
+    expect(repo.availability, DriverAvailability.onTrip);
+  });
+
+  test('a trip started while offline does not invent an onTrip write', () async {
+    final c = AvailabilityController(repo, online: false);
+    await c.beginTrip();
+    expect(repo.setAvailabilityCalls, 0);
+  });
+
+  test('finishing a trip puts an online driver back on the queue', () async {
+    final c = AvailabilityController(repo)
+      ..adoptStored(DriverAvailability.online);
+    await c.beginTrip();
+    await c.endTrip();
+    expect(c.online, isTrue);
+    expect(repo.availability, DriverAvailability.online);
+  });
+
+  test('finishing a trip does not put an offline driver online', () async {
+    final c = AvailabilityController(repo, online: false);
+    await c.endTrip();
+    expect(c.online, isFalse);
+    expect(repo.setAvailabilityCalls, 0);
+  });
+
+  test('the toggle is not offered while a write is in flight', () async {
+    final c = AvailabilityController(repo, online: false);
+    expect(c.canToggle, isTrue);
+    final pending = c.setOnline(true);
+    expect(c.canToggle, isFalse);
+    await pending;
+    expect(c.canToggle, isTrue);
+  });
+
+  test('a state change tells the screen about it', () async {
+    final c = AvailabilityController(repo, online: false);
+    var notifications = 0;
+    c.addListener(() => notifications++);
+    await c.setOnline(true);
+    expect(notifications, greaterThan(0));
+  });
+
+  testWidgets('the home screen refuses to go offline mid-trip', (tester) async {
+    useDesignSurface(tester);
+    repo.active = tripIn(TripState.ongoing);
+    final availability = AvailabilityController(repo, online: true);
+    await tester.pumpWidget(appHarness(home(availability, repo)));
+
+    expect(find.text('You are online'), findsOneWidget);
+    await tester.tap(find.byKey(const Key('onlineToggle')));
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('Finish or cancel'), findsOneWidget);
+    expect(repo.setAvailabilityCalls, 0);
+    expect(find.text('You are online'), findsOneWidget);
+  });
+
+  testWidgets('the home screen names the error when the write fails',
+      (tester) async {
+    useDesignSurface(tester);
+    repo.availabilityFails = true;
+    final availability = AvailabilityController(repo, online: false);
+    await tester.pumpWidget(appHarness(home(availability, repo)));
+
+    await tester.tap(find.byKey(const Key('onlineToggle')));
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const Key('availabilityError')), findsOneWidget);
+    expect(find.text('You are offline'), findsOneWidget);
+  });
+
+  testWidgets('an offline driver is told to go online first', (tester) async {
+    useDesignSurface(tester);
+    final availability = AvailabilityController(repo, online: false);
+    await tester.pumpWidget(appHarness(home(availability, repo)));
+    expect(find.text('Go online to start receiving requests'), findsOneWidget);
+  });
+
+  testWidgets('an online driver with an empty queue waits for requests',
+      (tester) async {
+    useDesignSurface(tester);
+    final availability = AvailabilityController(repo, online: true);
+    await tester.pumpWidget(appHarness(home(availability, repo)));
+    expect(find.text('Waiting for ride requests near you'), findsOneWidget);
+  });
 }
 ```
 
@@ -10972,43 +12259,13 @@ Expected: FAIL — `AvailabilityController` is not defined.
 `apps/driver/lib/src/data/driver_repository.dart`, inside the abstract class:
 
 ```dart
-  Future<Trip?> activeTrip();
-  Stream<Offer> watchOffers();
+// `activeTrip` and `watchOffers` are already in the `driver_repository.dart` block above, with the two statements a failing read and a failed write make.
 ```
 
 `SupabaseDriverRepository` implements them:
 
 ```dart
-  @override
-  Future<Trip?> activeTrip() async {
-    final res = await _client
-        .from('trips')
-        .select('*')
-        .eq('driver_id', _uid)
-        .inFilter('state', ['requested', 'matched', 'arriving', 'ongoing'])
-        .order('created_at', ascending: false)
-        .limit(1);
-    if (res.error != null) throw DriverAuthFailure(res.error!.message);
-    final rows = res.data as List<dynamic>;
-    if (rows.isEmpty) return null;
-    return Trip.fromJson(Map<String, dynamic>.from(rows.first as Map));
-  }
-
-  @override
-  Stream<Offer> watchOffers() => _client
-      .channel('driver_${_uid}_offers')
-      .onPostgresChanges(
-        event: PostgresChangeEvent.all,
-        schema: 'public',
-        table: 'offers',
-        filter: PostgresChangeFilter(
-          type: PostgresChangeFilterType.eq,
-          column: 'driver_id',
-          value: _uid,
-        ),
-      )
-      .stream()
-      .map((e) => Offer.fromJson(Map<String, dynamic>.from(e.newRecord)));
+// `activeTrip` and `watchOffers` on `SupabaseDriverRepository` are already in the `supabase_driver_repository.dart` block above. The plan's version read `res.error`/`res.data` off an awaited postgrest builder, and used `.onPostgresChanges(...).stream()`; both are corrected there.
 ```
 
 - [ ] **Step 4: Write `availability_controller.dart`**
@@ -11016,26 +12273,84 @@ Expected: FAIL — `AvailabilityController` is not defined.
 ```dart
 import 'package:flutter/foundation.dart';
 import 'package:mng_core/mng_core.dart';
+
 import '../data/driver_repository.dart';
 
+/// The online toggle, and the one refusal that matters.
+///
+/// `onTrip` is the third value of `driver_availability` and nothing in the plan
+/// ever wrote it. That left a driver who accepted an offer still reading
+/// `availability = 'online'`, which is the exact value
+/// `match_offers_for_trip` filters on, so the same driver could be fanned
+/// another trip's offer while already driving one. [beginTrip] and [endTrip] are
+/// the two halves of that, and they are on this class rather than in the shell
+/// because the invariant is about the driver's availability, not about which
+/// screen happens to be showing.
 class AvailabilityController extends ChangeNotifier {
-  AvailabilityController(this._repo);
+  /// [online] seeds the toggle for a test that needs "this driver is already on
+  /// the queue" without a repository write first. Production goes through
+  /// [adoptStored], which reads the value the server actually holds.
+  ///
+  /// It is a constructor argument rather than a public setter on [online] on
+  /// purpose: a setter would let any screen move the toggle without passing the
+  /// refusal in [setOnline], which is the one thing the toggle must not skip.
+  ///
+  /// The initialising form is unavailable -- Dart has no private named
+  /// parameters, so a named seed cannot be written `this._online`.
+  // ignore: prefer_initializing_formals
+  AvailabilityController(this._repo, {bool online = false}) : _online = online;
 
   final DriverRepository _repo;
 
-  bool online = false;
-  bool busy = false;
+  bool _online;
+  bool get online => _online;
+
+  bool _busy = false;
+  bool get busy => _busy;
+
   String? error;
+
+  /// Why the driver was not allowed to do the thing they just asked to do.
   String? refusalReason;
 
-  bool get canToggle => !busy;
+  /// Set while a trip is holding the driver off the queue, so [endTrip] knows
+  /// to put them back.
+  bool _resumeWhenTripEnds = false;
 
+  /// Reads the value the server already holds, on load.
+  ///
+  /// `onTrip` counts as a resume: a driver whose phone died mid-trip comes back
+  /// to a profile that says `onTrip`, and the trip they are still on is what
+  /// the shell re-reads, so the resume flag has to be set from the stored value
+  /// rather than from whether this session saw the accept.
+  void adoptStored(DriverAvailability stored) {
+    _online = stored == DriverAvailability.online;
+    _resumeWhenTripEnds = stored == DriverAvailability.online ||
+        stored == DriverAvailability.onTrip;
+    notifyListeners();
+  }
+
+  bool get canToggle => !_busy;
+
+  /// Goes online or offline, or refuses.
+  ///
+  /// Going offline is the only refused direction. A driver who is mid-trip
+  /// cannot leave the queue, because the matcher would stop seeing them while
+  /// they are still carrying a rider, and because the trip screen and the home
+  /// screen would then disagree about what the driver is doing.
   Future<bool> setOnline(bool value) async {
     error = null;
     refusalReason = null;
 
     if (!value) {
-      final active = await _repo.activeTrip();
+      final Trip? active;
+      try {
+        active = await _repo.activeTrip();
+      } on DriverAuthFailure catch (e) {
+        error = 'Could not check your current trip: ${e.message}';
+        notifyListeners();
+        return false;
+      }
       if (active != null && active.state.isActive) {
         refusalReason = 'Finish or cancel your current trip before going offline';
         notifyListeners();
@@ -11043,19 +12358,89 @@ class AvailabilityController extends ChangeNotifier {
       }
     }
 
-    busy = true;
+    _busy = true;
     notifyListeners();
     try {
       await _repo.setAvailability(
         value ? DriverAvailability.online : DriverAvailability.offline,
       );
-      online = value;
+      _online = value;
+      if (value) await _publishLocation();
       return true;
     } on DriverAuthFailure catch (e) {
       error = e.message;
       return false;
     } finally {
-      busy = false;
+      _busy = false;
+      notifyListeners();
+    }
+  }
+
+  /// The driver accepted an offer, so they are no longer available for another.
+  Future<void> beginTrip() async {
+    if (!_online) return;
+    _online = false;
+    try {
+      await _repo.setAvailability(DriverAvailability.onTrip);
+    } on DriverAuthFailure catch (e) {
+      error = 'Trip accepted, but going off the queue failed: ${e.message}';
+    }
+    notifyListeners();
+  }
+
+  /// The trip is over, so put the driver back on the queue if they chose to be
+  /// on it.
+  ///
+  /// Only does anything when a trip actually held them, so finishing a trip as
+  /// an offline driver does not silently put them online.
+  Future<void> endTrip() async {
+    if (!_resumeWhenTripEnds) return;
+    _resumeWhenTripEnds = false;
+    _online = true;
+    try {
+      await _repo.setAvailability(DriverAvailability.online);
+      await _publishLocation();
+    } on DriverAuthFailure catch (e) {
+      error = 'Trip finished, but going back online failed: ${e.message}';
+    }
+    notifyListeners();
+  }
+
+  /// Publishes a position, so `match_offers_for_trip` can see this driver at
+  /// all: it requires `exists (select 1 from driver_locations l where
+  /// l.driver_id = d.id)`, and a driver who has never published one is
+  /// invisible to the matcher however online and approved they are.
+  ///
+  /// A failure here is reported and does not undo going online. The
+  /// availability write has already succeeded, the driver is genuinely online,
+  /// and the only thing lost is their position -- which they can retry from the
+  /// toggle. Failing the whole toggle would report a refusal the server did not
+  /// make.
+  ///
+  /// Both ways this can go wrong are named, because a driver who is online and
+  /// invisible to the matcher waits for requests that cannot arrive and the
+  /// screen said nothing:
+  ///  * no position at all -- location is off, or the permission was refused.
+  ///    `currentLocation` answers null rather than throwing, so a `try` with only
+  ///    a catch reports the throwing case and misses this one;
+  ///  * a position that would not publish -- the write is refused.
+  Future<void> _publishLocation() async {
+    GeoPoint? here;
+    try {
+      here = await _repo.currentLocation();
+    } on Object {
+      // Same message as a null: either way there is no position to publish.
+    }
+    if (here == null) {
+      error = 'Your location is not available, so ride requests cannot reach you';
+      notifyListeners();
+      return;
+    }
+    try {
+      await _repo.updateLocation(here);
+    } on Object {
+      error = 'Your location could not be published, so ride requests cannot '
+          'reach you';
       notifyListeners();
     }
   }
@@ -11068,7 +12453,8 @@ class AvailabilityController extends ChangeNotifier {
 cd ~/meet-n-go/apps/driver && flutter test test/offers/availability_test.dart
 ```
 
-Expected: 6 tests pass.
+Expected: 23 tests pass. The plan claimed 6, and the six it wrote included the
+unsatisfiable `go_offline_refused_during_active_trip_test`.
 
 - [ ] **Step 6: Write the failing offer-queue test**
 
@@ -11076,135 +12462,242 @@ Expected: 6 tests pass.
 
 ```dart
 import 'package:flutter/material.dart';
-import 'package:flutter_screenutil/flutter_screenutil.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:meetngo_driver/src/data/driver_repository.dart';
+import 'package:mng_core/mng_core.dart';
 import 'package:meetngo_driver/src/offers/offer_card.dart';
 import 'package:meetngo_driver/src/offers/offer_queue_controller.dart';
-import 'package:mng_core/mng_core.dart';
-import 'package:provider/provider.dart';
 
-import 'availability_test.dart' show StubDriverRepository;
-
-Offer offer(String id, {Duration ttl = const Duration(seconds: 20)}) => Offer(
-      id: id,
-      tripId: 't1',
-      driverId: 'd1',
-      fareGhs: 12.50,
-      pickupDistanceKm: 0.8,
-      expiresAt: DateTime.now().add(ttl),
-    );
-
-class QueueRepo extends StubDriverRepository {
-  QueueRepo(this.acceptedOfferIds, this.declinedOfferIds);
-  final List<String> acceptedOfferIds;
-  final List<String> declinedOfferIds;
-
-  @override
-  Future<void> acceptOffer(String offerId) async => acceptedOfferIds.add(offerId);
-
-  @override
-  Future<void> declineOffer(String offerId) async => declinedOfferIds.add(offerId);
-}
+import '../support/fakes.dart';
+import '../support/harness.dart';
 
 void main() {
-  test('newest offer is the head of the queue', () {
-    final c = OfferQueueController(QueueRepo([], []));
-    c.add(offer('a'));
-    c.add(offer('b'));
+  late StubDriverRepository repo;
+
+  setUp(() => repo = StubDriverRepository());
+
+  test('the newest offer is the head of the queue', () {
+    final c = OfferQueueController(repo);
+    c
+      ..add(offer('a'))
+      ..add(offer('b'));
     expect(c.offers.first.id, 'b');
     expect(c.offers, hasLength(2));
+    expect(c.next!.id, 'b');
   });
 
   test('adding the same offer twice is idempotent', () {
-    final c = OfferQueueController(QueueRepo([], []));
-    c.add(offer('a'));
-    c.add(offer('a'));
+    final c = OfferQueueController(repo);
+    c
+      ..add(offer('a'))
+      ..add(offer('a'));
     expect(c.offers, hasLength(1));
   });
 
   test('an offer that is not pending is ignored', () {
-    final c = OfferQueueController(QueueRepo([], []));
-    c.add(offer('a').copyWith(state: OfferState.accepted));
+    final c = OfferQueueController(repo)
+      ..add(offer('a').copyWith(state: OfferState.accepted));
     expect(c.offers, isEmpty);
+    expect(c.next, isNull);
   });
 
   test('accept removes the offer and reports success', () async {
-    final repo = QueueRepo([], []);
     final c = OfferQueueController(repo)..add(offer('a'));
     expect(await c.accept(c.next!), isTrue);
     expect(repo.acceptedOfferIds, ['a']);
     expect(c.offers, isEmpty);
   });
 
-  test('a losing accept returns false and keeps the offer for retry', () async {
-    final repo = _LosingQueueRepo();
+  test('accepting asks the server about the exact offer that was shown', () async {
+    final c = OfferQueueController(repo)
+      ..add(offer('a'))
+      ..add(offer('b'));
+    await c.accept(c.next!);
+    expect(repo.acceptedOfferIds, ['b']);
+  });
+
+  // A lost race is the ordinary outcome of five drivers and one trip, and the
+  // offer may still be live -- the loss can be a transport fault. Dropping it
+  // hides a trip the driver can still take.
+  test('a losing accept returns false and keeps the offer for a retry',
+      () async {
+    repo.acceptLoses = true;
     final c = OfferQueueController(repo)..add(offer('a'));
     expect(await c.accept(c.next!), isFalse);
     expect(c.error, isNotNull);
+    expect(c.offers.map((o) => o.id), ['a']);
+  });
+
+  test('the refusal reason from the server reaches the driver', () async {
+    repo.acceptLoses = true;
+    final c = OfferQueueController(repo)..add(offer('a'));
+    await c.accept(c.next!);
+    expect(c.error, 'That trip was taken by another driver');
   });
 
   test('decline removes the offer', () async {
-    final repo = QueueRepo([], []);
     final c = OfferQueueController(repo)..add(offer('a'));
     await c.decline(c.next!);
     expect(repo.declinedOfferIds, ['a']);
     expect(c.offers, isEmpty);
   });
 
-  test('tick drops expired offers', () {
-    final c = OfferQueueController(QueueRepo([], []));
-    c.add(offer('live', ttl: const Duration(seconds: 20)));
-    c.add(offer('dead', ttl: const Duration(seconds: -1)));
+  // The plan removed the offer only on success, so a decline whose network call
+  // failed left a declined offer on screen with a live countdown, inviting the
+  // driver to press the wrong button. Intent was clear; the row is not coming
+  // back either way.
+  test('a failed decline still removes the offer and says why', () async {
+    repo.declineSucceeds = false;
+    final c = OfferQueueController(repo)..add(offer('a'));
+    await c.decline(c.next!);
+    expect(c.offers, isEmpty);
+    expect(c.error, isNotNull);
+  });
+
+  // The 20-second TTL is `kOfferTtl` in `mng_core` and is not configurable. The
+  // server has no sweeper, so an offer past `expires_at` is still `pending` in
+  // the database until somebody acts on it.
+  test('tick drops expired offers and keeps live ones', () {
+    final c = OfferQueueController(repo)
+      ..add(offer('live'))
+      ..add(offer('dead', ttl: const Duration(seconds: -1)));
     c.tick();
     expect(c.offers.map((o) => o.id), ['live']);
   });
 
-  testWidgets('card shows fare, pickup distance and the countdown', (tester) async {
-    await tester.pumpWidget(ScreenUtilInit(
-      designSize: const Size(390, 844),
-      builder: (_, _) => MaterialApp(
-        home: Scaffold(
-          body: OfferCard(offer: offer('a'), onAccept: () {}, onDecline: () {}),
-        ),
-      ),
+  test('a tick that changes nothing does not notify', () {
+    final c = OfferQueueController(repo)..add(offer('live'));
+    var notifications = 0;
+    c.addListener(() => notifications++);
+    c.tick();
+    expect(notifications, 0);
+  });
+
+  test('a tick that drops one does notify', () {
+    final c = OfferQueueController(repo)
+      ..add(offer('dead', ttl: const Duration(seconds: -1)));
+    var notifications = 0;
+    c.addListener(() => notifications++);
+    c.tick();
+    expect(notifications, 1);
+  });
+
+  // The TTL is a constant in `mng_core` and nothing in this app can change it.
+  // `secondsRemaining` truncates rather than rounds, so a freshly built offer
+  // reads 19 or 20 depending on where in the second the assertion lands; what
+  // is pinned here is the boundary, not the reading of a moving clock.
+  test('the TTL really is 20 seconds and is not configurable', () {
+    expect(kOfferTtl, const Duration(seconds: 20));
+    expect(offer('a').isExpired, isFalse);
+    expect(
+      offer('a', ttl: kOfferTtl - const Duration(milliseconds: 1)).isExpired,
+      isFalse,
+      reason: 'one millisecond inside the window is still live',
+    );
+    expect(
+      offer('a', ttl: const Duration(milliseconds: -1)).isExpired,
+      isTrue,
+      reason: 'one millisecond outside it is not',
+    );
+  });
+
+  // Truncation, not rounding: a fresh 20-second offer reads 19, because
+  // `expiresAt - now` is 19.99... seconds. Read in the same expression as the
+  // construction, where the two `DateTime.now()` calls are microseconds apart,
+  // this is not a coin toss.
+  test('the countdown truncates rather than rounds', () {
+    expect(offer('a').secondsRemaining, 19);
+    expect(offer('a', ttl: const Duration(milliseconds: 1950)).secondsRemaining, 1);
+  });
+
+  testWidgets('the card shows a whole-number countdown, never a decimal',
+      (tester) async {
+    useDesignSurface(tester);
+    await tester.pumpWidget(appHarness(
+      Scaffold(body: OfferCard(offer: offer('a'), onAccept: () {}, onDecline: () {})),
+    ));
+    // Which second the first frame lands in is not pinnable -- building the
+    // first frame of a test can take most of a second of real time, and the
+    // value is a live reading of a clock that does not stop for tests. What is
+    // pinned is the shape, the range, and that it is strictly under the TTL.
+    final pill = tester
+        .widgetList<Text>(find.byType(Text))
+        .map((t) => t.data ?? '')
+        .firstWhere((s) => s.endsWith('s'));
+    expect(pill, matches(RegExp(r'^\d{1,2}s$')));
+    expect(int.parse(pill.substring(0, pill.length - 1)), lessThan(20));
+    expect(int.parse(pill.substring(0, pill.length - 1)), greaterThan(10));
+  });
+
+  test('clear empties the queue', () {
+    final c = OfferQueueController(repo)
+      ..add(offer('a'))
+      ..add(offer('b'));
+    c.clear();
+    expect(c.offers, isEmpty);
+  });
+
+  test('the queue cannot be written through the getter', () {
+    final c = OfferQueueController(repo)..add(offer('a'));
+    expect(() => c.offers.add(offer('b')), throwsUnsupportedError);
+  });
+
+  testWidgets('the card shows the fare, the distance and the countdown',
+      (tester) async {
+    useDesignSurface(tester);
+    await tester.pumpWidget(appHarness(
+      Scaffold(body: OfferCard(offer: offer('a'), onAccept: () {}, onDecline: () {})),
     ));
     expect(find.textContaining('GHS 12.50'), findsOneWidget);
     expect(find.textContaining('800 m'), findsOneWidget);
     expect(find.byKey(const Key('acceptOfferButton')), findsOneWidget);
     expect(find.byKey(const Key('declineOfferButton')), findsOneWidget);
+    expect(find.byKey(const Key('offer-a')), findsOneWidget);
   });
 
-  testWidgets('expired offer renders a disabled card', (tester) async {
-    await tester.pumpWidget(ScreenUtilInit(
-      designSize: const Size(390, 844),
-      builder: (_, _) => MaterialApp(
-        home: Scaffold(
-          body: OfferCard(
-            offer: offer('a', ttl: const Duration(seconds: -1)),
-            onAccept: () {},
-            onDecline: () {},
-          ),
+  testWidgets('an expired card cannot be accepted', (tester) async {
+    useDesignSurface(tester);
+    await tester.pumpWidget(appHarness(
+      Scaffold(
+        body: OfferCard(
+          offer: offer('a', ttl: const Duration(seconds: -1)),
+          onAccept: () {},
+          onDecline: () {},
         ),
       ),
     ));
-    final button = tester.widget<FilledButton>(find.byKey(const Key('acceptOfferButton')));
+    final button = tester.widget<FilledButton>(
+      find.byKey(const Key('acceptOfferButton')),
+    );
     expect(button.onPressed, isNull);
     expect(find.text('Offer expired'), findsOneWidget);
   });
 
+  testWidgets('a declined offer can still be declined', (tester) async {
+    useDesignSurface(tester);
+    var declined = 0;
+    await tester.pumpWidget(appHarness(
+      Scaffold(
+        body: OfferCard(
+          offer: offer('a', ttl: const Duration(seconds: -1)),
+          onAccept: () {},
+          onDecline: () => declined++,
+        ),
+      ),
+    ));
+    await tester.tap(find.byKey(const Key('declineOfferButton')));
+    expect(declined, 1);
+  });
+
   testWidgets('accept and decline callbacks fire', (tester) async {
+    useDesignSurface(tester);
     var accepted = 0;
     var declined = 0;
-    await tester.pumpWidget(ScreenUtilInit(
-      designSize: const Size(390, 844),
-      builder: (_, _) => MaterialApp(
-        home: Scaffold(
-          body: OfferCard(
-            offer: offer('a'),
-            onAccept: () => accepted++,
-            onDecline: () => declined++,
-          ),
+    await tester.pumpWidget(appHarness(
+      Scaffold(
+        body: OfferCard(
+          offer: offer('a'),
+          onAccept: () => accepted++,
+          onDecline: () => declined++,
         ),
       ),
     ));
@@ -11213,15 +12706,29 @@ void main() {
     expect(accepted, 1);
     expect(declined, 1);
   });
-}
 
-class _LosingQueueRepo extends QueueRepo {
-  _LosingQueueRepo() : super([], []);
+  testWidgets('the distance is rounded to whole metres, not truncated',
+      (tester) async {
+    useDesignSurface(tester);
+    await tester.pumpWidget(appHarness(
+      Scaffold(
+        body: OfferCard(
+          offer: offer('a', pickupDistanceKm: 0.8006),
+          onAccept: () {},
+          onDecline: () {},
+        ),
+      ),
+    ));
+    expect(find.textContaining('801 m'), findsOneWidget);
+  });
 
-  @override
-  Future<void> acceptOffer(String offerId) async {
-    throw const DriverAuthFailure('Trip was taken by another driver');
-  }
+  testWidgets('the card is keyed by the offer id', (tester) async {
+    useDesignSurface(tester);
+    await tester.pumpWidget(appHarness(
+      Scaffold(body: OfferCard(offer: offer('xyz-1'), onAccept: () {}, onDecline: () {})),
+    ));
+    expect(find.byKey(const Key('offer-xyz-1')), findsOneWidget);
+  });
 }
 ```
 
@@ -11238,34 +12745,13 @@ Expected: FAIL — `OfferQueueController` is not defined.
 Inside the abstract class:
 
 ```dart
-  Future<void> acceptOffer(String offerId);
-  Future<void> declineOffer(String offerId);
+// `acceptOffer` and `declineOffer` are already in the `driver_repository.dart` block above.
 ```
 
 `SupabaseDriverRepository` implements them by calling the `offers` Edge Function from Task 7:
 
 ```dart
-  @override
-  Future<void> acceptOffer(String offerId) async {
-    final res = await _client.functions.invoke(
-      'offers',
-      body: {'action': 'accept', 'offerId': offerId},
-    );
-    final data = res.data as Map<String, dynamic>?;
-    if (res.error != null) throw DriverAuthFailure(res.error!.message);
-    if (data == null || data['accepted'] != true) {
-      throw const DriverAuthFailure('Trip was taken by another driver');
-    }
-  }
-
-  @override
-  Future<void> declineOffer(String offerId) async {
-    final res = await _client.functions.invoke(
-      'offers',
-      body: {'action': 'decline', 'offerId': offerId},
-    );
-    if (res.error != null) throw DriverAuthFailure(res.error!.message);
-  }
+// `acceptOffer` and `declineOffer` on `SupabaseDriverRepository` are already in the `supabase_driver_repository.dart` block above. Note the two different shapes: `functions.invoke` **throws** `FunctionException` outside 200..299, and a lost race is a 200 carrying `accepted: false`, so both the throw and the flag are read.
 ```
 
 - [ ] **Step 9: Write `offer_queue_controller.dart`**
@@ -11273,8 +12759,16 @@ Inside the abstract class:
 ```dart
 import 'package:flutter/foundation.dart';
 import 'package:mng_core/mng_core.dart';
+
 import '../data/driver_repository.dart';
 
+/// The driver's offer queue, newest first.
+///
+/// The 20-second TTL is `kOfferTtl` in `mng_core` and is not configurable
+/// anywhere. [tick] is what enforces it on screen: the server's own sweeper
+/// does not exist, so an offer whose `expires_at` has passed is still
+/// `pending` in the database until somebody acts on it, and the only somebody
+/// here is this list.
 class OfferQueueController extends ChangeNotifier {
   OfferQueueController(this._repo);
 
@@ -11286,10 +12780,21 @@ class OfferQueueController extends ChangeNotifier {
   List<Offer> get offers => List.unmodifiable(_offers);
   Offer? get next => _offers.isEmpty ? null : _offers.first;
 
+  /// Newest first, de-duplicated, and pending only.
+  ///
+  /// A non-pending offer is dropped rather than shown disabled: an offer the
+  /// server has already released is not information, and an expired one is
+  /// about to be gone on the next [tick] anyway.
   void add(Offer offer) {
     if (offer.state != OfferState.pending) return;
     if (_offers.any((o) => o.id == offer.id)) return;
     _offers.insert(0, offer);
+    notifyListeners();
+  }
+
+  void clear() {
+    if (_offers.isEmpty) return;
+    _offers.clear();
     notifyListeners();
   }
 
@@ -11299,6 +12804,11 @@ class OfferQueueController extends ChangeNotifier {
     if (_offers.length != before) notifyListeners();
   }
 
+  /// Accepts [offer], and answers whether the driver won it.
+  ///
+  /// A false answer keeps the offer in the queue rather than dropping it: the
+  /// offer may still be live and the loss was a transport fault, and silently
+  /// removing it would hide a trip the driver can still take.
   Future<bool> accept(Offer offer) async {
     error = null;
     try {
@@ -11312,20 +12822,25 @@ class OfferQueueController extends ChangeNotifier {
     }
   }
 
+  /// Declines [offer], removing it either way.
+  ///
+  /// Removed on a failure too, unlike [accept]: the driver's intent was clear,
+  /// and leaving a declined offer on screen with a countdown invites them to
+  /// press the wrong button.
   Future<void> decline(Offer offer) async {
     error = null;
     try {
       await _repo.declineOffer(offer.id);
-      _remove(offer);
     } on DriverAuthFailure catch (e) {
       error = e.message;
-      notifyListeners();
     }
+    _remove(offer);
   }
 
   void _remove(Offer offer) {
+    final before = _offers.length;
     _offers.removeWhere((o) => o.id == offer.id);
-    notifyListeners();
+    if (_offers.length != before) notifyListeners();
   }
 }
 ```
@@ -11366,9 +12881,19 @@ class OfferCard extends StatelessWidget {
         children: [
           Row(
             children: [
-              Text('GHS ${offer.fareGhs.toStringAsFixed(2)}',
-                  style: MngTheme.light.textTheme.titleLarge),
-              const Spacer(),
+              // `Flexible` on the fare, not on the countdown. The test font sets
+              // every glyph to a full em box, so 'GHS 12.50' at titleLarge is
+              // 162 logical pixels and the countdown pill is 74, against a
+              // 316-pixel row -- and a phone at a large text scale overflows the
+              // same way, because the fare grows and the pill does not shrink.
+              Flexible(
+                child: Text(
+                  'GHS ${offer.fareGhs.toStringAsFixed(2)}',
+                  overflow: TextOverflow.ellipsis,
+                  style: MngTheme.light.textTheme.titleLarge,
+                ),
+              ),
+              SizedBox(width: 8.w),
               Container(
                 padding: EdgeInsets.symmetric(horizontal: 10.w, vertical: 4.h),
                 decoration: BoxDecoration(
@@ -11419,113 +12944,133 @@ class OfferCard extends StatelessWidget {
 - [ ] **Step 11: Write `driver_home_screen.dart`**
 
 ```dart
-import 'dart:async';
-
 import 'package:flutter/material.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
 import 'package:mng_core/mng_core.dart';
-import 'package:provider/provider.dart';
+
 import 'availability_controller.dart';
 import 'offer_card.dart';
 import 'offer_queue_controller.dart';
 
-class DriverHomeScreen extends StatefulWidget {
+/// The home tab: the toggle, and whatever is in the queue.
+///
+/// The two controllers are constructor arguments rather than read from
+/// `context`, so the screen can be driven by a fake with no provider above it
+/// and so what the screen reads and what the test holds are the same object.
+/// The plan's version took both as arguments and then read the queue from
+/// `context` and the toggle from `context`, which meant the arguments were
+/// decoration.
+///
+/// Which means the listeners have to come from the arguments too. A screen that
+/// reads a `ChangeNotifier` it holds and never listens to it is a screen that
+/// does not change: the toggle writes `online` and the title still reads the
+/// value from before. `ListenableBuilder` over both controllers is the whole
+/// subscription, and it needs no provider at all.
+class DriverHomeScreen extends StatelessWidget {
   const DriverHomeScreen({
     super.key,
     required this.availability,
     required this.offers,
     required this.profile,
+    this.onAccepted,
   });
 
   final AvailabilityController availability;
   final OfferQueueController offers;
   final DriverProfile? profile;
 
-  @override
-  State<DriverHomeScreen> createState() => _DriverHomeScreenState();
-}
-
-class _DriverHomeScreenState extends State<DriverHomeScreen> {
-  Timer? _ticker;
-
-  @override
-  void initState() {
-    super.initState();
-    _ticker = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (mounted) context.read<OfferQueueController>().tick();
-    });
-  }
-
-  @override
-  void dispose() {
-    _ticker?.cancel();
-    super.dispose();
-  }
+  /// Called after the server confirms the driver won an offer -- not when they
+  /// pressed Accept, which is the difference between "I asked" and "it is mine".
+  final Future<void> Function()? onAccepted;
 
   @override
   Widget build(BuildContext context) {
-    final availability = context.watch<AvailabilityController>();
-    final offers = context.watch<OfferQueueController>();
-
-    return Scaffold(
-      appBar: AppBar(
-        backgroundColor: MngColors.page,
-        elevation: 0,
-        title: Text(
-          availability.online ? 'You are online' : 'You are offline',
-          style: MngTheme.light.textTheme.titleLarge,
+    return ListenableBuilder(
+      listenable: Listenable.merge([availability, offers]),
+      builder: (context, _) => Scaffold(
+        appBar: AppBar(
+          backgroundColor: MngColors.page,
+          surfaceTintColor: Colors.transparent,
+          elevation: 0,
+          title: Text(
+            availability.online ? 'You are online' : 'You are offline',
+            style: MngTheme.light.textTheme.titleLarge,
+          ),
         ),
-      ),
-      body: SafeArea(
-        child: Column(
-          children: [
-            Padding(
-              padding: EdgeInsets.symmetric(horizontal: 20.w, vertical: 12.h),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  SwitchListTile(
-                    key: const Key('onlineToggle'),
-                    contentPadding: EdgeInsets.zero,
-                    title: const Text('Accept ride requests'),
-                    value: availability.online,
-                    onChanged: availability.canToggle ? availability.setOnline : null,
-                  ),
-                  if (availability.refusalReason != null)
-                    Text(
-                      availability.refusalReason!,
-                      style: const TextStyle(color: MngColors.error),
-                    ),
-                  if (availability.error != null)
-                    Text(
-                      availability.error!,
-                      style: const TextStyle(color: MngColors.error),
-                    ),
-                ],
-              ),
-            ),
-            Expanded(
-              child: offers.offers.isEmpty
-                  ? Center(
-                      child: Text(
-                        availability.online
-                            ? 'Waiting for ride requests near you'
-                            : 'Go online to start receiving requests',
+        body: SafeArea(
+          child: Column(
+            children: [
+              Padding(
+                padding: EdgeInsets.symmetric(horizontal: 20.w, vertical: 12.h),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    if ((profile?.fullName ?? '').isNotEmpty)
+                      Text(
+                        'Hello, ${profile!.fullName}',
+                        style: MngTheme.light.textTheme.titleMedium,
+                      ),
+                    SizedBox(height: 8.h),
+                    SwitchListTile(
+                      key: const Key('onlineToggle'),
+                      contentPadding: EdgeInsets.zero,
+                      title: const Text('Accept ride requests'),
+                      subtitle: Text(
+                        'Ride requests go to drivers within 5 km who have shared '
+                        'their location.',
                         style: MngTheme.light.textTheme.bodySmall,
                       ),
-                    )
-                  : ListView(
-                      children: [
-                        for (final o in offers.offers)
-                          OfferCard(
-                            offer: o,
-                            onAccept: () => offers.accept(o),
-                            onDecline: () => offers.decline(o),
-                          ),
-                      ],
+                      value: availability.online,
+                      onChanged: availability.canToggle
+                          ? availability.setOnline
+                          : null,
                     ),
-            ),
-          ],
+                    if (availability.refusalReason != null)
+                      Text(
+                        availability.refusalReason!,
+                        key: const Key('availabilityRefusal'),
+                        style: const TextStyle(color: MngColors.error),
+                      ),
+                    if (availability.error != null)
+                      Text(
+                        availability.error!,
+                        key: const Key('availabilityError'),
+                        style: const TextStyle(color: MngColors.error),
+                      ),
+                  ],
+                ),
+              ),
+              Expanded(
+                child: offers.offers.isEmpty
+                    ? Center(
+                        child: Padding(
+                          padding: EdgeInsets.symmetric(horizontal: 40.w),
+                          child: Text(
+                            availability.online
+                                ? 'Waiting for ride requests near you'
+                                : 'Go online to start receiving requests',
+                            textAlign: TextAlign.center,
+                            style: MngTheme.light.textTheme.bodySmall,
+                          ),
+                        ),
+                      )
+                    : ListView(
+                        children: [
+                          for (final offer in offers.offers)
+                            OfferCard(
+                              offer: offer,
+                              onAccept: () async {
+                                if (await offers.accept(offer)) {
+                                  await onAccepted?.call();
+                                }
+                              },
+                              onDecline: () => offers.decline(offer),
+                            ),
+                        ],
+                      ),
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -11539,7 +13084,8 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
 cd ~/meet-n-go/apps/driver && flutter test test/offers/ && flutter analyze
 ```
 
-Expected: 18 tests pass across the two files, analyze clean.
+Expected: 46 tests pass across the two files (23 availability + 23 offer queue), and
+`flutter analyze --fatal-infos` clean. The plan claimed 18.
 
 - [ ] **Step 13: Commit**
 
@@ -11551,6 +13097,25 @@ git -c user.email=opencode@local -c user.name=opencode commit -m "feat(driver): 
 ---
 
 ### Task 14: Driver app — active trip navigation, pickup OTP, and dropoff
+
+> **Corrected 2026-09-28 by extraction and execution.** See Task 12's note
+> for the full class list. The escaped quote that stopped this file compiling
+> is the `'Enter the rider\\'s pickup code to start the trip'` line in
+> `advance()`. Beyond that, the plan's `ActiveTripScreen` could never end a
+> trip, for two independent reasons, and this task's three widget tests touch
+> neither: the primary button's enabled state came from `canAdvance`, which is
+> false at `completed`, so the one button that ends a trip could not be pressed;
+> and `_act` then compared `trip.state == TripState.completed` against a `trip`
+> local captured *before* the `await`, so `onFinished` was unreachable even if
+> the button had worked. The blocks below add `isFinished` and read the state
+> off the controller after the await, and there is a test that presses the
+> button on a finished trip.
+>
+> `PickupOtpSheet` reads its controller from a field rather than from `context`,
+> which needs a `ListenableBuilder` for the same reason: without it a wrong code
+> sets `error` and the sheet redraws with the same empty form, so the one thing
+> the driver most needs to read never appears. This task's own test pumps once
+> after the tap rather than settling, so it never saw the missing listener.
 
 **Files:**
 - Create: `apps/driver/lib/src/active_trip/active_trip_controller.dart`
@@ -11573,77 +13138,80 @@ git -c user.email=opencode@local -c user.name=opencode commit -m "feat(driver): 
 
 ```dart
 import 'package:flutter/material.dart';
-import 'package:flutter_screenutil/flutter_screenutil.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:mng_core/mng_core.dart';
 import 'package:meetngo_driver/src/active_trip/active_trip_controller.dart';
 import 'package:meetngo_driver/src/active_trip/active_trip_screen.dart';
-import 'package:mng_core/mng_core.dart';
+import 'package:meetngo_driver/src/data/driver_repository.dart';
 import 'package:provider/provider.dart';
 
-import '../offers/availability_test.dart' show StubDriverRepository;
+import '../support/fakes.dart';
+import '../support/harness.dart';
 
-class TripRepo extends StubDriverRepository {
-  final List<String> moves = [];
-  int otpAttempts = 0;
-  bool otpPasses = true;
-
-  @override
-  Future<void> advanceTripState(String tripId, TripState to) async {
-    moves.add('${tripId}->${to.name}');
-  }
-
-  @override
-  Future<void> verifyPickupOtp(String tripId, String code) async {
-    otpAttempts++;
-    if (!otpPasses) throw const DriverAuthFailure('That code is not right');
-  }
-}
-
-Trip tripIn(TripState state) => Trip(
-      id: 't1',
-      riderId: 'r1',
-      driverId: 'd1',
-      category: RideCategory.standard,
-      state: state,
-      pickup: const TripStop('P', GeoPoint(5.6037, -0.1870), 'Osu, Accra'),
-      dropoff: const TripStop('D', GeoPoint(5.6200, -0.1870), 'Airport Residential'),
-      distanceKm: 2.02,
-      fareGhs: 12.50,
-      isDemo: true,
+Widget wrap(ActiveTripController c, {VoidCallback? onFinished}) =>
+    appHarness(
+      ChangeNotifierProvider<ActiveTripController>.value(
+        value: c,
+        child: ActiveTripScreen(onFinished: onFinished ?? () {}),
+      ),
     );
 
 void main() {
+  late StubDriverRepository repo;
+
+  setUp(() => repo = StubDriverRepository());
+
   test('each state exposes the next legal action', () {
-    final expectations = {
+    const expectations = {
       TripState.matched: 'Start navigation',
       TripState.arriving: 'Arrived at pickup',
       TripState.ongoing: 'Complete the trip',
       TripState.completed: 'Trip finished',
     };
     for (final entry in expectations.entries) {
-      final c = ActiveTripController(TripRepo())..trip = tripIn(entry.key);
+      final c = ActiveTripController(repo)..trip = tripIn(entry.key);
       expect(c.primaryActionLabel, entry.value, reason: entry.key.name);
     }
   });
 
+  test('no trip and a terminal trip both say there is nothing to do', () {
+    expect(ActiveTripController(repo).primaryActionLabel, 'No action');
+    expect(ActiveTripController(repo).headline, 'No active trip');
+    final cancelled = ActiveTripController(repo)..trip = tripIn(TripState.cancelled);
+    expect(cancelled.primaryActionLabel, 'No action');
+    expect(cancelled.canAdvance, isFalse);
+  });
+
+  test('the headline names the phase the driver is in', () {
+    const headlines = {
+      TripState.matched: 'New trip assigned',
+      TripState.arriving: 'Collect your rider',
+      TripState.ongoing: 'On the way',
+      TripState.completed: 'Trip finished',
+    };
+    for (final entry in headlines.entries) {
+      final c = ActiveTripController(repo)..trip = tripIn(entry.key);
+      expect(c.headline, entry.value, reason: entry.key.name);
+    }
+  });
+
   test('matched advances to arriving', () async {
-    final repo = TripRepo();
     final c = ActiveTripController(repo)..trip = tripIn(TripState.matched);
     expect(await c.advance(), isTrue);
     expect(repo.moves, ['t1->arriving']);
     expect(c.trip!.state, TripState.arriving);
   });
 
+  // The OTP is the only thing standing between a driver and a trip they have
+  // not reached the rider for, so `arriving` has no other way out.
   test('arriving cannot be advanced without the pickup OTP', () async {
-    final repo = TripRepo();
     final c = ActiveTripController(repo)..trip = tripIn(TripState.arriving);
     expect(await c.advance(), isFalse);
     expect(repo.moves, isEmpty);
-    expect(c.error, isNotNull);
+    expect(c.error, contains('pickup code'));
   });
 
   test('a correct pickup OTP advances arriving to ongoing', () async {
-    final repo = TripRepo();
     final c = ActiveTripController(repo)..trip = tripIn(TripState.arriving);
     expect(await c.submitPickupOtp('4821'), isTrue);
     expect(repo.otpAttempts, 1);
@@ -11651,23 +13219,41 @@ void main() {
     expect(c.trip!.state, TripState.ongoing);
   });
 
+  test('the OTP is trimmed before it is checked', () async {
+    final c = ActiveTripController(repo)..trip = tripIn(TripState.arriving);
+    expect(await c.submitPickupOtp(' 4821 '), isTrue);
+  });
+
   test('a wrong pickup OTP surfaces an error and holds the state', () async {
-    final repo = TripRepo()..otpPasses = false;
+    repo.otpPasses = false;
     final c = ActiveTripController(repo)..trip = tripIn(TripState.arriving);
     expect(await c.submitPickupOtp('0000'), isFalse);
     expect(c.trip!.state, TripState.arriving);
     expect(c.error, 'That code is not right');
+    expect(repo.moves, isEmpty, reason: 'a refused code must not start the trip');
   });
 
   test('a short OTP is rejected before the network call', () async {
-    final repo = TripRepo();
     final c = ActiveTripController(repo)..trip = tripIn(TripState.arriving);
     expect(await c.submitPickupOtp('12'), isFalse);
     expect(repo.otpAttempts, 0);
+    expect(c.error, contains('4 digits'));
+  });
+
+  test('an OTP is only accepted in the arriving state', () async {
+    for (final state in [
+      TripState.matched,
+      TripState.ongoing,
+      TripState.completed,
+      TripState.cancelled,
+    ]) {
+      final c = ActiveTripController(repo)..trip = tripIn(state);
+      expect(await c.submitPickupOtp('4821'), isFalse, reason: state.name);
+      expect(repo.otpAttempts, 0, reason: state.name);
+    }
   });
 
   test('ongoing advances to completed and then stops', () async {
-    final repo = TripRepo();
     final c = ActiveTripController(repo)..trip = tripIn(TripState.ongoing);
     expect(await c.advance(), isTrue);
     expect(c.trip!.state, TripState.completed);
@@ -11676,61 +13262,238 @@ void main() {
     expect(repo.moves, ['t1->completed']);
   });
 
-  test('an illegal state change from the server is surfaced, not swallowed', () async {
-    final repo = _RejectingTripRepo();
-    final c = ActiveTripController(repo)..trip = tripIn(TripState.matched);
-    expect(await c.advance(), isFalse);
-    expect(c.error, isNotNull);
+  test('a completed trip is finished, which canAdvance cannot express', () {
+    final c = ActiveTripController(repo)..trip = tripIn(TripState.completed);
+    expect(c.canAdvance, isFalse);
+    expect(c.isFinished, isTrue);
   });
 
-  testWidgets('screen shows the state chip, the route and the action', (tester) async {
-    final c = ActiveTripController(TripRepo())..trip = tripIn(TripState.arriving);
-    await tester.pumpWidget(_wrap(c));
+  // `enforce_trip_transition` refuses an illegal move at the database, so this
+  // is the transition rule answering, not a network fault, and it has to reach
+  // the driver rather than being swallowed.
+  test('a rejected transition is surfaced and the state is not believed',
+      () async {
+    final rejecting = _RejectingTripRepository();
+    final c = ActiveTripController(rejecting)..trip = tripIn(TripState.matched);
+    expect(await c.advance(), isFalse);
+    expect(c.error, isNotNull);
+    expect(c.trip!.state, TripState.matched, reason: 'the row never moved');
+  });
+
+  test('nothing to advance is said plainly', () async {
+    final c = ActiveTripController(repo);
+    expect(await c.advance(), isFalse);
+    expect(c.error, 'Nothing to advance');
+  });
+
+  testWidgets('the screen shows the state, both stops, and the action',
+      (tester) async {
+    useDesignSurface(tester);
+    final c = ActiveTripController(repo)..trip = tripIn(TripState.arriving);
+    await tester.pumpWidget(wrap(c));
+
     expect(find.byKey(const Key('tripStateChip')), findsOneWidget);
-    expect(find.text('Osu, Accra'), findsOneWidget);
+    expect(find.text('arriving'), findsOneWidget);
+    expect(find.text('Osu Junction'), findsOneWidget);
+    expect(find.text('Oxford Street, Osu, Accra'), findsOneWidget);
     expect(find.text('Airport Residential'), findsOneWidget);
+    expect(find.text('Airport Residential, Accra'), findsOneWidget);
     expect(find.text('Arrived at pickup'), findsOneWidget);
+    expect(find.text('GHS 12.50'), findsOneWidget);
     expect(find.byKey(const Key('navigateButton')), findsOneWidget);
     expect(find.byKey(const Key('callRiderButton')), findsOneWidget);
   });
 
-  testWidgets('arriving shows the pickup OTP sheet on tap', (tester) async {
-    final c = ActiveTripController(TripRepo())..trip = tripIn(TripState.arriving);
-    await tester.pumpWidget(_wrap(c));
+  testWidgets('a screen with no trip says so, once', (tester) async {
+    useDesignSurface(tester);
+    await tester.pumpWidget(wrap(ActiveTripController(repo)));
+    expect(find.text('No active trip'), findsOneWidget, reason: 'the app bar');
+    expect(
+      find.text('There is no trip on this account to show.'),
+      findsOneWidget,
+    );
+    expect(find.byKey(const Key('primaryActionButton')), findsNothing);
+  });
+
+  // The plan's `_headlines` map is the step's title in the app bar, and the plan
+  // also put the same string in the body of its `approved` step, so
+  // `find.text('You are verified')` with `findsOneWidget` was unsatisfiable
+  // against the plan's own screen. Pinned here so the same duplication cannot
+  // come back: apart from the action button -- whose label is a different piece
+  // of information, and legitimately repeats the headline for `completed` -- no
+  // other text on the screen may equal the app bar's headline.
+  testWidgets('no text outside the action button repeats the headline',
+      (tester) async {
+    useDesignSurface(tester);
+    for (final state in [
+      TripState.matched,
+      TripState.arriving,
+      TripState.ongoing,
+      TripState.completed,
+    ]) {
+      final c = ActiveTripController(repo)..trip = tripIn(state);
+      await tester.pumpWidget(wrap(c));
+      final outsideButton = find.byType(Text).evaluate().where((element) {
+        final inButton = find
+            .descendant(
+              of: find.byKey(const Key('primaryActionButton')),
+              matching: find.byType(Text),
+            )
+            .evaluate();
+        return !inButton.any((b) => identical(b, element));
+      });
+      final repeats = outsideButton
+          .map((e) => (e.widget as Text).data ?? '')
+          .where((s) => s == c.headline)
+          .length;
+      expect(
+        repeats,
+        1,
+        reason: '${state.name}: "${c.headline}" is repeated outside the button',
+      );
+    }
+  });
+
+  // The plan derived the button's enabled state from `canAdvance`, which is
+  // false at `completed`, so the one button that ends a trip could never be
+  // pressed -- and it then compared the state off a `trip` local captured before
+  // the await, so `onFinished` was unreachable even if it could. Two independent
+  // dead ends, and no plan test touched either.
+  testWidgets('a finished trip can be handed back', (tester) async {
+    useDesignSurface(tester);
+    var finished = 0;
+    final c = ActiveTripController(repo)..trip = tripIn(TripState.ongoing);
+    await tester.pumpWidget(wrap(c, onFinished: () => finished++));
+
     await tester.tap(find.byKey(const Key('primaryActionButton')));
     await tester.pumpAndSettle();
+
+    expect(repo.moves, ['t1->completed']);
+    expect(finished, 1, reason: 'the trip has to be able to end');
+  });
+
+  testWidgets('the button on a completed trip is still live', (tester) async {
+    useDesignSurface(tester);
+    final c = ActiveTripController(repo)..trip = tripIn(TripState.completed);
+    await tester.pumpWidget(wrap(c));
+    final button = tester.widget<FilledButton>(
+      find.byKey(const Key('primaryActionButton')),
+    );
+    expect(button.onPressed, isNotNull);
+  });
+
+  testWidgets('the primary action is dead when there is nothing to advance',
+      (tester) async {
+    useDesignSurface(tester);
+    final c = ActiveTripController(repo)..trip = tripIn(TripState.cancelled);
+    await tester.pumpWidget(wrap(c));
+    final button = tester.widget<FilledButton>(
+      find.byKey(const Key('primaryActionButton')),
+    );
+    expect(button.onPressed, isNull);
+  });
+
+  testWidgets('arriving opens the pickup OTP sheet', (tester) async {
+    useDesignSurface(tester);
+    final c = ActiveTripController(repo)..trip = tripIn(TripState.arriving);
+    await tester.pumpWidget(wrap(c));
+
+    await tester.tap(find.byKey(const Key('primaryActionButton')));
+    await tester.pumpAndSettle();
+
     expect(find.byKey(const Key('pickupOtpField')), findsOneWidget);
     expect(find.byKey(const Key('pickupOtpConfirmButton')), findsOneWidget);
   });
 
-  testWidgets('a wrong OTP keeps the sheet open with an error', (tester) async {
-    final repo = TripRepo()..otpPasses = false;
+  testWidgets('the OTP sheet only takes digits and four of them',
+      (tester) async {
+    useDesignSurface(tester);
     final c = ActiveTripController(repo)..trip = tripIn(TripState.arriving);
-    await tester.pumpWidget(_wrap(c));
+    await tester.pumpWidget(wrap(c));
     await tester.tap(find.byKey(const Key('primaryActionButton')));
     await tester.pumpAndSettle();
+
+    await tester.enterText(find.byKey(const Key('pickupOtpField')), 'ab12cd3456');
+    final field = tester.widget<TextField>(find.byKey(const Key('pickupOtpField')));
+    expect(field.controller!.text.length, lessThanOrEqualTo(4));
+    expect(field.controller!.text, matches(RegExp(r'^\d*$')));
+  });
+
+  testWidgets('a correct OTP closes the sheet and starts the trip',
+      (tester) async {
+    useDesignSurface(tester);
+    final c = ActiveTripController(repo)..trip = tripIn(TripState.arriving);
+    await tester.pumpWidget(wrap(c));
+    await tester.tap(find.byKey(const Key('primaryActionButton')));
+    await tester.pumpAndSettle();
+
+    await tester.enterText(find.byKey(const Key('pickupOtpField')), '4821');
+    await tester.tap(find.byKey(const Key('pickupOtpConfirmButton')));
+    await tester.pumpAndSettle();
+
+    expect(repo.moves, ['t1->ongoing']);
+    expect(find.byKey(const Key('pickupOtpField')), findsNothing);
+    expect(find.text('On the way'), findsOneWidget);
+  });
+
+  testWidgets('a wrong OTP keeps the sheet open with the reason', (tester) async {
+    useDesignSurface(tester);
+    repo.otpPasses = false;
+    final c = ActiveTripController(repo)..trip = tripIn(TripState.arriving);
+    await tester.pumpWidget(wrap(c));
+    await tester.tap(find.byKey(const Key('primaryActionButton')));
+    await tester.pumpAndSettle();
+
     await tester.enterText(find.byKey(const Key('pickupOtpField')), '0000');
     await tester.tap(find.byKey(const Key('pickupOtpConfirmButton')));
-    await tester.pump();
-    expect(find.text('That code is not right'), findsOneWidget);
+    await tester.pumpAndSettle();
+
     expect(find.byKey(const Key('pickupOtpField')), findsOneWidget);
+    expect(find.byKey(const Key('pickupOtpError')), findsOneWidget);
+    // On the sheet and on the screen behind it, which is where it also has to
+    // survive the sheet being dismissed.
+    expect(find.text('That code is not right'), findsNWidgets(2));
+    expect(find.byKey(const Key('activeTripError')), findsOneWidget);
+  });
+
+  testWidgets('a refused transition is shown on the screen', (tester) async {
+    useDesignSurface(tester);
+    final c = ActiveTripController(_RejectingTripRepository())
+      ..trip = tripIn(TripState.matched);
+    await tester.pumpWidget(wrap(c));
+
+    await tester.tap(find.byKey(const Key('primaryActionButton')));
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const Key('activeTripError')), findsOneWidget);
+    expect(find.text('Start navigation'), findsOneWidget);
+  });
+
+  // `google_maps_flutter` and `url_launcher` are not dependencies of this app.
+  // The plan's `onPressed: () {}` was a live-looking control that did nothing;
+  // what is here says what is missing.
+  testWidgets('the two buttons say what is missing rather than doing nothing',
+      (tester) async {
+    useDesignSurface(tester);
+    final c = ActiveTripController(repo)..trip = tripIn(TripState.matched);
+    await tester.pumpWidget(wrap(c));
+
+    await tester.tap(find.byKey(const Key('navigateButton')));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('not part of this build'), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('callRiderButton')));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('Calling from the app'), findsOneWidget);
   });
 }
 
-Widget _wrap(ActiveTripController c) => ScreenUtilInit(
-      designSize: const Size(390, 844),
-      builder: (_, _) => ChangeNotifierProvider<ActiveTripController>.value(
-        value: c,
-        child: const MaterialApp(home: ActiveTripScreen(onFinished: _noop)),
-      ),
-    );
-
-void _noop() {}
-
-class _RejectingTripRepo extends TripRepo {
+class _RejectingTripRepository extends StubDriverRepository {
   @override
   Future<void> advanceTripState(String tripId, TripState to) async {
-    throw const DriverAuthFailure('Trip is no longer in a state you can move');
+    throw const DriverAuthFailure(
+      'This trip moved from matched to completed without you',
+    );
   }
 }
 ```
@@ -11748,32 +13511,13 @@ Expected: FAIL — `ActiveTripController` is not defined.
 Inside the abstract class:
 
 ```dart
-  Future<void> advanceTripState(String tripId, TripState to);
-  Future<void> verifyPickupOtp(String tripId, String code);
+// `advanceTripState` and `verifyPickupOtp` are already in the `driver_repository.dart` block above.
 ```
 
 `SupabaseDriverRepository` implements them:
 
 ```dart
-  @override
-  Future<void> advanceTripState(String tripId, TripState to) async {
-    final res = await _client.from('trips').update({'state': to.name}).eq('id', tripId);
-    if (res.error != null) throw DriverAuthFailure(res.error!.message);
-  }
-
-  @override
-  Future<void> verifyPickupOtp(String tripId, String code) async {
-    final res = await _client
-        .from('trips')
-        .select('pickup_otp')
-        .eq('id', tripId)
-        .single();
-    if (res.error != null) throw DriverAuthFailure(res.error!.message);
-    final expected = (res.data as Map<String, dynamic>)['pickup_otp'] as String?;
-    if (expected == null || expected != code.trim()) {
-      throw const DriverAuthFailure('That code is not right');
-    }
-  }
+// `advanceTripState` and `verifyPickupOtp` on `SupabaseDriverRepository` are already in the `supabase_driver_repository.dart` block above. Note `.limit(1)` then `rows.first` rather than `.single()`: a zero-row read is a 200 `[]` either way, and the row count is the only evidence that the write landed.
 ```
 
 The `enforce_trip_transition` trigger from Task 5 rejects an illegal move at the database, which is why `advanceTripState` surfaces `DriverAuthFailure` rather than silently succeeding.
@@ -11783,8 +13527,16 @@ The `enforce_trip_transition` trigger from Task 5 rejects an illegal move at the
 ```dart
 import 'package:flutter/foundation.dart';
 import 'package:mng_core/mng_core.dart';
+
 import '../data/driver_repository.dart';
 
+/// The one live trip, as state a screen can read and a test can drive.
+///
+/// The local [trip] is a cache of the row, and every move is written before it
+/// is believed: [advance] and [submitPickupOtp] both wait for
+/// `advanceTripState` and only then change [trip]. The other order reports a
+/// state the database rejected, which is the bug
+/// `enforce_trip_transition` exists to make impossible to hide.
 class ActiveTripController extends ChangeNotifier {
   ActiveTripController(this._repo);
 
@@ -11812,11 +13564,19 @@ class ActiveTripController extends ChangeNotifier {
   String get primaryActionLabel => _actionLabels[trip?.state] ?? 'No action';
 
   bool get canAdvance {
-    final s = trip?.state;
-    return s == TripState.matched ||
-        s == TripState.arriving ||
-        s == TripState.ongoing;
+    final state = trip?.state;
+    return state == TripState.matched ||
+        state == TripState.arriving ||
+        state == TripState.ongoing;
   }
+
+  /// True once the trip is over, and the screen's cue to hand back to the shell.
+  ///
+  /// Separate from [canAdvance] on purpose. The plan derived the button's
+  /// enabled state from `canAdvance`, which is false at `completed`, so the one
+  /// button that ends the trip could never be pressed and `onFinished` was
+  /// unreachable.
+  bool get isFinished => trip?.state == TripState.completed;
 
   Future<bool> advance() async {
     error = null;
@@ -11827,7 +13587,7 @@ class ActiveTripController extends ChangeNotifier {
       return false;
     }
     if (current.state == TripState.arriving) {
-      error = 'Enter the rider\\'s pickup code to start the trip';
+      error = 'Enter the pickup code to start the trip';
       notifyListeners();
       return false;
     }
@@ -11853,6 +13613,10 @@ class ActiveTripController extends ChangeNotifier {
     }
   }
 
+  /// Checks the rider's 4-digit code and, only if it is right, starts the trip.
+  ///
+  /// Length is checked before the network call so a two-digit code is a message
+  /// on the screen rather than a round trip.
   Future<bool> submitPickupOtp(String code) async {
     error = null;
     final current = trip;
@@ -11891,6 +13655,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
 import 'package:mng_core/mng_core.dart';
+
 import 'active_trip_controller.dart';
 
 class PickupOtpSheet extends StatefulWidget {
@@ -11913,46 +13678,64 @@ class _PickupOtpSheetState extends State<PickupOtpSheet> {
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: EdgeInsets.fromLTRB(20.w, 8.h, 20.w, 32.h),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Text('Confirm your rider', style: MngTheme.light.textTheme.titleLarge),
-          SizedBox(height: 6.h),
-          Text(
-            'Ask your rider for the 4-digit pickup code before you start.',
-            style: MngTheme.light.textTheme.bodySmall,
-          ),
-          SizedBox(height: 20.h),
-          TextField(
-            key: const Key('pickupOtpField'),
-            controller: _code,
-            keyboardType: TextInputType.number,
-            maxLength: 4,
-            inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-            decoration: const InputDecoration(hintText: '0000', counterText: ''),
-          ),
-          if (widget.controller.error != null) ...[
-            SizedBox(height: 8.h),
+    // `ListenableBuilder` because the sheet holds the controller rather than
+    // reading it from `context`, and a widget that reads a `ChangeNotifier` it
+    // holds without listening to it is a widget that cannot change. The
+    // controller sets `error` and notifies; without this the sheet redraws with
+    // the same empty state, and the one thing the driver most needs to read --
+    // "that code is not right" -- never appears.
+    return ListenableBuilder(
+      listenable: widget.controller,
+      builder: (context, _) => Padding(
+        padding: EdgeInsets.fromLTRB(20.w, 8.h, 20.w, 32.h),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
             Text(
-              widget.controller.error!,
-              style: const TextStyle(color: MngColors.error),
+              'Confirm your rider',
+              style: MngTheme.light.textTheme.titleLarge,
+            ),
+            SizedBox(height: 6.h),
+            Text(
+              'Ask your rider for the 4-digit pickup code before you start.',
+              style: MngTheme.light.textTheme.bodySmall,
+            ),
+            SizedBox(height: 20.h),
+            TextField(
+              key: const Key('pickupOtpField'),
+              controller: _code,
+              keyboardType: TextInputType.number,
+              maxLength: 4,
+              inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+              decoration: const InputDecoration(
+                hintText: '0000',
+                counterText: '',
+              ),
+            ),
+            if (widget.controller.error != null) ...[
+              SizedBox(height: 8.h),
+              Text(
+                widget.controller.error!,
+                key: const Key('pickupOtpError'),
+                style: const TextStyle(color: MngColors.error),
+              ),
+            ],
+            SizedBox(height: 20.h),
+            FilledButton(
+              key: const Key('pickupOtpConfirmButton'),
+              onPressed: widget.controller.busy
+                  ? null
+                  : () async {
+                      final ok = await widget.controller.submitPickupOtp(
+                        _code.text,
+                      );
+                      if (ok && context.mounted) Navigator.of(context).pop();
+                    },
+              child: const Text('Start trip'),
             ),
           ],
-          SizedBox(height: 20.h),
-          FilledButton(
-            key: const Key('pickupOtpConfirmButton'),
-            onPressed: widget.controller.busy
-                ? null
-                : () async {
-                    final ok = await widget.controller.submitPickupOtp(_code.text);
-                    if (ok && context.mounted) Navigator.of(context).pop();
-                  },
-            child: const Text('Start trip'),
-          ),
-        ],
+        ),
       ),
     );
   }
@@ -11966,28 +13749,57 @@ import 'package:flutter/material.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
 import 'package:mng_core/mng_core.dart';
 import 'package:provider/provider.dart';
+
 import 'active_trip_controller.dart';
 import 'pickup_otp_sheet.dart';
 
 class ActiveTripScreen extends StatelessWidget {
   const ActiveTripScreen({super.key, required this.onFinished});
 
+  /// Called when the driver presses the button on a finished trip.
   final VoidCallback onFinished;
+
+  /// What the two buttons the plan put on this screen cannot do yet.
+  ///
+  /// `google_maps_flutter` and `url_launcher` are not dependencies of this app
+  /// and a phone in the pilot has neither configured, so a button that launched
+  /// them would fail on the device that matters. The plan's `onPressed: () {}`
+  /// was worse: a live-looking control that does nothing at all. This says what
+  /// is missing instead.
+  static const _notInThisBuild =
+      'Turn-by-turn navigation is not part of this build.';
+
+  static const _callNotInThisBuild =
+      'Calling from the app is not part of this build.';
 
   @override
   Widget build(BuildContext context) {
-    final c = context.watch<ActiveTripController>();
-    final trip = c.trip;
+    final controller = context.watch<ActiveTripController>();
+    final trip = controller.trip;
 
     return Scaffold(
       appBar: AppBar(
         backgroundColor: MngColors.page,
+        surfaceTintColor: Colors.transparent,
         elevation: 0,
-        title: Text(c.headline, style: MngTheme.light.textTheme.titleLarge),
+        title: Text(
+          controller.headline,
+          style: MngTheme.light.textTheme.titleLarge,
+        ),
       ),
       body: trip == null
+          // Not the headline: the app bar already carries it, and the plan's
+          // version rendered 'No active trip' in both, so the one string on
+          // this screen a test can assert on appears twice.
           ? Center(
-              child: Text('No active trip', style: MngTheme.light.textTheme.bodySmall),
+              child: Padding(
+                padding: EdgeInsets.symmetric(horizontal: 40.w),
+                child: Text(
+                  'There is no trip on this account to show.',
+                  textAlign: TextAlign.center,
+                  style: MngTheme.light.textTheme.bodySmall,
+                ),
+              ),
             )
           : SafeArea(
               child: Column(
@@ -11998,7 +13810,10 @@ class ActiveTripScreen extends StatelessWidget {
                       children: [
                         Container(
                           key: const Key('tripStateChip'),
-                          padding: EdgeInsets.symmetric(horizontal: 12.w, vertical: 6.h),
+                          padding: EdgeInsets.symmetric(
+                            horizontal: 12.w,
+                            vertical: 6.h,
+                          ),
                           decoration: BoxDecoration(
                             color: MngColors.muted,
                             borderRadius: BorderRadius.circular(20),
@@ -12034,11 +13849,12 @@ class ActiveTripScreen extends StatelessWidget {
                       ],
                     ),
                   ),
-                  if (c.error != null)
+                  if (controller.error != null)
                     Padding(
                       padding: EdgeInsets.symmetric(horizontal: 20.w),
                       child: Text(
-                        c.error!,
+                        controller.error!,
+                        key: const Key('activeTripError'),
                         style: const TextStyle(color: MngColors.error),
                       ),
                     ),
@@ -12051,7 +13867,10 @@ class ActiveTripScreen extends StatelessWidget {
                             Expanded(
                               child: OutlinedButton.icon(
                                 key: const Key('navigateButton'),
-                                onPressed: () {},
+                                onPressed: () => _say(
+                                  context,
+                                  _notInThisBuild,
+                                ),
                                 icon: const Icon(Icons.navigation),
                                 label: const Text('Navigate'),
                               ),
@@ -12060,7 +13879,8 @@ class ActiveTripScreen extends StatelessWidget {
                             Expanded(
                               child: OutlinedButton.icon(
                                 key: const Key('callRiderButton'),
-                                onPressed: () {},
+                                onPressed: () =>
+                                    _say(context, _callNotInThisBuild),
                                 icon: const Icon(Icons.call),
                                 label: const Text('Call'),
                               ),
@@ -12070,23 +13890,12 @@ class ActiveTripScreen extends StatelessWidget {
                         SizedBox(height: 12.h),
                         FilledButton(
                           key: const Key('primaryActionButton'),
-                          onPressed: !c.canAdvance || c.busy
+                          onPressed: controller.busy ||
+                                  (!controller.canAdvance &&
+                                      !controller.isFinished)
                               ? null
-                              : () async {
-                                  if (trip.state == TripState.arriving) {
-                                    await showModalBottomSheet<void>(
-                                      context: context,
-                                      isScrollControlled: true,
-                                      builder: (_) => PickupOtpSheet(controller: c),
-                                    );
-                                    return;
-                                  }
-                                  final ok = await c.advance();
-                                  if (ok && trip.state == TripState.completed) {
-                                    onFinished();
-                                  }
-                                },
-                          child: Text(c.primaryActionLabel),
+                              : () => _act(context, controller),
+                          child: Text(controller.primaryActionLabel),
                         ),
                       ],
                     ),
@@ -12095,6 +13904,36 @@ class ActiveTripScreen extends StatelessWidget {
               ),
             ),
     );
+  }
+
+  void _say(BuildContext context, String message) {
+    ScaffoldMessenger.of(context)
+      ..clearSnackBars()
+      ..showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  Future<void> _act(
+    BuildContext context,
+    ActiveTripController controller,
+  ) async {
+    if (controller.isFinished) {
+      onFinished();
+      return;
+    }
+    if (controller.trip?.state == TripState.arriving) {
+      await showModalBottomSheet<void>(
+        context: context,
+        isScrollControlled: true,
+        builder: (_) => PickupOtpSheet(controller: controller),
+      );
+      return;
+    }
+    // Read the state off the controller and not off the `trip` this build
+    // captured. `advance` is awaited, and the `trip` local is the pre-advance
+    // object, so `trip.state == completed` was never true here and
+    // `onFinished` was dead code.
+    await controller.advance();
+    if (controller.isFinished) onFinished();
   }
 }
 
@@ -12118,7 +13957,11 @@ class _RouteStop extends StatelessWidget {
       children: [
         Column(
           children: [
-            Icon(icon, color: last ? MngColors.success : MngColors.primary, size: 20),
+            Icon(
+              icon,
+              color: last ? MngColors.success : MngColors.primary,
+              size: 20,
+            ),
             if (!last)
               Container(width: 2, height: 40.h, color: MngColors.divider),
           ],
@@ -12149,7 +13992,7 @@ class _RouteStop extends StatelessWidget {
 cd ~/meet-n-go/apps/driver && flutter test && flutter analyze
 ```
 
-Expected: all driver tests pass, analyze clean.
+Expected: 26 tests pass in this file, and `flutter analyze --fatal-infos` clean.
 
 - [ ] **Step 8: Commit**
 
@@ -12162,6 +14005,28 @@ git -c user.email=opencode@local -c user.name=opencode commit -m "feat(driver): 
 
 ### Task 15: Driver app — earnings summary, wallet, and demo payouts
 
+> **Corrected 2026-09-28 by extraction and execution.** See Task 12's note
+> for the full class list. Two of this task's tests cannot pass against this
+> task's own code, and both were confirmed by running the plan's arithmetic
+> rather than by reading it:
+>
+> * `EarningsSnapshot` "fare entries count as available, commission subtracts"
+>   expects `availableGhs` 14.28. The `fromLedger` below puts `commission` in a
+>   branch that adds to `lifetime` and not to `available`, so it returns
+>   **17.34**. `lifetimeGhs` is 14.28 as the test expects, which is why the bug
+>   is easy to miss by eye: one of the two numbers is right.
+> * `EarningsController` "a valid payout is requested and the balance drops"
+>   expects 0.0. The `requestPayout` below calls `load()` after the payout,
+>   which re-reads a ledger that has not changed, so it ends at **20.0**. A
+>   withdrawal that does not withdraw.
+>
+> The third failure is a test that cannot fail safely: `wallet_test.dart`
+> declares its own `PayoutFailure`, which shadows the one it imports from
+> `earnings_repository.dart`. The controller's `on PayoutFailure catch` therefore
+> never matches the class the test throws, and a refused payout escapes as an
+> uncaught exception instead of the intended assertion. The blocks below drop
+> the shadowing declaration.
+
 **Files:**
 - Create: `apps/driver/lib/src/earnings/earnings_repository.dart`
 - Create: `apps/driver/lib/src/earnings/earnings_controller.dart`
@@ -12173,7 +14038,7 @@ git -c user.email=opencode@local -c user.name=opencode commit -m "feat(driver): 
 - Consumes: `FareCalculator.driverPayoutGhs` (Task 2), `MngTheme` (Task 1), `DriverRepository` (Tasks 12-14)
 - Produces:
   - `class LedgerEntry` — `LedgerEntry({required this.id, required this.kind, required this.amountGhs, required this.note, required this.createdAt})` with `fromJson`. `kind` is one of `fare`, `commission`, `compensation`, `void`, `bonus`.
-  - `class EarningsSnapshot` — `EarningsSnapshot({required this.availableGhs, required this.pendingGhs, required this.lifetimeGhs, required this.entries})` with `factory EarningsSnapshot.fromLedger(List<LedgerEntry> rows)`.
+  - `class EarningsSnapshot` — `EarningsSnapshot({required this.availableGhs, required this.pendingGhs, required this.lifetimeGhs, required this.entries})` with `factory EarningsSnapshot.fromLedger(List<LedgerEntry> rows)` and `EarningsSnapshot withdraw(double)`. Every ledger row adds to the available balance, commission included: the plan's `fromLedger` put commission in a branch that added to `lifetime` and not to `available`, so a driver whose fare was 17.34 and whose commission was 3.06 was shown **17.34 available** -- and the plan's own test expected 14.28, so it could not pass. `withdraw` is what makes a withdrawal stick: the plan's `requestPayout` called `load()` afterwards, which re-read a ledger that had not changed, so the balance the driver had just spent snapped back to its full amount under a "requested" message. The plan's own test expected 0.0 there and could not pass either.
   - `abstract class EarningsRepository` with `Future<List<LedgerEntry>> ledger()`, `Future<void> requestPayout({required double amountGhs})`.
   - `class EarningsController extends ChangeNotifier` with `EarningsSnapshot? snapshot`, `bool busy`, `String? error`, `Future<void> load()`, `Future<bool> requestPayout(double amountGhs)`.
   - `WalletScreen({required EarningsController controller})` — keys `availableBalance`, `pendingBalance`, `lifetimeEarnings`, `payoutButton`, `payoutAmountField`, `confirmPayoutButton`, `ledgerRow-<id>`.
@@ -12185,71 +14050,68 @@ git -c user.email=opencode@local -c user.name=opencode commit -m "feat(driver): 
 
 ```dart
 import 'package:flutter/material.dart';
-import 'package:flutter_screenutil/flutter_screenutil.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:meetngo_driver/src/earnings/earnings_controller.dart';
 import 'package:meetngo_driver/src/earnings/earnings_repository.dart';
 import 'package:meetngo_driver/src/earnings/wallet_screen.dart';
-import 'package:mng_core/mng_core.dart';
 import 'package:provider/provider.dart';
 
-LedgerEntry entry(String id, String kind, double amount) => LedgerEntry(
-      id: id,
-      kind: kind,
-      amountGhs: amount,
-      note: '',
-      createdAt: DateTime(2026, 9, 27),
-    );
+import '../support/fakes.dart';
+import '../support/harness.dart';
 
-class StubEarningsRepository implements EarningsRepository {
-  List<LedgerEntry> rows = [];
-  final List<double> payouts = [];
-  bool failPayout = false;
-
-  @override
-  Future<List<LedgerEntry>> ledger() async => rows;
-
-  @override
-  Future<void> requestPayout({required double amountGhs}) async {
-    if (failPayout) throw const PayoutFailure('Payouts are paused right now');
-    payouts.add(amountGhs);
-  }
-}
-
-class PayoutFailure implements Exception {
-  const PayoutFailure(this.message);
-  final String message;
-}
-
-Widget wrap(EarningsController c) => ScreenUtilInit(
-      designSize: const Size(390, 844),
-      builder: (_, _) => ChangeNotifierProvider<EarningsController>.value(
+Widget wrap(EarningsController c) => appHarness(
+      ChangeNotifierProvider<EarningsController>.value(
         value: c,
-        child: const MaterialApp(home: WalletScreen()),
+        child: const WalletScreen(),
       ),
     );
 
 void main() {
+  late StubEarningsRepository repo;
+
+  setUp(() => repo = StubEarningsRepository());
+
   group('EarningsSnapshot', () {
-    test('fare entries count as available, commission subtracts', () {
+    // Commission is written by `complete-trip` as a negative `commission` row, so
+    // subtracting it from the available balance is the same arithmetic the
+    // settlement did. The plan's `fromLedger` skipped commission entirely -- its
+    // `if` branch added to `lifetime` and not to `available` -- so a driver
+    // whose fare was 17.34 and whose commission was 3.06 was shown 17.34
+    // available. Run against the plan's own arithmetic this is what comes out,
+    // and the plan's own test expected 14.28.
+    test('a commission reduces the available balance', () {
       final s = EarningsSnapshot.fromLedger([
-        entry('1', 'fare', 17.34),
-        entry('2', 'commission', -3.06),
+        ledgerEntry('1', 'fare', 17.34),
+        ledgerEntry('2', 'commission', -3.06),
       ]);
       expect(s.availableGhs, closeTo(14.28, 0.001));
       expect(s.lifetimeGhs, closeTo(14.28, 0.001));
-      expect(s.pendingGhs, 0.0);
     });
 
     test('compensation is available to the driver', () {
-      final s = EarningsSnapshot.fromLedger([entry('1', 'compensation', 5.0)]);
+      final s = EarningsSnapshot.fromLedger([ledgerEntry('1', 'compensation', 5.0)]);
       expect(s.availableGhs, closeTo(5.0, 0.001));
     });
 
-    test('a void entry zeroes the balance rather than going negative', () {
+    test('a bonus is available to the driver', () {
+      final s = EarningsSnapshot.fromLedger([ledgerEntry('1', 'bonus', 2.5)]);
+      expect(s.availableGhs, closeTo(2.5, 0.001));
+    });
+
+    // A void is the settlement reversing a charge. It must not continue past
+    // zero into a balance the driver has never earned.
+    test('a void zeroes the balance rather than going negative', () {
       final s = EarningsSnapshot.fromLedger([
-        entry('1', 'fare', 17.34),
-        entry('2', 'void', -17.34),
+        ledgerEntry('1', 'fare', 17.34),
+        ledgerEntry('2', 'void', -17.34),
+      ]);
+      expect(s.availableGhs, 0.0);
+      expect(s.lifetimeGhs, 0.0);
+    });
+
+    test('a void never leaves a negative balance', () {
+      final s = EarningsSnapshot.fromLedger([
+        ledgerEntry('1', 'void', -17.34),
       ]);
       expect(s.availableGhs, 0.0);
     });
@@ -12257,28 +14119,72 @@ void main() {
     test('an empty ledger is a zeroed wallet, not a null', () {
       final s = EarningsSnapshot.fromLedger([]);
       expect(s.availableGhs, 0.0);
+      expect(s.lifetimeGhs, 0.0);
       expect(s.entries, isEmpty);
+    });
+
+    // `complete-trip` writes the fare at the moment the trip completes, so
+    // there is no unsettled interval for a "pending" figure to describe. It is
+    // a tile and it is zero, rather than a number invented to fill it.
+    test('nothing is ever pending in this build', () {
+      final s = EarningsSnapshot.fromLedger([ledgerEntry('1', 'fare', 10.0)]);
+      expect(s.pendingGhs, 0.0);
+    });
+
+    test('balances are rounded to two places, as cedis are', () {
+      final s = EarningsSnapshot.fromLedger([
+        ledgerEntry('1', 'fare', 0.1),
+        ledgerEntry('2', 'fare', 0.2),
+      ]);
+      expect(s.availableGhs, 0.3);
+    });
+
+    test('the five ledger kinds the database allows are all handled', () {
+      for (final kind in ['fare', 'commission', 'compensation', 'void', 'bonus']) {
+        final s = EarningsSnapshot.fromLedger([ledgerEntry('1', kind, 4.0)]);
+        expect(s.availableGhs, greaterThanOrEqualTo(0.0), reason: kind);
+        expect(s.lifetimeGhs, closeTo(4.0, 0.001), reason: kind);
+      }
     });
   });
 
   group('EarningsController', () {
     test('load populates the snapshot', () async {
-      final repo = StubEarningsRepository()
-        ..rows = [entry('1', 'fare', 17.34), entry('2', 'commission', -3.06)];
+      repo.rows = [
+        ledgerEntry('1', 'fare', 17.34),
+        ledgerEntry('2', 'commission', -3.06),
+      ];
       final c = EarningsController(repo);
       await c.load();
       expect(c.snapshot!.availableGhs, closeTo(14.28, 0.001));
     });
 
-    test('payout of zero is rejected before the network call', () async {
-      final repo = StubEarningsRepository();
+    test('a failed ledger read is shown and leaves no snapshot', () async {
+      repo.failLedger = true;
+      final c = EarningsController(repo);
+      await c.load();
+      expect(c.error, 'Could not read your ledger');
+      expect(c.snapshot, isNull);
+      expect(c.busy, isFalse);
+    });
+
+    test('a payout of zero is rejected before the network call', () async {
       final c = EarningsController(repo);
       expect(await c.requestPayout(0), isFalse);
       expect(repo.payouts, isEmpty);
+      expect(c.error, 'Enter an amount greater than zero');
     });
 
-    test('payout above the available balance is rejected', () async {
-      final repo = StubEarningsRepository()..rows = [entry('1', 'fare', 10.0)];
+    test('a negative payout is rejected before the network call', () async {
+      repo.rows = [ledgerEntry('1', 'fare', 20.0)];
+      final c = EarningsController(repo);
+      await c.load();
+      expect(await c.requestPayout(-5), isFalse);
+      expect(repo.payouts, isEmpty);
+    });
+
+    test('a payout above the available balance is rejected', () async {
+      repo.rows = [ledgerEntry('1', 'fare', 10.0)];
       final c = EarningsController(repo);
       await c.load();
       expect(await c.requestPayout(25.0), isFalse);
@@ -12286,8 +14192,19 @@ void main() {
       expect(repo.payouts, isEmpty);
     });
 
+    test('a payout with no snapshot at all is rejected', () async {
+      final c = EarningsController(repo);
+      expect(await c.requestPayout(1.0), isFalse);
+      expect(repo.payouts, isEmpty);
+    });
+
+    // The plan called `load()` after a payout. That is the same read that
+    // produced the balance being spent; the ledger had not changed, so the
+    // balance snapped back to its full amount under a "requested" message. Run
+    // against the plan's own arithmetic, withdrawing 20 from a ledger of 20 ends
+    // at 20.0, and the plan's own test expected 0.0.
     test('a valid payout is requested and the balance drops', () async {
-      final repo = StubEarningsRepository()..rows = [entry('1', 'fare', 20.0)];
+      repo.rows = [ledgerEntry('1', 'fare', 20.0)];
       final c = EarningsController(repo);
       await c.load();
       expect(await c.requestPayout(20.0), isTrue);
@@ -12295,58 +14212,236 @@ void main() {
       expect(c.snapshot!.availableGhs, 0.0);
     });
 
+    test('a partial payout leaves the remainder', () async {
+      repo.rows = [ledgerEntry('1', 'fare', 20.0)];
+      final c = EarningsController(repo);
+      await c.load();
+      expect(await c.requestPayout(7.5), isTrue);
+      expect(c.snapshot!.availableGhs, closeTo(12.5, 0.001));
+    });
+
+    // A second withdrawal cannot spend the same money twice, which is the whole
+    // point of dropping the balance.
+    test('the balance after a payout is the one the next payout is checked against',
+        () async {
+      repo.rows = [ledgerEntry('1', 'fare', 20.0)];
+      final c = EarningsController(repo);
+      await c.load();
+      await c.requestPayout(15.0);
+      expect(await c.requestPayout(15.0), isFalse);
+      expect(repo.payouts, [15.0]);
+      expect(c.error, contains('You only have GHS 5.00 available'));
+    });
+
     test('a failed payout surfaces the reason and keeps the balance', () async {
-      final repo = StubEarningsRepository()
-        ..rows = [entry('1', 'fare', 20.0)]
-        ..failPayout = true;
+      repo.rows = [ledgerEntry('1', 'fare', 20.0)];
+      repo.failPayout = true;
       final c = EarningsController(repo);
       await c.load();
       expect(await c.requestPayout(20.0), isFalse);
       expect(c.error, 'Payouts are paused right now');
       expect(c.snapshot!.availableGhs, closeTo(20.0, 0.001));
     });
+
+    test('a withdrawal does not change what the driver has earned', () async {
+      repo.rows = [ledgerEntry('1', 'fare', 20.0)];
+      final c = EarningsController(repo);
+      await c.load();
+      await c.requestPayout(20.0);
+      expect(c.snapshot!.lifetimeGhs, closeTo(20.0, 0.001));
+    });
+
+    test('the controller tells its listeners', () async {
+      repo.rows = [ledgerEntry('1', 'fare', 5.0)];
+      final c = EarningsController(repo);
+      var notifications = 0;
+      c.addListener(() => notifications++);
+      await c.load();
+      await c.requestPayout(1.0);
+      expect(notifications, greaterThan(1));
+    });
   });
 
-  testWidgets('wallet shows the three balances', (tester) async {
-    final c = EarningsController(StubEarningsRepository())
-      ..snapshot = EarningsSnapshot.fromLedger([entry('1', 'fare', 17.34)]);
+  testWidgets('the wallet shows the three balances', (tester) async {
+    useDesignSurface(tester);
+    final c = EarningsController(repo)
+      ..snapshot = EarningsSnapshot.fromLedger([ledgerEntry('1', 'fare', 17.34)]);
     await tester.pumpWidget(wrap(c));
     expect(find.byKey(const Key('availableBalance')), findsOneWidget);
     expect(find.byKey(const Key('pendingBalance')), findsOneWidget);
     expect(find.byKey(const Key('lifetimeEarnings')), findsOneWidget);
-    expect(find.text('GHS 17.34'), findsWidgets);
+    expect(find.text('GHS 17.34'), findsNWidgets(2), reason: 'available and lifetime');
+    expect(find.text('GHS 0.00'), findsOneWidget, reason: 'pending is always zero');
   });
 
-  testWidgets('payout button opens the mock MoMo sheet', (tester) async {
-    final c = EarningsController(StubEarningsRepository())
-      ..snapshot = EarningsSnapshot.fromLedger([entry('1', 'fare', 17.34)]);
+  testWidgets('the wallet is built by the controller, not by a hard-coded zero',
+      (tester) async {
+    useDesignSurface(tester);
+    final c = EarningsController(repo);
     await tester.pumpWidget(wrap(c));
+    expect(find.text('GHS 0.00'), findsNWidgets(3));
+    expect(find.text('No earnings yet'), findsOneWidget);
+  });
+
+  testWidgets('the withdraw button opens the mock MoMo sheet', (tester) async {
+    useDesignSurface(tester);
+    final c = EarningsController(repo)
+      ..snapshot = EarningsSnapshot.fromLedger([ledgerEntry('1', 'fare', 17.34)]);
+    await tester.pumpWidget(wrap(c));
+
     await tester.tap(find.byKey(const Key('payoutButton')));
     await tester.pumpAndSettle();
+
     expect(find.text('Withdraw to MoMo'), findsOneWidget);
     expect(find.byKey(const Key('payoutAmountField')), findsOneWidget);
     expect(find.byKey(const Key('confirmPayoutButton')), findsOneWidget);
+    expect(find.byKey(const Key('payoutPinField')), findsOneWidget);
   });
 
-  testWidgets('a zero-balance wallet disables the payout button', (tester) async {
-    final c = EarningsController(StubEarningsRepository())
+  // A PIN box that is collected and thrown away is the one control on the sheet
+  // a driver could mistake for a real payment, so the copy has to say what it is.
+  testWidgets('the sheet says no money moves and the PIN is unchecked',
+      (tester) async {
+    useDesignSurface(tester);
+    final c = EarningsController(repo)
+      ..snapshot = EarningsSnapshot.fromLedger([ledgerEntry('1', 'fare', 17.34)]);
+    await tester.pumpWidget(wrap(c));
+    await tester.tap(find.byKey(const Key('payoutButton')));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('No money moves'), findsOneWidget);
+    expect(find.textContaining('not checked against anything'), findsOneWidget);
+  });
+
+  testWidgets('a zero-balance wallet disables the withdraw button',
+      (tester) async {
+    useDesignSurface(tester);
+    final c = EarningsController(repo)
       ..snapshot = EarningsSnapshot.fromLedger([]);
     await tester.pumpWidget(wrap(c));
     final button = tester.widget<FilledButton>(find.byKey(const Key('payoutButton')));
     expect(button.onPressed, isNull);
   });
 
-  testWidgets('ledger rows render with their kind and amount', (tester) async {
-    final c = EarningsController(StubEarningsRepository())
+  testWidgets('the ledger rows render with their kind and amount',
+      (tester) async {
+    useDesignSurface(tester);
+    final c = EarningsController(repo)
       ..snapshot = EarningsSnapshot.fromLedger([
-        entry('1', 'fare', 17.34),
-        entry('2', 'compensation', 5.0),
+        ledgerEntry('1', 'fare', 17.34),
+        ledgerEntry('2', 'compensation', 5.0),
       ]);
     await tester.pumpWidget(wrap(c));
     expect(find.byKey(const Key('ledgerRow-1')), findsOneWidget);
     expect(find.byKey(const Key('ledgerRow-2')), findsOneWidget);
     expect(find.text('Trip fare'), findsOneWidget);
     expect(find.text('Cancellation compensation'), findsOneWidget);
+    expect(find.text('+GHS 17.34'), findsOneWidget);
+    expect(find.text('+GHS 5.00'), findsOneWidget);
+  });
+
+  testWidgets('a negative ledger row reads as a subtraction', (tester) async {
+    useDesignSurface(tester);
+    final c = EarningsController(repo)
+      ..snapshot = EarningsSnapshot.fromLedger([
+        ledgerEntry('1', 'commission', -3.06),
+      ]);
+    await tester.pumpWidget(wrap(c));
+    expect(find.text('-GHS 3.06'), findsOneWidget);
+  });
+
+  // `kind` is one of exactly five values -- the check constraint on
+  // `ledger_entries.kind` (`init.sql:126`) -- so a sixth kind in the table would
+  // be a value the database cannot store, and a missing one would be a kind the
+  // wallet renders as its raw wire value.
+  testWidgets('all five ledger kinds have a label a driver can read',
+      (tester) async {
+    useDesignSurface(tester);
+    const labels = {
+      'fare': 'Trip fare',
+      'commission': 'Platform commission',
+      'compensation': 'Cancellation compensation',
+      'void': 'Voided charge',
+      'bonus': 'Bonus',
+    };
+    for (final entry in labels.entries) {
+      final c = EarningsController(repo)
+        ..snapshot = EarningsSnapshot.fromLedger([
+          ledgerEntry('1', entry.key, 1.0),
+        ]);
+      await tester.pumpWidget(wrap(c));
+      expect(find.text(entry.value), findsOneWidget, reason: entry.key);
+      expect(find.text(entry.key), findsNothing, reason: entry.key);
+    }
+  });
+
+  testWidgets('the sheet reports a payout it refused', (tester) async {
+    useDesignSurface(tester);
+    repo.rows = [ledgerEntry('1', 'fare', 10.0)];
+    repo.failPayout = true;
+    final c = EarningsController(repo);
+    await c.load();
+    await tester.pumpWidget(wrap(c));
+    await tester.tap(find.byKey(const Key('payoutButton')));
+    await tester.pumpAndSettle();
+
+    await tester.enterText(find.byKey(const Key('payoutAmountField')), '10');
+    await tester.tap(find.byKey(const Key('confirmPayoutButton')));
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const Key('payoutSent')), findsNothing);
+    expect(find.text('Payouts are paused right now'), findsNWidgets(2));
+  });
+
+  testWidgets('the sheet reports a payout it made, and says it sent nothing',
+      (tester) async {
+    useDesignSurface(tester);
+    repo.rows = [ledgerEntry('1', 'fare', 10.0)];
+    final c = EarningsController(repo);
+    await c.load();
+    await tester.pumpWidget(wrap(c));
+    await tester.tap(find.byKey(const Key('payoutButton')));
+    await tester.pumpAndSettle();
+
+    await tester.enterText(find.byKey(const Key('payoutAmountField')), '4');
+    await tester.tap(find.byKey(const Key('confirmPayoutButton')));
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const Key('payoutSent')), findsOneWidget);
+    expect(find.textContaining('nothing was sent'), findsOneWidget);
+  });
+
+  testWidgets('an amount that is not a number is refused, not rounded',
+      (tester) async {
+    useDesignSurface(tester);
+    repo.rows = [ledgerEntry('1', 'fare', 10.0)];
+    final c = EarningsController(repo);
+    await c.load();
+    await tester.pumpWidget(wrap(c));
+    await tester.tap(find.byKey(const Key('payoutButton')));
+    await tester.pumpAndSettle();
+
+    await tester.enterText(find.byKey(const Key('payoutAmountField')), 'abc');
+    await tester.tap(find.byKey(const Key('confirmPayoutButton')));
+    await tester.pumpAndSettle();
+
+    expect(repo.payouts, isEmpty);
+    expect(find.text('Enter an amount greater than zero'), findsNWidgets(2));
+  });
+
+  testWidgets('the sheet is a live view of the controller', (tester) async {
+    useDesignSurface(tester);
+    final c = EarningsController(repo)
+      ..snapshot = EarningsSnapshot.fromLedger([ledgerEntry('1', 'fare', 5.0)]);
+    await tester.pumpWidget(wrap(c));
+
+    // A balance that only changed behind the screen's back would leave a stale
+    // "Available" tile and a live button.
+    c.snapshot = EarningsSnapshot.fromLedger([]);
+    await tester.pumpAndSettle();
+    expect(find.text('GHS 5.00'), findsNothing);
+
+    final button = tester.widget<FilledButton>(find.byKey(const Key('payoutButton')));
+    expect(button.onPressed, isNull);
   });
 }
 ```
@@ -12363,7 +14458,6 @@ Expected: FAIL — `EarningsController` is not defined.
 
 ```dart
 import 'package:supabase_flutter/supabase_flutter.dart';
-import 'package:mng_core/mng_core.dart';
 
 class PayoutFailure implements Exception {
   const PayoutFailure(this.message);
@@ -12372,6 +14466,12 @@ class PayoutFailure implements Exception {
   String toString() => message;
 }
 
+/// One line of a driver's earnings history.
+///
+/// `kind` is one of the five values the `ledger_entries` check constraint
+/// allows (`init.sql:126`): `fare`, `commission`, `compensation`, `void`,
+/// `bonus`. A kind outside that set cannot reach this class, because the
+/// database will not store it.
 class LedgerEntry {
   const LedgerEntry({
     required this.id,
@@ -12396,6 +14496,13 @@ class LedgerEntry {
   final DateTime createdAt;
 }
 
+/// Three balances, derived from the ledger rather than stored.
+///
+/// The ledger is the only per-trip record a driver has: `own ledger` is a
+/// SELECT policy and nothing else, so a balance that disagreed with it would
+/// have nothing behind it. Commission is a negative `commission` row, so
+/// subtracting it from the available balance is the same arithmetic the
+/// `complete-trip` settlement did when it wrote the row.
 class EarningsSnapshot {
   const EarningsSnapshot({
     required this.availableGhs,
@@ -12407,27 +14514,44 @@ class EarningsSnapshot {
   factory EarningsSnapshot.fromLedger(List<LedgerEntry> rows) {
     var available = 0.0;
     var lifetime = 0.0;
-    for (final e in rows) {
-      if (e.kind == 'commission' || e.kind == 'void') {
-        lifetime += e.amountGhs;
-        if (e.kind == 'void') available = 0.0;
-      } else {
-        available += e.amountGhs;
-        lifetime += e.amountGhs;
+    for (final entry in rows) {
+      if (entry.kind == 'void') {
+        // A void is the settlement reversing a charge, so it zeroes what the
+        // charge had built rather than continuing past zero into a negative
+        // balance a driver has never earned.
+        available = 0.0;
+        lifetime += entry.amountGhs;
+        continue;
       }
+      available += entry.amountGhs;
+      lifetime += entry.amountGhs;
     }
     return EarningsSnapshot(
-      availableGhs: double.parse(available.toStringAsFixed(2)),
+      availableGhs: _round2(available < 0 ? 0.0 : available),
       pendingGhs: 0.0,
-      lifetimeGhs: double.parse(lifetime.toStringAsFixed(2)),
+      lifetimeGhs: _round2(lifetime),
       entries: rows,
     );
   }
 
+  /// Nothing is pending in this build: a fare is written to the ledger by
+  /// `complete-trip` at the moment the trip completes, so there is no
+  /// unsettled interval for a "pending" figure to describe. It is a tile on the
+  /// wallet and it is zero, rather than a number invented to fill it.
   final double availableGhs;
   final double pendingGhs;
   final double lifetimeGhs;
   final List<LedgerEntry> entries;
+
+  EarningsSnapshot withdraw(double amountGhs) => EarningsSnapshot(
+        availableGhs: _round2(availableGhs - amountGhs),
+        pendingGhs: pendingGhs,
+        lifetimeGhs: lifetimeGhs,
+        entries: entries,
+      );
+
+  static double _round2(double value) =>
+      double.parse(value.toStringAsFixed(2));
 }
 
 abstract class EarningsRepository {
@@ -12436,20 +14560,39 @@ abstract class EarningsRepository {
 }
 
 class SupabaseEarningsRepository implements EarningsRepository {
-  SupabaseEarningsRepository(this._client, this._driverId);
+  SupabaseEarningsRepository(this._client);
+
   final SupabaseClient _client;
-  final String _driverId;
+
+  /// Read per call, not captured at construction.
+  ///
+  /// The id does not exist until there is a session, and a provider that
+  /// captured it at build time would hold whichever value the first frame
+  /// happened to have -- the empty string, for the whole of an unconfigured
+  /// launch -- and read another driver's ledger, or nobody's.
+  String get _driverId {
+    final id = _client.auth.currentUser?.id;
+    if (id == null) throw const PayoutFailure('Not signed in');
+    return id;
+  }
 
   @override
   Future<List<LedgerEntry>> ledger() async {
-    final res = await _client
-        .from('ledger_entries')
-        .select('*')
-        .eq('driver_id', _driverId)
-        .order('created_at', ascending: false);
-    if (res.error != null) throw PayoutFailure(res.error!.message);
-    return (res.data as List<dynamic>)
-        .map((r) => LedgerEntry.fromJson(Map<String, dynamic>.from(r as Map)))
+    // Awaiting a postgrest builder yields the rows, and a failed read throws
+    // `PostgrestException` rather than handing back an error field.
+    final driverId = _driverId;
+    final List<dynamic> rows;
+    try {
+      rows = await _client
+          .from('ledger_entries')
+          .select('*')
+          .eq('driver_id', driverId)
+          .order('created_at', ascending: false);
+    } on PostgrestException catch (e) {
+      throw PayoutFailure(e.message);
+    }
+    return rows
+        .map((row) => LedgerEntry.fromJson(row as Map<String, dynamic>))
         .toList();
   }
 
@@ -12458,11 +14601,20 @@ class SupabaseEarningsRepository implements EarningsRepository {
     if (amountGhs <= 0) {
       throw const PayoutFailure('Enter an amount greater than zero');
     }
-    final res = await _client.functions.invoke(
-      'demo-pay',
-      body: {'action': 'payout', 'amountGhs': amountGhs},
-    );
-    if (res.error != null) throw PayoutFailure(res.error!.message);
+    // Nothing is sent, and nothing is written.
+    //
+    // The plan called `demo-pay` with `{'action': 'payout', 'amountGhs': ...}`.
+    // That function takes a `tripId` and a `method` and charges a rider
+    // (`demo-pay/handler.ts:14-21`); it has no `payout` action, so the body was
+    // refused with a 400. Even if it had one, `payouts` carries a SELECT
+    // policy and no INSERT policy (`init.sql:551-552`), so a driver cannot
+    // create their own payout row at all, and `ledger_entries.kind` has no
+    // `payout` value to record one with.
+    //
+    // So a withdrawal is applied to this session's balance and to nothing else,
+    // which is what the payout sheet already told the driver: it is a demo, no
+    // money moves, and no network is called. What is not done is pretend the
+    // call was made.
   }
 }
 ```
@@ -12471,56 +14623,87 @@ class SupabaseEarningsRepository implements EarningsRepository {
 
 ```dart
 import 'package:flutter/foundation.dart';
+
 import 'earnings_repository.dart';
 
+/// The wallet, as state a screen can read and a test can drive.
+///
+/// Every field is a notifying setter, for the reason `KycController`'s are: the
+/// balance tiles and the withdraw button read these, and a plain public field
+/// changed one with no `notifyListeners` leaves the screen showing the value
+/// from before. A withdrawal that emptied the wallet would leave the "Available"
+/// tile full and the button live, and the driver's next tap would be refused by
+/// the controller against a balance the screen had already spent.
 class EarningsController extends ChangeNotifier {
   EarningsController(this._repo);
 
   final EarningsRepository _repo;
 
-  EarningsSnapshot? snapshot;
-  bool busy = false;
-  String? error;
+  EarningsSnapshot? _snapshot;
+  EarningsSnapshot? get snapshot => _snapshot;
+  set snapshot(EarningsSnapshot? value) {
+    _snapshot = value;
+    notifyListeners();
+  }
+
+  bool _busy = false;
+  bool get busy => _busy;
+  set busy(bool value) {
+    _busy = value;
+    notifyListeners();
+  }
+
+  String? _error;
+  String? get error => _error;
+  set error(String? value) {
+    _error = value;
+    notifyListeners();
+  }
 
   Future<void> load() async {
     busy = true;
     error = null;
-    notifyListeners();
     try {
       snapshot = EarningsSnapshot.fromLedger(await _repo.ledger());
     } on PayoutFailure catch (e) {
       error = e.message;
     } finally {
       busy = false;
-      notifyListeners();
     }
   }
 
+  /// Withdraws [amountGhs] from the available balance.
+  ///
+  /// The balance after a withdrawal is computed, not re-read. The plan called
+  /// `load()` here, which is the same code path that produced the balance the
+  /// driver was just spending: it read the ledger back, the ledger had not
+  /// changed, and the balance the driver had just withdrawn snapped to its
+  /// full amount again under a "requested" message. A withdrawal is not
+  /// persisted in this build -- see
+  /// `SupabaseEarningsRepository.requestPayout` -- so it is applied here and
+  /// lasts for the session, and the sheet says exactly that.
   Future<bool> requestPayout(double amountGhs) async {
     error = null;
-    final available = snapshot?.availableGhs ?? 0.0;
+    final current = _snapshot;
+    final available = current?.availableGhs ?? 0.0;
     if (amountGhs <= 0) {
       error = 'Enter an amount greater than zero';
-      notifyListeners();
       return false;
     }
     if (amountGhs > available) {
       error = 'You only have GHS ${available.toStringAsFixed(2)} available';
-      notifyListeners();
       return false;
     }
     busy = true;
-    notifyListeners();
     try {
       await _repo.requestPayout(amountGhs: amountGhs);
-      await load();
+      snapshot = current!.withdraw(amountGhs);
       return true;
     } on PayoutFailure catch (e) {
       error = e.message;
       return false;
     } finally {
       busy = false;
-      notifyListeners();
     }
   }
 }
@@ -12534,8 +14717,15 @@ class EarningsController extends ChangeNotifier {
 import 'package:flutter/material.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
 import 'package:mng_core/mng_core.dart';
+
 import 'earnings_controller.dart';
 
+/// The mock MoMo prompt.
+///
+/// It asks for a 6-digit PIN and never uses it. A PIN box that is collected and
+/// thrown away is the one control here a driver could mistake for a real
+/// payment, so the copy above it says plainly that nothing is sent and that the
+/// PIN is not checked against anything.
 class PayoutSheet extends StatefulWidget {
   const PayoutSheet({super.key, required this.controller});
 
@@ -12559,67 +14749,88 @@ class _PayoutSheetState extends State<PayoutSheet> {
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: EdgeInsets.fromLTRB(20.w, 8.h, 20.w, 32.h),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Text('Withdraw to MoMo', style: MngTheme.light.textTheme.titleLarge),
-          SizedBox(height: 6.h),
-          Text(
-            'Demo payout. No money moves and no network is called.',
-            style: MngTheme.light.textTheme.bodySmall,
-          ),
-          SizedBox(height: 20.h),
-          TextField(
-            key: const Key('payoutAmountField'),
-            controller: _amount,
-            keyboardType: const TextInputType.numberWithOptions(decimal: true),
-            decoration: InputDecoration(
-              prefixText: 'GHS ',
-              hintText: widget.controller.snapshot?.availableGhs.toStringAsFixed(2) ?? '0.00',
-            ),
-          ),
-          SizedBox(height: 12.h),
-          TextField(
-            key: const Key('payoutPinField'),
-            controller: _pin,
-            obscureText: true,
-            maxLength: 6,
-            decoration: const InputDecoration(
-              hintText: 'MoMo PIN (any 6 digits)',
-              counterText: '',
-            ),
-          ),
-          if (widget.controller.error != null) ...[
-            SizedBox(height: 8.h),
+    // `ListenableBuilder` because the sheet holds the controller rather than
+    // reading it from `context`, and a widget that reads a `ChangeNotifier` it
+    // holds without listening to it cannot change. A refused withdrawal would
+    // leave this sheet showing its empty form next to a balance the wallet
+    // behind it has already changed, and the driver would see no reason at all.
+    return ListenableBuilder(
+      listenable: widget.controller,
+      builder: (context, _) => Padding(
+        padding: EdgeInsets.fromLTRB(20.w, 8.h, 20.w, 32.h),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
             Text(
-              widget.controller.error!,
-              style: const TextStyle(color: MngColors.error),
+              'Withdraw to MoMo',
+              style: MngTheme.light.textTheme.titleLarge,
+            ),
+            SizedBox(height: 6.h),
+            Text(
+              'Demo payout. No money moves, no network is called, and the PIN is '
+              'not checked against anything.',
+              style: MngTheme.light.textTheme.bodySmall,
+            ),
+            SizedBox(height: 20.h),
+            TextField(
+              key: const Key('payoutAmountField'),
+              controller: _amount,
+              keyboardType: const TextInputType.numberWithOptions(
+                decimal: true,
+              ),
+              decoration: InputDecoration(
+                prefixText: 'GHS ',
+                hintText:
+                    widget.controller.snapshot?.availableGhs.toStringAsFixed(
+                      2,
+                    ) ??
+                    '0.00',
+              ),
+            ),
+            SizedBox(height: 12.h),
+            TextField(
+              key: const Key('payoutPinField'),
+              controller: _pin,
+              obscureText: true,
+              maxLength: 6,
+              decoration: const InputDecoration(
+                hintText: 'MoMo PIN (any 6 digits)',
+                counterText: '',
+              ),
+            ),
+            if (widget.controller.error != null) ...[
+              SizedBox(height: 8.h),
+              Text(
+                widget.controller.error!,
+                key: const Key('payoutError'),
+                style: const TextStyle(color: MngColors.error),
+              ),
+            ],
+            if (sent) ...[
+              SizedBox(height: 16.h),
+              Text(
+                'Payout requested. It is a demo, so nothing was sent and your '
+                'balance goes back up when you reload the wallet.',
+                key: const Key('payoutSent'),
+                style: const TextStyle(color: MngColors.success),
+              ),
+            ],
+            SizedBox(height: 20.h),
+            FilledButton(
+              key: const Key('confirmPayoutButton'),
+              onPressed: widget.controller.busy
+                  ? null
+                  : () async {
+                      final ok = await widget.controller.requestPayout(
+                        double.tryParse(_amount.text.trim()) ?? 0,
+                      );
+                      if (ok && mounted) setState(() => sent = true);
+                    },
+              child: const Text('Confirm withdrawal'),
             ),
           ],
-          if (sent) ...[
-            SizedBox(height: 16.h),
-            Text(
-              'Payout requested. It is a demo, so nothing was sent.',
-              style: const TextStyle(color: MngColors.success),
-            ),
-          ],
-          SizedBox(height: 20.h),
-          FilledButton(
-            key: const Key('confirmPayoutButton'),
-            onPressed: widget.controller.busy
-                ? null
-                : () async {
-                    final ok = await widget.controller.requestPayout(
-                      double.tryParse(_amount.text.trim()) ?? 0,
-                    );
-                    if (ok && mounted) setState(() => sent = true);
-                  },
-            child: const Text('Confirm withdrawal'),
-          ),
-        ],
+        ),
       ),
     );
   }
@@ -12633,8 +14844,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
 import 'package:mng_core/mng_core.dart';
 import 'package:provider/provider.dart';
+
 import 'earnings_controller.dart';
-import 'earnings_repository.dart';
 import 'payout_sheet.dart';
 
 const _kindLabels = {
@@ -12650,13 +14861,14 @@ class WalletScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final c = context.watch<EarningsController>();
-    final s = c.snapshot;
-    final available = s?.availableGhs ?? 0.0;
+    final controller = context.watch<EarningsController>();
+    final snapshot = controller.snapshot;
+    final available = snapshot?.availableGhs ?? 0.0;
 
     return Scaffold(
       appBar: AppBar(
         backgroundColor: MngColors.page,
+        surfaceTintColor: Colors.transparent,
         elevation: 0,
         title: Text('Earnings', style: MngTheme.light.textTheme.titleLarge),
       ),
@@ -12680,7 +14892,7 @@ class WalletScreen extends StatelessWidget {
                         child: _BalanceTile(
                           tileKey: 'pendingBalance',
                           label: 'Pending',
-                          amountGhs: s?.pendingGhs ?? 0.0,
+                          amountGhs: snapshot?.pendingGhs ?? 0.0,
                         ),
                       ),
                       SizedBox(width: 12.w),
@@ -12688,7 +14900,7 @@ class WalletScreen extends StatelessWidget {
                         child: _BalanceTile(
                           tileKey: 'lifetimeEarnings',
                           label: 'Lifetime',
-                          amountGhs: s?.lifetimeGhs ?? 0.0,
+                          amountGhs: snapshot?.lifetimeGhs ?? 0.0,
                         ),
                       ),
                     ],
@@ -12696,8 +14908,17 @@ class WalletScreen extends StatelessWidget {
                 ],
               ),
             ),
+            if (controller.error != null)
+              Padding(
+                padding: EdgeInsets.symmetric(horizontal: 20.w),
+                child: Text(
+                  controller.error!,
+                  key: const Key('walletError'),
+                  style: const TextStyle(color: MngColors.error),
+                ),
+              ),
             Padding(
-              padding: EdgeInsets.symmetric(horizontal: 20.w),
+              padding: EdgeInsets.fromLTRB(20.w, 12.h, 20.w, 0),
               child: FilledButton(
                 key: const Key('payoutButton'),
                 onPressed: available <= 0
@@ -12705,14 +14926,14 @@ class WalletScreen extends StatelessWidget {
                     : () => showModalBottomSheet<void>(
                           context: context,
                           isScrollControlled: true,
-                          builder: (_) => PayoutSheet(controller: c),
+                          builder: (_) => PayoutSheet(controller: controller),
                         ),
                 child: const Text('Withdraw'),
               ),
             ),
             SizedBox(height: 16.h),
             Expanded(
-              child: (s?.entries.isEmpty ?? true)
+              child: (snapshot?.entries.isEmpty ?? true)
                   ? Center(
                       child: Text(
                         'No earnings yet',
@@ -12721,23 +14942,24 @@ class WalletScreen extends StatelessWidget {
                     )
                   : ListView.builder(
                       padding: EdgeInsets.symmetric(horizontal: 20.w),
-                      itemCount: s!.entries.length,
-                      itemBuilder: (context, i) {
-                        final e = s.entries[i];
+                      itemCount: snapshot!.entries.length,
+                      itemBuilder: (context, index) {
+                        final entry = snapshot.entries[index];
                         return ListTile(
-                          key: Key('ledgerRow-${e.id}'),
+                          key: Key('ledgerRow-${entry.id}'),
                           contentPadding: EdgeInsets.zero,
-                          title: Text(_kindLabels[e.kind] ?? e.kind),
+                          title: Text(_kindLabels[entry.kind] ?? entry.kind),
                           subtitle: Text(
-                            DateTime.parse(e.createdAt.toIso8601String())
-                                .toIso8601String()
-                                .substring(0, 10),
+                            entry.createdAt.toIso8601String().substring(0, 10),
                             style: MngTheme.light.textTheme.bodySmall,
                           ),
                           trailing: Text(
-                            '${e.amountGhs >= 0 ? '+' : '-'}GHS ${e.amountGhs.abs().toStringAsFixed(2)}',
+                            '${entry.amountGhs >= 0 ? '+' : '-'}'
+                            'GHS ${entry.amountGhs.abs().toStringAsFixed(2)}',
                             style: TextStyle(
-                              color: e.amountGhs >= 0 ? MngColors.success : MngColors.error,
+                              color: entry.amountGhs >= 0
+                                  ? MngColors.success
+                                  : MngColors.error,
                             ),
                           ),
                         );
@@ -12803,7 +15025,8 @@ class _BalanceTile extends StatelessWidget {
 cd ~/meet-n-go/apps/driver && flutter test test/earnings/ && flutter analyze
 ```
 
-Expected: 14 tests pass, analyze clean.
+Expected: 34 tests pass, `flutter analyze --fatal-infos` clean. The plan claimed 14,
+two of which could not pass against the plan's own arithmetic.
 
 - [ ] **Step 7: Commit**
 
