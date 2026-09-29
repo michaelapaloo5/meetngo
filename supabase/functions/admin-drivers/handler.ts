@@ -40,6 +40,60 @@ export interface AdminDeps {
    * offered a trip.
    */
   approveVehicle: (driverId: string) => Promise<boolean>;
+
+  /**
+   * The documents this driver has sent, as `{ kind, path }`.
+   *
+   * Kinds and paths, never URLs. A signed URL is a bearer credential for
+   * somebody's passport, and minting six of them per driver into a list
+   * response would put a week of expiring credentials in one JSON blob that is
+   * easy to log. [signDocument] is the only thing that turns a path into one,
+   * and it is only called when an admin actually asks to look.
+   */
+  documentsFor: (driverId: string) => Promise<DriverDocumentRow[]>;
+
+  /**
+   * A short-lived signed URL for one document, or null if it cannot be signed.
+   *
+   * Refuses for a `kind` the driver has not sent, not just for a missing file:
+   * this takes a kind from the request, and a signed URL for a path chosen by
+   * the caller would sign anything in the bucket.
+   */
+  signDocument: (
+    driverId: string,
+    kind: string,
+  ) => Promise<string | null>;
+}
+
+/** One document a driver has sent, as the database holds it. */
+export interface DriverDocumentRow {
+  kind: string;
+  path: string;
+}
+
+/**
+ * The six documents a driver has to send before they can be approved.
+ *
+ * The same six, in the same wire values, as the `driver_documents` check
+ * constraint in `20260929000002_driver_documents.sql` and the
+ * `DriverDocumentKind` enum in the app. Written out here because this function
+ * has no access to the Dart enum, and a list that silently drifts from the
+ * constraint would let an admin approve a driver who sent a document the
+ * database would not even accept.
+ */
+export const REQUIRED_DOCUMENTS: readonly string[] = [
+  'profilePhoto',
+  'vehiclePhoto',
+  'ghanaCardPhoto',
+  'driversLicence',
+  'roadWorthy',
+  'insuranceSticker',
+] as const;
+
+/** What a driver is missing, in the order the app asks for them. */
+export function missingDocuments(sent: readonly { kind: string }[]): string[] {
+  const have = new Set(sent.map((d) => d.kind));
+  return REQUIRED_DOCUMENTS.filter((kind) => !have.has(kind));
 }
 
 /** One driver, as the admin page shows them. */
@@ -54,6 +108,16 @@ export interface PendingDriver {
   selfieUrl: string;
   vehicle: { make: string; model: string; plate: string; seats: number } | null;
   submittedAt: string;
+
+  /**
+   * The kinds this driver has sent.
+   *
+   * Kinds only, not URLs, for the reason on `AdminDeps.documentsFor`. The
+   * admin sees the name of each document and clicks to view it, which is one
+   * short-lived signed URL at a time rather than six per driver in a response
+   * that is easy to log.
+   */
+  documents: string[];
 }
 
 export interface ListResult {
@@ -147,6 +211,31 @@ export async function handleDecide(
   }
 
   const status = input.action === 'approve' ? 'approved' : 'rejected';
+
+  // Checked before anything is written, and only for an approval.
+  //
+  // The six documents are the entire substance of this decision: a licence, a
+  // road worthy and an insurance sticker are what "this person may drive this
+  // vehicle for paying passengers" is actually made of. Approving without them
+  // would not be a slower review, it would be no review at all -- the button
+  // would be a rubber stamp with an audit trail attached, which is worse than
+  // no button because it produces a record of a check that never happened.
+  //
+  // A rejection is always allowed. Refusing to let an admin turn a driver away
+  // is a different kind of wrong, and there is no case for it.
+  if (input.action === 'approve') {
+    const missing = missingDocuments(await deps.documentsFor(input.driverId));
+    if (missing.length > 0) {
+      return {
+        status: 409,
+        body: {
+          error: 'This driver has not sent all six documents yet.',
+          missing,
+        },
+      };
+    }
+  }
+
   const row = await deps.decide(input.driverId, status, gate.adminId);
   if (row === null) {
     // The driver is gone. A 404 rather than a 200 that quietly did nothing,

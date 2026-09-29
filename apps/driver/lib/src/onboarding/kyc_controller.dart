@@ -370,6 +370,17 @@ class KycController extends ChangeNotifier {
   /// only part that was never done: ask whether the driver is approved yet.
   Future<void> submit() async {
     if (step != KycStep.review) return;
+    // The six documents are what an admin actually reviews, so submitting
+    // without them would put a stranger's application in front of a human who
+    // has nothing to look at and a button that says approve. Refused here
+    // rather than in `canAdvance`, because the button being live and then
+    // doing nothing is worse than it being dead -- and the driver is walked
+    // back to the list rather than left staring at a review of a car.
+    if (documents.length < driverDocumentKinds.length) {
+      step = KycStep.documents;
+      error = 'Send your documents before submitting for review';
+      return;
+    }
     error = null;
     busy = true;
     notifyListeners();
@@ -458,7 +469,19 @@ class KycController extends ChangeNotifier {
       }
     }
 
-    final restored = _stepFor(profile, vehicle);
+    // Read before the step is decided, because the step now depends on it: a
+    // driver with four of the six documents is sent to the list, not to a
+    // review they cannot complete. A failed read is read as "none sent", which
+    // is the safe direction -- it costs a driver one screen of re-sending and
+    // costs nothing an unapproved driver's safety.
+    var documents = const <DriverDocument>[];
+    try {
+      documents = await _repo.myDocuments();
+    } on Object {
+      documents = const [];
+    }
+
+    final restored = _stepFor(profile, vehicle, documents);
     if (restored == null) return;
     // Full name and selfie come back with the profile, so the review step can
     // show what was actually submitted rather than empty fields.
@@ -472,16 +495,11 @@ class KycController extends ChangeNotifier {
       _vehicleSeats = vehicle.seats;
       _vehicleCategory = vehicle.rideCategory;
     }
-    // The documents, so a driver who force-closed the app does not have to
-    // re-photograph a licence they already sent. Read separately from the
-    // profile because they are in a different table and can fail
-    // independently -- and a failure here must not lose the step the profile
-    // just told us about.
-    try {
-      _documents = await _repo.myDocuments();
-    } on Object {
-      _documents = const [];
-    }
+    // Set from the read above rather than re-read, so the list the checklist
+    // draws is the same list the step was decided on. Two reads could disagree
+    // and produce a screen showing four documents on a step that was chosen
+    // for six.
+    _documents = documents;
     _step = restored;
     notifyListeners();
   }
@@ -490,9 +508,27 @@ class KycController extends ChangeNotifier {
   ///
   /// Null means "carry on from wherever this controller already is", which is
   /// what a driver who is midway through and simply re-opened the app needs.
-  static KycStep? _stepFor(DriverProfile? profile, Vehicle? vehicle) {
+  static KycStep? _stepFor(
+    DriverProfile? profile,
+    Vehicle? vehicle,
+    List<DriverDocument> documents,
+  ) {
     if (profile == null) return null;
     if (profile.isApproved) return KycStep.approved;
+
+    // The six documents outrank every other step for anyone not yet approved,
+    // including a driver who has already submitted a Ghana Card and a vehicle.
+    //
+    // This is the gap that a fresh signup never sees: a driver who signed up
+    // before the documents existed is sitting at `review` with a car and no
+    // licence photo, and would reach an admin holding nothing to approve. So
+    // the resume is driven by what is actually missing rather than by how far
+    // through the old flow they got, and a driver who has four of the six is
+    // sent to the list to fetch the other two rather than to a review they
+    // cannot complete.
+    if (documents.length < driverDocumentKinds.length) {
+      return KycStep.documents;
+    }
 
     return switch (profile.kyc) {
       // The Ghana Card went in, which is the step that writes `pending`. What

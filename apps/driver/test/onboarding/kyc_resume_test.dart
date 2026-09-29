@@ -49,6 +49,27 @@ void main() {
   ) =>
       KycController(repo);
 
+  /// A repository that already holds all six documents.
+  ///
+  /// The six documents outrank every other step for an unapproved driver, so a
+  /// test whose subject is a *later* step has to hand it a driver who has got
+  /// past that gate. Without this the tests would all collapse onto
+  /// `KycStep.documents` and stop testing what they were written for, which is
+  /// a green suite that stopped meaning anything.
+  StubDriverRepository sentAllSix(
+    DriverProfile? profile, {
+    Vehicle? vehicle,
+  }) =>
+      StubDriverRepository(profile: profile, vehicle: vehicle)
+        ..documents = [
+          for (final kind in driverDocumentKinds)
+            DriverDocument(
+              kind: kind,
+              path: 'u1/${kind.wire}/1.jpg',
+              createdAt: DateTime.utc(2026, 9, 28),
+            ),
+        ];
+
   group('a driver who has not started', () {
     test('lands on the document list, which is where a new driver starts', () async {
       final repo = StubDriverRepository(
@@ -79,7 +100,7 @@ void main() {
     // the selfie is next -- unless they got further than that.
 
     test('resumes at the selfie, not the beginning', () async {
-      final repo = StubDriverRepository(profile: profileWith(KycStatus.pending));
+      final repo = sentAllSix(profileWith(KycStatus.pending));
       final c = fresh(repo);
 
       await c.resumeFromServer();
@@ -90,7 +111,7 @@ void main() {
     test('and keeps the name the card step already saved', () async {
       // Their name went to the server with the card. Asking for it again is
       // asking a driver to re-type something that is already correct.
-      final repo = StubDriverRepository(profile: profileWith(KycStatus.pending));
+      final repo = sentAllSix(profileWith(KycStatus.pending));
       final c = fresh(repo);
 
       await c.resumeFromServer();
@@ -101,8 +122,8 @@ void main() {
     test('a driver with a vehicle saved resumes at review', () async {
       // The card is in, the selfie was sent, the vehicle is saved: there is
       // nothing left to enter, only to submit and wait.
-      final repo = StubDriverRepository(
-        profile: profileWith(KycStatus.pending, vehicleId: 'v1'),
+      final repo = sentAllSix(
+        profileWith(KycStatus.pending, vehicleId: 'v1'),
         vehicle: aVehicle(),
       );
       final c = fresh(repo);
@@ -115,8 +136,8 @@ void main() {
     test('a resumed review has the vehicle details filled in', () async {
       // The review step shows what was submitted. Empty fields there would tell
       // the driver their vehicle is blank when it is not.
-      final repo = StubDriverRepository(
-        profile: profileWith(KycStatus.pending, vehicleId: 'v1'),
+      final repo = sentAllSix(
+        profileWith(KycStatus.pending, vehicleId: 'v1'),
         vehicle: aVehicle(),
       );
       final c = fresh(repo);
@@ -132,8 +153,8 @@ void main() {
 
   group('an approved driver', () {
     test('lands on approved, not on a form', () async {
-      final repo = StubDriverRepository(
-        profile: profileWith(KycStatus.approved, vehicleId: 'v1'),
+      final repo = sentAllSix(
+        profileWith(KycStatus.approved, vehicleId: 'v1'),
         vehicle: aVehicle(),
       );
       final c = fresh(repo);
@@ -149,8 +170,8 @@ void main() {
       // Carrying on past a refused identity check would be the wrong move: the
       // document that was rejected is the Ghana Card, so the honest retry is to
       // re-enter the name and scan a new one.
-      final repo = StubDriverRepository(
-        profile: profileWith(KycStatus.rejected, vehicleId: 'v1'),
+      final repo = sentAllSix(
+        profileWith(KycStatus.rejected, vehicleId: 'v1'),
         vehicle: aVehicle(),
       );
       final c = fresh(repo);
@@ -180,8 +201,8 @@ void main() {
 
     test('a vehicle read that fails lands on a step that can be completed', () async {
       // Not on review, which is the step where the vehicle is assumed present.
-      final repo = StubDriverRepository(
-        profile: profileWith(KycStatus.pending, vehicleId: 'v1'),
+      final repo = sentAllSix(
+        profileWith(KycStatus.pending, vehicleId: 'v1'),
       )..myVehicleFails = true;
       final c = fresh(repo);
 
@@ -249,9 +270,14 @@ void main() {
       expect(c.canAdvance, isTrue);
     });
 
-    test('a document read that fails does not lose the step', () async {
-      // The profile said one thing and the documents said another, and a driver
-      // has to land on the step the profile told us about.
+    test('a failed document read is read as none sent, and says nothing',
+        () async {
+      // This is the one place a failed read is allowed to move the driver, and
+      // it is deliberate. The documents gate an approval, so a read that fails
+      // must not be treated as "all six are in" -- the two mistakes cost very
+      // differently. Wrong this way asks a driver to re-send a licence they
+      // already sent. Wrong the other way puts an application in front of an
+      // admin who has nothing to look at.
       final repo = StubDriverRepository(
         profile: profileWith(KycStatus.pending, vehicleId: 'v1'),
         vehicle: aVehicle(),
@@ -260,8 +286,101 @@ void main() {
 
       await c.resumeFromServer();
 
-      expect(c.step, KycStep.review);
       expect(c.documents, isEmpty);
+      expect(c.step, KycStep.documents);
+      expect(c.error, isNull,
+          reason: 'a failed read is not the driver anything to act on');
+    });
+  });
+
+  group('the documents gate an approval, not just the first step', () {
+    // Found on a device: a driver who signed up before the documents existed
+    // resumed at review with a saved vehicle and nothing else, and the button
+    // under it said Submit for review. That application reaches a human with no
+    // licence, no road worthy and no insurance to look at.
+    test('a driver with a card and a vehicle but no documents goes to the list',
+        () async {
+      final repo = StubDriverRepository(
+        profile: profileWith(KycStatus.pending, vehicleId: 'v1'),
+        vehicle: aVehicle(),
+      );
+      final c = fresh(repo);
+
+      await c.resumeFromServer();
+
+      expect(c.step, KycStep.documents);
+    });
+
+    test('four of the six is the list, not a review they cannot finish',
+        () async {
+      final repo = StubDriverRepository(
+        profile: profileWith(KycStatus.pending, vehicleId: 'v1'),
+        vehicle: aVehicle(),
+      )..documents = [
+        for (final kind in driverDocumentKinds.take(4))
+          DriverDocument(
+            kind: kind,
+            path: 'u1/${kind.wire}/1.jpg',
+            createdAt: DateTime.utc(2026, 9, 28),
+          ),
+      ];
+      final c = fresh(repo);
+
+      await c.resumeFromServer();
+
+      expect(c.step, KycStep.documents);
+      expect(c.canAdvance, isFalse);
+    });
+
+    test('an approved driver is not sent back for documents', () async {
+      // The gate is on approval, not on being a driver. A driver who is already
+      // approved and re-opens the app is not made to re-photograph a licence
+      // because the server was slow for a second.
+      final repo = sentAllSix(
+        profileWith(KycStatus.approved, vehicleId: 'v1'),
+        vehicle: aVehicle(),
+      );
+      final c = fresh(repo);
+
+      await c.resumeFromServer();
+
+      expect(c.step, KycStep.approved);
+    });
+  });
+
+  group('submitting for review', () {
+    test('is refused with no documents, and says where to go', () async {
+      final repo = StubDriverRepository(
+        profile: profileWith(KycStatus.pending, vehicleId: 'v1'),
+        vehicle: aVehicle(),
+      );
+      final c = fresh(repo)..step = KycStep.review;
+
+      await c.submit();
+
+      // Refused, not ignored: the driver is walked back to the list rather than
+      // left pressing a button that does nothing.
+      expect(c.step, KycStep.documents);
+      expect(c.error, contains('documents'));
+    });
+
+    test('goes through once all six are in', () async {
+      final repo = sentAllSix(
+        profileWith(KycStatus.pending, vehicleId: 'v1'),
+        vehicle: aVehicle(),
+      );
+      // Resumed, not just stepped onto: `submit` reads the controller's own
+      // list, which is empty until a resume has filled it. A test that only
+      // set the step would be testing a controller that had never heard of the
+      // six documents.
+      final c = fresh(repo);
+      await c.resumeFromServer();
+      expect(c.step, KycStep.review, reason: 'past the gate, so review');
+
+      await c.submit();
+
+      expect(c.step, KycStep.underReview);
+      expect(c.error, isNull);
     });
   });
 
@@ -271,7 +390,7 @@ void main() {
       // There is no local copy of it, by design: a second store of a driver's
       // identity documents on the phone is the thing to avoid. The cost is one
       // screen's worth of typing.
-      final repo = StubDriverRepository(profile: profileWith(KycStatus.pending));
+      final repo = sentAllSix(profileWith(KycStatus.pending));
       final c = fresh(repo);
       c.cardNumber = 'GHA-123456789-0';
       c.cardExpiry = '12/29';

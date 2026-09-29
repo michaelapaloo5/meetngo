@@ -125,6 +125,19 @@ void main() {
         createdAt: DateTime.utc(2026, 9, 28),
       );
 
+  /// A controller that has all six documents.
+  ///
+  /// Wrapped around the controller rather than into the repository because
+  /// `submit` reads the controller's own list. A test of what submit *does*
+  /// has to get past the document gate first, or it is only proving that the
+  /// gate refuses -- which is a different test, and one that already exists.
+  KycController withAllSix(KycController c) {
+    for (final kind in driverDocumentKinds) {
+      c.recordDocument(sentDoc(kind));
+    }
+    return c;
+  }
+
   group('KycController', () {
     test('starts on the document list', () {
       // A driver who has just signed up is shown what to fetch before being
@@ -284,7 +297,7 @@ void main() {
     test('submitting never reports approval the server did not give', () async {
       final repo = StubDriverRepository()
         ..profile = driverProfile(kyc: KycStatus.pending);
-      final c = KycController(repo)
+      final c = withAllSix(KycController(repo)
         ..step = KycStep.review
         ..cardNumber = 'GHA-123456789-0'
         ..cardExpiry = '04/29'
@@ -293,7 +306,7 @@ void main() {
         ..vehicleMake = 'Toyota'
         ..vehicleModel = 'Corolla'
         ..vehiclePlate = 'GR-1234-22'
-        ..vehicleSeats = 4;
+        ..vehicleSeats = 4);
       await c.submit();
       expect(c.step, KycStep.underReview);
       expect(c.error, isNull);
@@ -302,7 +315,7 @@ void main() {
     test('submitting reports approval when the server has approved', () async {
       final repo = StubDriverRepository()
         ..profile = driverProfile(kyc: KycStatus.approved);
-      final c = KycController(repo)..step = KycStep.review;
+      final c = withAllSix(KycController(repo)..step = KycStep.review);
       await c.submit();
       expect(c.step, KycStep.approved);
     });
@@ -312,7 +325,7 @@ void main() {
     test('submitting does not write the documents a second time', () async {
       final repo = StubDriverRepository()
         ..profile = driverProfile(kyc: KycStatus.pending);
-      final c = KycController(repo)..step = KycStep.review;
+      final c = withAllSix(KycController(repo)..step = KycStep.review);
       await c.submit();
       expect(repo.selfiePath, isNull);
       expect(repo.savedVehicle, isNull);
@@ -321,7 +334,7 @@ void main() {
 
     test('a failed read during submit is shown and holds the step', () async {
       final repo = StubDriverRepository()..meFails = true;
-      final c = KycController(repo)..step = KycStep.review;
+      final c = withAllSix(KycController(repo)..step = KycStep.review);
       await c.submit();
       expect(c.step, KycStep.review);
       expect(c.error, isNotNull);

@@ -85,7 +85,10 @@ class _KycScreenState extends State<KycScreen> {
 
   VoidCallback? get onContinue => widget.onContinue;
   static const _headlines = <KycStep, String>{
-    KycStep.documents: 'What we need from you',
+    // 'Documents', not the list's own heading. The list opens with "What we
+    // need from you", and the app bar saying the same thing put the identical
+    // sentence twice on one screen -- found on the device.
+    KycStep.documents: 'Documents',
     KycStep.identity: 'Tell us about yourself',
     KycStep.ghanaCard: 'Scan your Ghana Card',
     KycStep.selfie: 'Take a selfie',

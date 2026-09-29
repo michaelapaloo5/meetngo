@@ -369,7 +369,12 @@ void main() {
       expect(find.text('Earnings'), findsNothing);
       expect(find.byKey(const Key('onlineToggle')), findsNothing);
       // Something from the flow itself. Any of the step headlines will do.
+      // `Documents` is the app bar title of the document list, which is where
+      // a `pending` driver with no documents lands -- this profile has a Ghana
+      // Card in and no six photos, so it is exactly the driver the gate was
+      // added for.
       final inFlow = find.textContaining('Verification').evaluate().isNotEmpty ||
+          find.text('Documents').evaluate().isNotEmpty ||
           find.text('Take a selfie').evaluate().isNotEmpty ||
           find.text('Add your vehicle').evaluate().isNotEmpty ||
           find.text('Review your details').evaluate().isNotEmpty;

@@ -50,6 +50,16 @@ export function adminPage(supabaseUrl: string): string {
   .approve { background:var(--brand); color:var(--ink); }
   .reject { background:#fff; color:var(--bad); border:1px solid var(--bad); }
   button:disabled { opacity:.45; cursor:default; }
+  /* The six documents. Sent and missing differ in colour as well as in label,
+     so a column of six rows is scannable at a glance rather than six lines of
+     reading. */
+  .docs { display:flex; flex-direction:column; gap:4px; margin-top:6px; }
+  .doc { display:flex; align-items:center; gap:8px; font-size:13px; }
+  .docname { flex:1; }
+  .doc.absent .docname { color:var(--sub); }
+  .docmissing { font-size:12px; color:var(--bad); }
+  .view { background:#fff; color:var(--ink); border:1px solid var(--line);
+          padding:4px 10px; font-size:12px; }
   input { font:inherit; padding:10px 12px; border:1px solid var(--line);
           border-radius:8px; width:100%; margin-bottom:10px; }
   .warn { background:#FFF7E0; border:1px solid #F0D89B; border-radius:8px;
@@ -116,8 +126,57 @@ function signIn(message) {
   };
 }
 
+// The six documents, in the order the app asks for them.
+//
+// Written out here rather than taken from the server so the page can show what
+// is *missing* as well as what is sent, and so the list cannot silently change
+// shape if the server sends something unexpected. These are the same six wire
+// values as REQUIRED_DOCUMENTS in handler.ts and the check constraint in
+// 20260929000002_driver_documents.sql.
+//
+// No backticks in this comment: this whole file is one template literal, so a
+// backtick here ends the string and the page becomes a syntax error rather
+// than a comment.
+const DOCS = [
+  ['profilePhoto', 'Profile picture'],
+  ['vehiclePhoto', 'Vehicle photo'],
+  ['ghanaCardPhoto', 'Ghana card photo'],
+  ['driversLicence', "Driver's licence photo"],
+  ['roadWorthy', 'Road worthy certificate'],
+  ['insuranceSticker', 'Insurance sticker']
+];
+
+// The six rows, sent or not.
+//
+// This block is the reason the page exists. A card, a phone number and four
+// digits off a Ghana Card are not a document anybody can check a licence
+// against; the licence, the road worthy and the insurance sticker are the
+// actual decision. An admin who cannot see them is not reviewing, and the
+// approve button would be a stamp on nothing.
+function documentsBlock(d) {
+  const have = new Set(d.documents || []);
+  const missing = DOCS.filter(function (x) { return !have.has(x[0]); }).length;
+  const rows = DOCS.map(function (x) {
+    const sent = have.has(x[0]);
+    return '<div class="doc' + (sent ? ' sent' : ' absent') + '">' +
+      '<span class="docname">' + esc(x[1]) + '</span>' +
+      (sent
+        ? '<button class="view" data-kind="' + esc(x[0]) + '">View</button>'
+        : '<span class="docmissing">not sent</span>') +
+      '</div>';
+  }).join('');
+  return '<div class="label" style="margin-top:10px">Documents</div>' +
+    (missing === 0
+      ? '<div class="sub">All six sent.</div>'
+      : '<div class="warn" style="margin:6px 0 8px">' + missing +
+        ' of 6 still missing. This driver cannot be approved until they are sent.</div>') +
+    '<div class="docs">' + rows + '</div>';
+}
+
 function card(d) {
   const v = d.vehicle;
+  const have = new Set(d.documents || []);
+  const complete = DOCS.every(function (x) { return have.has(x[0]); });
   return '<div class="card" data-id="' + esc(d.id) + '">' +
     '<div class="row">' +
       '<div class="col">' +
@@ -127,6 +186,7 @@ function card(d) {
           '<div class="value plain">' + esc(d.email) + '</div>' +
         '<div class="label" style="margin-top:10px">Phone</div>' +
           '<div class="value plain">' + esc(d.phone || '(none given)') + '</div>' +
+        documentsBlock(d) +
       '</div>' +
       '<div class="col">' +
         '<div class="label">Ghana Card</div>' +
@@ -146,7 +206,11 @@ function card(d) {
       '</div>' +
     '</div>' +
     '<div class="bar">' +
-      '<button class="approve" data-decision="approve">Approve</button>' +
+      // Approve is dead until all six are sent. The server refuses it anyway --
+      // this is so the admin finds out before clicking, not instead of.
+      (complete
+        ? '<button class="approve" data-decision="approve">Approve</button>'
+        : '<button class="approve" disabled title="Send the missing documents first">Approve</button>') +
       '<button class="reject" data-decision="reject">Reject</button>' +
     '</div></div>';
 }
@@ -193,6 +257,30 @@ async function load() {
       }
       if (r.data.warning) alert(r.data.warning);
       load();
+    };
+  });
+
+  // Viewing a document.
+  //
+  // One signed URL per click, fetched at the moment it is wanted, rather than
+  // six URLs sitting in the list response. The URL is a bearer credential for
+  // somebody's passport, so the page holds it for as short a time as it can and
+  // never stores it.
+  main.querySelectorAll('button.view').forEach(function (btn) {
+    btn.onclick = async function () {
+      var el = btn.closest('.card');
+      btn.disabled = true;
+      const r = await call({
+        action: 'document',
+        driverId: el.dataset.id,
+        kind: btn.dataset.kind,
+      });
+      btn.disabled = false;
+      if (r.status !== 200 || !r.data.url) {
+        alert(r.data.error || 'That document could not be opened.');
+        return;
+      }
+      window.open(r.data.url, '_blank', 'noopener');
     };
   });
 }

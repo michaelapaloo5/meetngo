@@ -21,7 +21,10 @@ import { first, ok } from '../_shared/rows.ts';
 import {
   handleDecide,
   handleList,
+  isAdmin,
+  REQUIRED_DOCUMENTS,
   type AdminDeps,
+  type DriverDocumentRow,
   type PendingDriver,
 } from './handler.ts';
 import { adminPage } from './page.ts';
@@ -37,6 +40,14 @@ export function buildAdminDeps(
   serviceKey: string,
 ): AdminDeps {
   const service = createClient(supabaseUrl, serviceKey);
+  // The bridge cast is at the boundary and nowhere else. supabase-js types its
+  // query builder against a schema generic this function deliberately does not
+  // declare, so the concrete client is not structurally assignable to
+  // [ServiceClient] even though every call made through it is one [ServiceClient]
+  // describes. Cast once, here, so the mismatch does not become a cast on every
+  // call site -- and so a reader of any single query is not trying to work out
+  // whether that particular one is safe.
+  const typed = service as unknown as ServiceClient;
 
   return {
     // supabase-js only sets `Authorization` when the request carries none
@@ -74,19 +85,20 @@ export function buildAdminDeps(
       if (ok(error) !== null) return [];
 
       const ids = (data ?? []) as unknown as Record<string, unknown>[];
-      // The bridge cast is at the boundary and nowhere else. supabase-js types
-      // its query builder against a schema generic this function deliberately
-      // does not declare, so the concrete client is not structurally
-      // assignable to [ServiceClient] even though every call made through it
-      // is one [ServiceClient] describes. Casting once here keeps that mismatch
-      // from spreading into a cast on every call site.
-      const typed = service as unknown as ServiceClient;
       const emails = await emailsFor(typed, ids.map((r) => r['id'] as string));
       const vehicles = await vehiclesFor(
         typed,
         ids
           .map((r) => r['vehicle_id'])
           .filter((v): v is string => typeof v === 'string'),
+      );
+      // One read of every pending driver's documents rather than one per
+      // driver. Six documents times a list of drivers is six round trips each
+      // if done naively, and this page is opened on a phone as often as a
+      // laptop.
+      const pendingDocs = await documentsForAll(
+        typed,
+        ids.map((r) => r['id'] as string),
       );
 
       return ids.map((r): PendingDriver => {
@@ -115,6 +127,11 @@ export function buildAdminDeps(
             plate: vehicle.plate,
             seats: vehicle.seats,
           },
+          // Synchronous on purpose: the kinds come from the same read the
+          // decision will be checked against, so the page cannot show a driver
+          // six documents and then refuse the approval because one is missing.
+          // Only the kinds, never URLs -- see `AdminDeps.documentsFor`.
+          documents: (pendingDocs.get(id) ?? []).map((d) => d.kind),
           submittedAt: str(r['created_at']),
         };
       });
@@ -153,6 +170,11 @@ export function buildAdminDeps(
         cardExpiry: str(row['ghana_card_expiry']),
         selfieUrl: '',
         vehicle: null,
+        // Empty rather than the six, because this row is what the page is left
+        // holding after a decision -- and the driver is no longer pending, so
+        // "no documents" is the honest summary of a driver who is not on the
+        // list any more. The names would be a claim about a driver who is gone.
+        documents: [],
         submittedAt: '',
       };
     },
@@ -169,8 +191,28 @@ export function buildAdminDeps(
       // caller would otherwise be told a driver with no vehicle was approved.
       return (data ?? []).length > 0;
     },
+
+    documentsFor: (driverId) =>
+      documentsForAll(typed, [driverId]).then((m) => m.get(driverId) ?? []),
+
+    signDocument: async (driverId, kind) => {
+      // The kind is checked against what this driver actually sent, and the
+      // path comes from the row rather than from the request. Signing a path
+      // the caller chose would mint a working, expiring, shareable URL for any
+      // object in the bucket -- including another driver's documents.
+      const docs = (await documentsForAll(typed, [driverId])).get(driverId) ?? [];
+      const doc = docs.find((d) => d.kind === kind);
+      if (doc === undefined) return null;
+      const { data, error } = await service.storage
+        .from(DOCUMENT_BUCKET)
+        .createSignedUrl(doc.path, DOCUMENT_URL_TTL_SECONDS);
+      if (ok(error) !== null) return null;
+      const url = data?.signedUrl;
+      return typeof url === 'string' && url !== '' ? url : null;
+    },
   };
 }
+
 
 const str = (value: unknown): string => (typeof value === 'string' ? value : '');
 
@@ -213,7 +255,39 @@ interface ServiceClient {
       }>;
     };
   };
+  storage: {
+    from: (bucket: string) => {
+      createSignedUrl: (
+        path: string,
+        expiresIn: number,
+      ) => PromiseLike<{
+        data: { signedUrl: string } | null;
+        error: { message: string } | null;
+      }>;
+    };
+  };
 }
+
+/**
+ * The bucket driver documents live in.
+ *
+ * The same string as `kDocumentBucket` in
+ * `apps/driver/lib/src/data/supabase_driver_repository.dart` and the bucket in
+ * `20260929000002_driver_documents.sql`. A function that named a bucket that
+ * did not exist would return a list of drivers with no documents and no error,
+ * which reads as "this driver sent nothing" -- the same answer a driver who
+ * sent nothing gets.
+ */
+const DOCUMENT_BUCKET = 'kyc-documents';
+
+/**
+ * How long a signed document URL lasts.
+ *
+ * Five minutes: long enough to open a licence and read it, short enough that a
+ * URL pasted into a chat is dead before it is useful. These are somebody's
+ * identity documents, so the window is deliberately not generous.
+ */
+const DOCUMENT_URL_TTL_SECONDS = 300;
 
 async function emailsFor(
   service: ServiceClient,
@@ -257,6 +331,53 @@ async function vehiclesFor(
       plate: str(r['plate']),
       seats: typeof r['seats'] === 'number' ? r['seats'] : 0,
     });
+  }
+  return out;
+}
+
+/**
+ * The documents these drivers have sent, keyed by driver id.
+ *
+ * One query for the whole list rather than one per driver: six documents times
+ * a list of drivers is six round trips each if done naively, and this page gets
+ * opened on a phone as often as on a laptop.
+ *
+ * A read that fails yields an empty map, which the page renders as "these
+ * drivers sent no documents" -- the same answer a driver who really did send
+ * none gets. That is the wrong way round for a security check, and it is why
+ * `handleDecide` reads the documents for the one driver being approved on a
+ * fresh query rather than trusting this: the list is for the admin's eyes, the
+ * decision is made on its own read.
+ *
+ * `in` rather than `eq` is not a style choice. On a PostgREST builder `eq`
+ * returns another builder, and this function's narrow `ServiceQuery` type only
+ * makes `in`, `order` and `limit` awaitable -- so a `.eq()` with no terminal
+ * would be a builder where this code expects rows.
+ */
+async function documentsForAll(
+  service: ServiceClient,
+  driverIds: string[],
+): Promise<Map<string, DriverDocumentRow[]>> {
+  const out = new Map<string, DriverDocumentRow[]>();
+  if (driverIds.length === 0) return out;
+  const { data, error } = await service
+    .from('driver_documents')
+    .select('driver_id, kind, path')
+    .in('driver_id', driverIds);
+  if (ok(error) !== null) return out;
+  const rows = (data ?? []) as Record<string, unknown>[];
+  for (const r of rows) {
+    const id = str(r['driver_id']);
+    const kind = str(r['kind']);
+    const path = str(r['path']);
+    // A row whose kind is not one of the six is dropped rather than reported.
+    // It cannot help `missingDocuments` -- a kind the list has never heard of
+    // is a kind that was never sent -- and passing it through would put an
+    // unknown name in an admin's face.
+    if (id === '' || !REQUIRED_DOCUMENTS.includes(kind) || path === '') continue;
+    const list = out.get(id) ?? [];
+    list.push({ kind, path });
+    out.set(id, list);
   }
   return out;
 }
@@ -334,6 +455,29 @@ serve(async (req) => {
       return json(500, { error: 'no session was returned' });
     }
     return json(200, { token: accessToken });
+  }
+
+  if (req.method === 'POST' && record['action'] === 'document') {
+    // Minted on demand, one at a time, and only for a kind this driver
+    // actually sent. The alternative -- six signed URLs per driver inside the
+    // list response -- would put a burst of expiring bearer credentials for
+    // identity documents into a single JSON body, which is the kind of thing
+    // that ends up in a log. Five minutes is long enough to read a licence.
+    if (callerId === null) return json(401, { error: 'sign in as an admin' });
+    if (!isAdmin(await deps.roleOf(callerId))) {
+      return json(403, { error: 'admin only' });
+    }
+    const driverId = typeof record['driverId'] === 'string' ? record['driverId'] : '';
+    const kind = typeof record['kind'] === 'string' ? record['kind'] : '';
+    if (driverId === '' || kind === '') {
+      return json(400, { error: 'driverId and kind are required' });
+    }
+    const url = await deps.signDocument(driverId, kind);
+    // 404 rather than a 403: a driver who never sent this kind is a wrong
+    // request, and a 403 would read as "you are not allowed to see documents",
+    // which is a different and misleading thing to tell an admin.
+    if (url === null) return json(404, { error: 'no such document' });
+    return json(200, { url });
   }
 
   if (req.method === 'POST' && record['action'] === 'decide') {

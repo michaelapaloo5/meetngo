@@ -15,9 +15,20 @@ import {
   handleDecide,
   handleList,
   isAdmin,
+  missingDocuments,
+  REQUIRED_DOCUMENTS,
   type AdminDeps,
+  type DriverDocumentRow,
   type PendingDriver,
 } from '../admin-drivers/handler.ts';
+
+/** The six documents, as a driver who has sent all of them holds them. */
+function allSix(): DriverDocumentRow[] {
+  return REQUIRED_DOCUMENTS.map((kind) => ({
+    kind,
+    path: `u1/${kind}/1.jpg`,
+  }));
+}
 
 function fake(overrides: Partial<AdminDeps> = {}) {
   // The counters live beside the fake rather than inside the returned object,
@@ -28,6 +39,12 @@ function fake(overrides: Partial<AdminDeps> = {}) {
   const listed: { count: number } = { count: 0 };
   const decided: { driverId: string; status: string; by: string }[] = [];
   const vehiclesApproved: string[] = [];
+  const signed: { driverId: string; kind: string }[] = [];
+  // Sent by default, so the tests that predate the document gate keep testing
+  // what they were written for. A test about the gate overrides this with the
+  // specific gap it is about -- defaulting it to "none sent" would have failed
+  // a dozen unrelated tests and taught nothing.
+  const state: { documents: DriverDocumentRow[] } = { documents: allSix() };
 
   const base: AdminDeps = {
     authenticate: async (t: string) => (t === 'good' ? 'admin-1' : null),
@@ -51,12 +68,24 @@ function fake(overrides: Partial<AdminDeps> = {}) {
         cardExpiry: '12/29',
         selfieUrl: '',
         vehicle: null,
+        documents: [],
         submittedAt: '',
       };
     },
     approveVehicle: async (driverId: string): Promise<boolean> => {
       vehiclesApproved.push(driverId);
       return true;
+    },
+    documentsFor: async (_driverId: string): Promise<DriverDocumentRow[]> =>
+      state.documents,
+    signDocument: async (driverId: string, kind: string): Promise<string | null> => {
+      signed.push({ driverId, kind });
+      const found = state.documents.find((d) => d.kind === kind);
+      // A URL is only minted for a kind this driver actually sent. Mirrors
+      // `index.ts`: signing a path the caller chose would hand out working
+      // URLs for anything in the bucket.
+      if (found === undefined) return null;
+      return `https://example.test/${driverId}/${kind}?token=signed`;
     },
     ...overrides,
   };
@@ -67,6 +96,8 @@ function fake(overrides: Partial<AdminDeps> = {}) {
     },
     decided,
     vehiclesApproved,
+    signed,
+    state,
   });
 }
 
@@ -121,6 +152,9 @@ Deno.test('an admin gets the pending list', async () => {
       cardExpiry: '12/29',
       selfieUrl: '',
       vehicle: { make: 'Toyota', model: 'Corolla', plate: 'GR-1', seats: 4 },
+      // All six, so this test is about the list being passed through rather
+      // than about the gate. The gate has its own tests below.
+      documents: [...REQUIRED_DOCUMENTS],
       submittedAt: '2026-09-29T00:00:00Z',
     },
   ];
@@ -242,3 +276,117 @@ Deno.test('a missing driverId is refused', async () => {
 function result_flag(r: { vehicleApproved?: boolean }): boolean | undefined {
   return r.vehicleApproved;
 }
+
+// The document gate.
+//
+// Without it the page showed a name, an email, four digits of a Ghana Card and
+// a button. Approving that is not a review of anything: there is no licence, no
+// road worthy and no insurance to look at, and the audit trail would record a
+// check that never happened -- which is worse than no check, because it looks
+// like one.
+Deno.test('approving is refused while a document is missing', async () => {
+  const deps = fake();
+  deps.state.documents = allSix().filter((d) => d.kind !== 'roadWorthy');
+
+  const result = await handleDecide(deps, 'admin-1', {
+    driverId: 'd1',
+    action: 'approve',
+  });
+
+  assertEquals(result.status, 409);
+  // Nothing written. A refusal that had already flipped `kyc_status` would
+  // leave the driver approved by a request that reported failure.
+  assertEquals(deps.decided.length, 0);
+  assertEquals(deps.vehiclesApproved.length, 0);
+  const body = result.body as { missing?: string[] };
+  assertEquals(body.missing, ['roadWorthy']);
+});
+
+Deno.test('a driver who has sent nothing is refused with all six named', async () => {
+  const deps = fake();
+  deps.state.documents = [];
+
+  const result = await handleDecide(deps, 'admin-1', {
+    driverId: 'd1',
+    action: 'approve',
+  });
+
+  assertEquals(result.status, 409);
+  const body = result.body as { missing?: string[] };
+  assertEquals(body.missing, [...REQUIRED_DOCUMENTS]);
+});
+
+Deno.test('a rejection is always allowed, documents or not', async () => {
+  // Refusing to let an admin turn a driver away is a different kind of wrong,
+  // and there is no case for it. A driver whose licence came back unreadable
+  // has to be sendable.
+  const deps = fake();
+  deps.state.documents = [];
+
+  const result = await handleDecide(deps, 'admin-1', {
+    driverId: 'd1',
+    action: 'reject',
+  });
+
+  assertEquals(result.status, 200);
+  assertEquals(deps.decided.length, 1);
+  assertEquals(deps.decided[0].status, 'rejected');
+});
+
+Deno.test('all six in, and the approval goes through', async () => {
+  const deps = fake();
+
+  const result = await handleDecide(deps, 'admin-1', {
+    driverId: 'd1',
+    action: 'approve',
+  });
+
+  assertEquals(result.status, 200);
+  assertEquals(deps.decided.length, 1);
+  assertEquals(deps.decided[0].status, 'approved');
+});
+
+Deno.test('the documents are read at decision time, not from the list', async () => {
+  // The list read can fail and renders as "sent nothing"; the decision must not
+  // be made on it. A driver who sent all six and whose list read timed out has
+  // to still be approvable.
+  const deps = fake({
+    listPending: async (): Promise<PendingDriver[]> => [],
+    documentsFor: async (): Promise<DriverDocumentRow[]> => allSix(),
+  });
+
+  const result = await handleDecide(deps, 'admin-1', {
+    driverId: 'd1',
+    action: 'approve',
+  });
+
+  assertEquals(result.status, 200);
+});
+
+Deno.test('missingDocuments counts by kind, and ignores what it does not know', async () => {
+  assertEquals(missingDocuments([]), [...REQUIRED_DOCUMENTS]);
+  assertEquals(missingDocuments(allSix()), []);
+  // A row of a kind the list has never heard of is a kind that was not sent,
+  // and must not be reported as one of the six missing.
+  const extra = [...allSix(), { kind: 'taxCertificate', path: 'u1/x/1.jpg' }];
+  assertEquals(missingDocuments(extra), []);
+  // Duplicates are one document, not two.
+  assertEquals(
+    missingDocuments([{ kind: 'roadWorthy' }, { kind: 'roadWorthy' }]).length,
+    REQUIRED_DOCUMENTS.length - 1,
+  );
+});
+
+Deno.test('a document URL is minted only for a kind that was sent', async () => {
+  // The kind arrives from the browser. Signing whatever path came with it
+  // would hand out working, expiring, shareable URLs for any object in the
+  // bucket, including another driver's documents.
+  const deps = fake();
+  deps.state.documents = [{ kind: 'driversLicence', path: 'u1/licence/1.jpg' }];
+
+  const ok = await deps.signDocument('d1', 'driversLicence');
+  const refused = await deps.signDocument('d1', 'ghanaCardPhoto');
+
+  assert(ok !== null);
+  assertEquals(refused, null);
+});
