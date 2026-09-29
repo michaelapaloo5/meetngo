@@ -37,60 +37,93 @@ class FindingDriverScreen extends StatelessWidget {
         title: const Text('Finding a driver'),
       ),
       body: SafeArea(
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
+        // The map is the screen. The searching copy sits on a card over the
+        // bottom of it, the way every ride-hailing app does, rather than
+        // pushing a 300px map into the top third of a column and leaving the
+        // rider to look at a strip of city while the thing they care about --
+        // where they are being collected from -- is 300px tall.
+        child: Stack(
           children: [
-            Padding(
-              padding: EdgeInsets.symmetric(horizontal: 20.w),
+            Positioned.fill(
               child: RideMap(
                 key: const Key('findingMap'),
                 pickup: trip.pickup.point,
                 location: location,
-                height: 300,
+                fill: true,
               ),
             ),
-            SizedBox(height: 24.h),
-            Padding(
-              padding: EdgeInsets.symmetric(horizontal: 20.w),
-              child: Text('3 drivers found',
-                  style: MngTheme.light.textTheme.titleLarge),
-            ),
-            SizedBox(height: 4.h),
-            Padding(
-              padding: EdgeInsets.symmetric(horizontal: 20.w),
-              child: Text(
-                'Asking ${trip.category.label} drivers near you',
-                style: MngTheme.light.textTheme.bodySmall,
-              ),
-            ),
-            SizedBox(height: 24.h),
-            Padding(
-              padding: EdgeInsets.symmetric(horizontal: 20.w),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  for (final c in const [MngColors.standard, MngColors.info, MngColors.van])
-                    Padding(
-                      padding: EdgeInsets.symmetric(horizontal: 6.w),
-                      child: CircleAvatar(
-                        radius: 22,
-                        backgroundColor: c,
-                        child: const Icon(Icons.person, color: MngColors.onPrimary),
+            // The card. `Container` with a surface colour rather than
+            // transparency, so the copy is readable over any part of the map
+            // and the rider is never squinting at dark parkland.
+            Align(
+              alignment: Alignment.bottomCenter,
+              child: Container(
+                width: double.infinity,
+                padding: EdgeInsets.fromLTRB(20.w, 20.h, 20.w, 20.h),
+                decoration: BoxDecoration(
+                  color: MngColors.page,
+                  borderRadius: const BorderRadius.vertical(
+                    top: Radius.circular(24),
+                  ),
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Center(
+                      child: Container(
+                        width: 40,
+                        height: 4,
+                        decoration: BoxDecoration(
+                          color: MngColors.divider,
+                          borderRadius: BorderRadius.circular(2),
+                        ),
                       ),
                     ),
-                ],
-              ),
-            ),
-            const Spacer(),
-            Padding(
-              padding: EdgeInsets.fromLTRB(20.w, 0, 20.w, 20.h),
-              child: OutlinedButton(
-                key: const Key('cancelSearchButton'),
-                onPressed: onCancelSearch,
-                style: OutlinedButton.styleFrom(
-                  minimumSize: const Size.fromHeight(48),
+                    SizedBox(height: 16.h),
+                    Text(
+                      'Asking ${trip.category.label} drivers near you',
+                      style: MngTheme.light.textTheme.titleMedium,
+                    ),
+                    SizedBox(height: 6.h),
+                    Text(
+                      'We will tell you as soon as one accepts. That usually '
+                      'takes under a minute.',
+                      style: MngTheme.light.textTheme.bodySmall,
+                    ),
+                    // No "3 drivers found" and no row of three coloured
+                    // avatars. Both were invented: the client is never told how
+                    // many drivers were matched, only that one of them accepted,
+                    // so a number here was fiction -- and three faces standing
+                    // in for real drivers made it look like three identifiable
+                    // people were on the way. What is known is the category
+                    // asked for and that a search is running, so that is all it
+                    // claims.
+                    SizedBox(height: 20.h),
+                    const Center(
+                      child: SizedBox(
+                        width: 28,
+                        height: 28,
+                        child: CircularProgressIndicator(strokeWidth: 2.5),
+                      ),
+                    ),
+                    SizedBox(height: 10.h),
+                    Text(
+                      'Searching',
+                      textAlign: TextAlign.center,
+                      style: MngTheme.light.textTheme.bodySmall,
+                    ),
+                    SizedBox(height: 16.h),
+                    OutlinedButton(
+                      key: const Key('cancelSearchButton'),
+                      onPressed: onCancelSearch,
+                      style: OutlinedButton.styleFrom(
+                        minimumSize: const Size.fromHeight(48),
+                      ),
+                      child: const Text('Cancel search'),
+                    ),
+                  ],
                 ),
-                child: const Text('Cancel search'),
               ),
             ),
           ],

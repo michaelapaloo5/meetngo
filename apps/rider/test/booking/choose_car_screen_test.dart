@@ -4,40 +4,11 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:meetngo_rider/src/booking/choose_car_screen.dart';
 import 'package:mng_core/mng_core.dart';
 
-Vehicle vehicle(String id, RideCategory category, int seats,
-        {String model = 'Civic'}) =>
-    Vehicle(
-      id: id,
-      ownerId: 'owner-$id',
-      category: VehicleCategory.sedan,
-      make: 'Honda',
-      model: model,
-      plate: 'GR-$id',
-      seats: seats,
-      photoUrl: '',
-      rideCategory: category,
-    );
-
-Vehicle vehicleWithPhoto(
-        String id, RideCategory category, int seats, String photoUrl) =>
-    Vehicle(
-      id: id,
-      ownerId: 'owner-$id',
-      category: VehicleCategory.sedan,
-      make: 'Honda',
-      model: 'Civic',
-      plate: 'GR-$id',
-      seats: seats,
-      photoUrl: photoUrl,
-      rideCategory: category,
-    );
-
 Widget wrap({
-  required List<Vehicle> vehicles,
   RideCategory selected = RideCategory.standard,
-  void Function(Vehicle)? onConfirm,
-  void Function(Vehicle)? onSelect,
-  void Function(RideCategory)? onCategory,
+  void Function(RideCategory c)? onCategory,
+  void Function(RideCategory c)? onConfirm,
+  double distanceKm = 8.0,
 }) =>
     ScreenUtilInit(
       designSize: const Size(390, 844),
@@ -46,12 +17,11 @@ Widget wrap({
       builder: (_, _) => MaterialApp(
         theme: MngTheme.light,
         home: ChooseCarScreen(
-          vehicles: vehicles,
+          calc: FareCalculator(),
           selected: selected,
           onCategory: onCategory ?? (_) {},
-          onSelect: onSelect ?? (_) {},
-          calc: FareCalculator(),
           onConfirm: onConfirm ?? (_) {},
+          distanceKm: distanceKm,
         ),
       ),
     );
@@ -63,206 +33,164 @@ void useDesignSurface(WidgetTester tester) {
 }
 
 void main() {
-  testWidgets('heading matches the reference copy', (tester) async {
+  testWidgets('shows the distance and says the fares are estimates', (
+    tester,
+  ) async {
     useDesignSurface(tester);
-    await tester.pumpWidget(wrap(vehicles: [vehicle('1', RideCategory.standard, 4)]));
-    expect(find.text('Choose your car'), findsOneWidget);
-  });
-
-  testWidgets('shows the 8 km trip summary line', (tester) async {
-    useDesignSurface(tester);
-    await tester.pumpWidget(wrap(vehicles: [vehicle('1', RideCategory.standard, 4)]));
+    await tester.pumpWidget(wrap());
+    expect(find.text('Choose your ride'), findsOneWidget);
     expect(find.text('8.0 km'), findsOneWidget);
+    expect(find.textContaining('estimates'), findsOneWidget);
   });
 
-  testWidgets('card shows make, seats and GHS price', (tester) async {
+  // The screen used to be handed four named cars with invented registration
+  // plates. Those were not rows in `vehicles` and were owned by nobody, and the
+  // rider was picking between them as though they were real. The screen now
+  // offers the three launch categories, which is what the server actually
+  // matches on.
+
+  testWidgets('offers the three launch categories and no moto', (tester) async {
     useDesignSurface(tester);
-    await tester.pumpWidget(wrap(vehicles: [vehicle('1', RideCategory.standard, 4)]));
-    expect(find.text('Honda Civic'), findsOneWidget);
-    expect(find.text('4 seats'), findsOneWidget);
-    expect(find.text('GHS 20.40'), findsOneWidget);
+    await tester.pumpWidget(wrap());
+    for (final c in RideCategory.values) {
+      expect(
+        find.byKey(Key('rideCard-${c.name}')),
+        findsOneWidget,
+        reason: c.name,
+      );
+    }
+    expect(find.byKey(const Key('rideCard-moto')), findsNothing);
   });
 
-  testWidgets('tapping a card selects it and does not confirm', (tester) async {
+  testWidgets('no invented car, make, model or plate is drawn', (tester) async {
     useDesignSurface(tester);
-    Vehicle? selected;
-    Vehicle? confirmed;
-    await tester.pumpWidget(wrap(
-      vehicles: [
-        vehicle('1', RideCategory.standard, 4),
-        vehicle('2', RideCategory.standard, 4),
-      ],
-      onSelect: (v) => selected = v,
-      onConfirm: (v) => confirmed = v,
-    ));
-    await tester.tap(find.byKey(const Key('vehicleCard-2')));
-    await tester.pump();
-    expect(selected?.id, '2');
-    expect(confirmed, isNull);
+    await tester.pumpWidget(wrap());
+    for (final ghost in [
+      'Toyota Corolla',
+      'Nissan Note',
+      'Mercedes-Benz C-Class',
+      'Hyundai H100',
+      'GR-1234-21',
+      'GR-4417-22',
+      'GR-9021-23',
+      'GR-7788-24',
+    ]) {
+      expect(find.text(ghost), findsNothing, reason: ghost);
+    }
   });
 
-  testWidgets('switching category filters the list and notifies the parent',
-      (tester) async {
+  // The sentence that replaces the fake list. A rider is told the car is
+  // assigned on match, which is both true and what every real app says.
+  testWidgets('says the driver and car are assigned on acceptance', (
+    tester,
+  ) async {
     useDesignSurface(tester);
-    RideCategory? reported;
-    await tester.pumpWidget(wrap(
-      vehicles: [
-        vehicle('1', RideCategory.standard, 4),
-        vehicle('2', RideCategory.van, 7, model: 'Hiace'),
-      ],
-      onCategory: (c) => reported = c,
-    ));
-    await tester.tap(find.byKey(const Key('tab-van')));
-    await tester.pump();
-    expect(reported, RideCategory.van);
-    expect(find.text('Honda Civic'), findsNothing);
-    expect(find.text('Honda Hiace'), findsOneWidget);
+    await tester.pumpWidget(wrap());
+    expect(find.textContaining('assigned when a driver'), findsOneWidget);
+    expect(find.textContaining('name, car and plate'), findsOneWidget);
   });
 
-  testWidgets('a selected tab label is legible on the amber pill',
-      (tester) async {
+  testWidgets('each category shows its own computed fare', (tester) async {
     useDesignSurface(tester);
-    await tester.pumpWidget(wrap(
-      vehicles: [vehicle('1', RideCategory.standard, 4)],
-    ));
-    await tester.tap(find.byKey(const Key('tab-van')));
-    await tester.pump();
-    final label = tester.widget<Text>(
-      find.descendant(
-        of: find.byKey(const Key('tab-van')),
-        matching: find.text('Van'),
-      ),
-    );
-    final pill = tester.widget<Container>(
-      find
-          .descendant(
-            of: find.byKey(const Key('tab-van')),
-            matching: find.byType(Container),
-          )
-          .first,
-    );
-    expect((pill.decoration! as BoxDecoration).color, MngColors.primary);
-    expect(label.style!.color, MngColors.onPrimary);
-  });
-
-  testWidgets('van fare uses the van per-km rate', (tester) async {
-    useDesignSurface(tester);
-    await tester.pumpWidget(wrap(
-      vehicles: [vehicle('2', RideCategory.van, 7)],
-      selected: RideCategory.van,
-    ));
-    // (5.00 + 2.20 * 8) * 1.0 + 1.00 = 23.60
+    await tester.pumpWidget(wrap());
+    // 8 km standard: (5.00 + 1.80 * 8) + 1.00 = 20.40
+    expect(find.text('GHS 20.40'), findsWidgets);
+    // 8 km premium: (5.00 + 2.80 * 8) + 1.00 = 28.40
+    expect(find.text('GHS 28.40'), findsOneWidget);
+    // 8 km van: (5.00 + 2.20 * 8) + 1.00 = 23.60
     expect(find.text('GHS 23.60'), findsOneWidget);
   });
 
-  testWidgets('empty vehicle list disables the find-driver button', (tester) async {
+  testWidgets('seat counts are a property of the category', (tester) async {
     useDesignSurface(tester);
-    await tester.pumpWidget(wrap(vehicles: const []));
-    final button =
-        tester.widget<FilledButton>(find.byKey(const Key('findDriverButton')));
-    expect(button.onPressed, isNull);
+    await tester.pumpWidget(wrap());
+    expect(find.text('4 seats'), findsNWidgets(2)); // standard and premium
+    expect(find.text('7 seats'), findsOneWidget); // van
   });
 
-  testWidgets('non-empty list enables find-driver', (tester) async {
+  testWidgets('tapping a category selects it and reports the change', (
+    tester,
+  ) async {
     useDesignSurface(tester);
-    await tester.pumpWidget(wrap(vehicles: [vehicle('1', RideCategory.standard, 4)]));
-    final button =
-        tester.widget<FilledButton>(find.byKey(const Key('findDriverButton')));
-    expect(button.onPressed, isNotNull);
+    RideCategory? reported;
+    await tester.pumpWidget(wrap(onCategory: (c) => reported = c));
+
+    await tester.tap(find.byKey(const Key('rideCard-van')));
+    await tester.pump();
+
+    expect(reported, RideCategory.van);
   });
 
-  testWidgets('find-driver confirms the selected vehicle', (tester) async {
+  testWidgets('the button quotes the selected category', (tester) async {
     useDesignSurface(tester);
-    Vehicle? confirmed;
-    await tester.pumpWidget(wrap(
-      vehicles: [vehicle('1', RideCategory.standard, 4)],
-      onConfirm: (v) => confirmed = v,
-    ));
-    await tester.tap(find.byKey(const Key('findDriverButton')));
-    await tester.pump();
-    expect(confirmed?.id, '1');
-  });
-
-  testWidgets('a tapped card is marked as the selection', (tester) async {
-    useDesignSurface(tester);
-    await tester.pumpWidget(wrap(vehicles: [
-      vehicle('1', RideCategory.standard, 4),
-      vehicle('2', RideCategory.standard, 4),
-    ]));
-    await tester.tap(find.byKey(const Key('vehicleCard-2')));
-    await tester.pump();
-    Border borderColorOf(String id) => (tester
-            .widget<Container>(
-              find
-                  .descendant(
-                    of: find.byKey(Key('vehicleCard-$id')),
-                    matching: find.byType(Container),
-                  )
-                  .first,
-            )
-            .decoration! as BoxDecoration)
-        .border! as Border;
-    expect(borderColorOf('2').top.color, MngColors.primary);
-    expect(borderColorOf('1').top.color, MngColors.divider);
-  });
-
-  testWidgets('find-driver confirms the card that was tapped', (tester) async {
-    useDesignSurface(tester);
-    Vehicle? confirmed;
-    await tester.pumpWidget(wrap(
-      vehicles: [
-        vehicle('1', RideCategory.standard, 4),
-        vehicle('2', RideCategory.standard, 4),
-      ],
-      onConfirm: (v) => confirmed = v,
-    ));
-    await tester.tap(find.byKey(const Key('vehicleCard-2')));
-    await tester.pump();
-    await tester.tap(find.byKey(const Key('findDriverButton')));
-    await tester.pump();
-    expect(confirmed?.id, '2');
-  });
-
-  testWidgets('a parent change to the selected category moves the tab',
-      (tester) async {
-    useDesignSurface(tester);
-    final vehicles = [
-      vehicle('1', RideCategory.standard, 4),
-      vehicle('2', RideCategory.van, 7, model: 'Hiace'),
-    ];
-    await tester.pumpWidget(wrap(vehicles: vehicles));
-    expect(find.text('Honda Civic'), findsOneWidget);
-    await tester.pumpWidget(wrap(vehicles: vehicles, selected: RideCategory.van));
-    await tester.pump();
-    expect(find.text('Honda Civic'), findsNothing);
-    expect(find.text('Honda Hiace'), findsOneWidget);
-  });
-
-  testWidgets('a photo that fails to load falls back to the car icon',
-      (tester) async {
-    useDesignSurface(tester);
-    await tester.pumpWidget(wrap(vehicles: [
-      vehicleWithPhoto('1', RideCategory.standard, 4, 'https://example.test/no.png'),
-    ]));
-    await tester.pump();
+    await tester.pumpWidget(wrap());
     expect(
-      find.descendant(
-        of: find.byKey(const Key('vehicleCard-1')),
-        matching: find.byIcon(Icons.directions_car),
-      ),
+      find.text('Find driver  GHS 20.40'),
       findsOneWidget,
     );
+
+    await tester.tap(find.byKey(const Key('rideCard-van')));
+    await tester.pump();
+
+    expect(find.text('Find driver  GHS 23.60'), findsOneWidget);
   });
 
-  testWidgets('the choose-car screen has no overflow at 200% text scale',
-      (tester) async {
+  testWidgets('the fare is over the real distance, not a constant', (
+    tester,
+  ) async {
+    useDesignSurface(tester);
+    await tester.pumpWidget(wrap(distanceKm: 2.4));
+    // (5.00 + 1.80 * 2.4) + 1.00 = 10.32
+    expect(find.text('GHS 10.32'), findsWidgets);
+    expect(find.text('GHS 20.40'), findsNothing);
+  });
+
+  testWidgets('confirm passes the selected category, not a vehicle', (
+    tester,
+  ) async {
+    useDesignSurface(tester);
+    RideCategory? confirmed;
+    await tester.pumpWidget(wrap(onConfirm: (c) => confirmed = c));
+
+    await tester.tap(find.byKey(const Key('rideCard-van')));
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('findDriverButton')));
+    await tester.pump();
+
+    expect(confirmed, RideCategory.van);
+  });
+
+  testWidgets('a selection made upstream is honoured', (tester) async {
+    useDesignSurface(tester);
+    await tester.pumpWidget(wrap(selected: RideCategory.premium));
+    expect(find.text('Find driver  GHS 28.40'), findsOneWidget);
+  });
+
+  testWidgets('the selected card is marked and the others are not', (
+    tester,
+  ) async {
+    useDesignSurface(tester);
+    await tester.pumpWidget(wrap());
+
+    BorderSide borderOf(String name) {
+      // The keyed panel, not "the last Container under the card": the icon is
+      // a Container too, and picking by position is how a test ends up
+      // asserting on the wrong decoration.
+      final box = tester.widget<Container>(
+        find.byKey(Key('tierPanel-$name')),
+      );
+      return (box.decoration! as BoxDecoration).border!.top;
+    }
+
+    expect(borderOf('standard').width, 2);
+    expect(borderOf('van').width, 1);
+  });
+
+  testWidgets('the screen has no overflow at 200% text scale', (tester) async {
     useDesignSurface(tester);
     tester.platformDispatcher.textScaleFactorTestValue = 2.0;
     addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
-    await tester.pumpWidget(wrap(vehicles: [
-      vehicle('1', RideCategory.standard, 4),
-      vehicle('2', RideCategory.van, 7, model: 'Hiace'),
-    ]));
+    await tester.pumpWidget(wrap());
     expect(tester.takeException(), isNull);
   });
 }

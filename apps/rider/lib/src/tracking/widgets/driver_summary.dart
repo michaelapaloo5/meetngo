@@ -72,8 +72,17 @@ class DriverSummary extends StatelessWidget {
                                 style: MngTheme.light.textTheme.bodySmall),
                           ),
                           SizedBox(width: 6.w),
-                          Text(vehicle!.plate,
-                              style: MngTheme.light.textTheme.bodySmall),
+                          // Flexible like the name beside it. The plate used to
+                          // be a plain Text, so at 200% text scale the row ran
+                          // 33px past the card's edge -- the name would have
+                          // ellipsized and then the plate overflowed anyway,
+                          // which is the worst of both: a truncated car AND a
+                          // stripe across the screen.
+                          Flexible(
+                            child: Text(vehicle!.plate,
+                                overflow: TextOverflow.ellipsis,
+                                style: MngTheme.light.textTheme.bodySmall),
+                          ),
                         ],
                       ),
                   ],

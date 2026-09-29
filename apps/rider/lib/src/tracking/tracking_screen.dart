@@ -47,44 +47,51 @@ class TrackingScreen extends StatelessWidget {
         title: const Text('Your ride'),
       ),
       body: SafeArea(
-        // Scrollable, because at 2.0 text scale the fixed content below — a
-        // 280.h map box, the address line, the driver card and four buttons —
-        // is 107px taller than an 844-high viewport and the last button falls
-        // off the bottom. `ConstrainedBox` at the viewport height is what keeps
-        // the `Spacer` meaningful: while the content is shorter than the screen
-        // the Column is stretched to fill it and the buttons sit at the bottom
-        // exactly as they do without the scroll view, and only a taller column
-        // overflows into scrolling.
-        child: LayoutBuilder(
-          builder: (context, constraints) => SingleChildScrollView(
-            child: ConstrainedBox(
-              constraints: BoxConstraints(minHeight: constraints.maxHeight),
-              child: IntrinsicHeight(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-            // The real map. This box used to be a flat `MngColors.muted`
-            // rectangle with a map icon in it and a comment saying the widget
-            // would be "dropped in" later; `RideMap` is that widget, drawing
-            // OpenStreetMap vector tiles in 3D with the pickup and dropoff
-            // pinned and a line between them.
-            //
-            // The camera is tilted and rotated rather than pointing straight
-            // down, which is what makes the city read as three-dimensional. The
-            // gestures are off so a vertical drag here scrolls the screen
-            // behind it instead of moving the map out from under the rider.
-                    Padding(
-                      padding: EdgeInsets.symmetric(horizontal: 20.w),
-                      child: RideMap(
-                        key: const Key('trackingMap'),
-                        pickup: trip.pickup.point,
-                        dropoff: trip.dropoff.point,
-                        location: c.location,
-                        height: 280,
-                      ),
-                    ),
-
-            SizedBox(height: 20.h),
+        // The map is the background of the whole screen and the ride details
+        // sit on an opaque card over the bottom of it. It used to be a 280px
+        // map at the top of a scrolling column, which is a strip of city on a
+        // screen a rider is watching to see where they are.
+        //
+        // The card scrolls on its own rather than the screen, so a drag over
+        // the map does not move the map -- the map gestures are off for the
+        // same reason.
+        child: Stack(
+          children: [
+            // The real map, full bleed. `RideMap` draws OpenStreetMap vector
+            // tiles in 3D with the pickup and dropoff pinned and a line
+            // between them. The camera is tilted and rotated rather than
+            // pointing straight down, which is what makes the city read as
+            // three-dimensional.
+            Positioned.fill(
+              child: RideMap(
+                key: const Key('trackingMap'),
+                pickup: trip.pickup.point,
+                dropoff: trip.dropoff.point,
+                location: c.location,
+                fill: true,
+              ),
+            ),
+            // Opaque, not translucent: the ETA pill and the driver name have
+            // to stay readable over dark parkland as well as pale blocks.
+            Align(
+              alignment: Alignment.bottomCenter,
+              child: Container(
+                width: double.infinity,
+                padding: EdgeInsets.fromLTRB(20.w, 18.h, 20.w, 12.h),
+                decoration: const BoxDecoration(
+                  color: MngColors.page,
+                  borderRadius: BorderRadius.vertical(
+                    top: Radius.circular(24),
+                  ),
+                ),
+                // Scrollable inside the card, because at 2.0 text scale the
+                // address line, the driver card and four buttons are taller
+                // than the card and the last button would fall off the bottom.
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
             Padding(
               padding: EdgeInsets.symmetric(horizontal: 20.w),
               child: Row(
@@ -209,7 +216,13 @@ class TrackingScreen extends StatelessWidget {
                     style: const TextStyle(color: MngColors.error)),
               ),
             ],
-            const Spacer(),
+            // No `Spacer` here any more. It was there to push the buttons to the
+            // bottom of a column stretched to the viewport, which needed the
+            // `IntrinsicHeight` that is now gone. Inside a scroll view its
+            // height is unbounded, so a flex child throws outright:
+            // "RenderFlex children have non-zero flex but incoming height
+            // constraints are unbounded". The card is bottom-anchored and
+            // sized to its content, so it does not need one.
             Padding(
               padding: EdgeInsets.symmetric(horizontal: 20.w),
               child: Row(
@@ -262,11 +275,12 @@ class TrackingScreen extends StatelessWidget {
                 label: const Text('Safety'),
               ),
             ),
-                  ],
+                    ],
+                  ),
                 ),
               ),
             ),
-          ),
+          ],
         ),
       ),
     );

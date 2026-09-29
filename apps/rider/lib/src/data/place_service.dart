@@ -48,9 +48,36 @@ class PlaceName {
   }
 }
 
+/// One candidate from a place search, ready to be offered to a rider.
+class PlaceSuggestion {
+  const PlaceSuggestion({
+    required this.label,
+    required this.point,
+  });
+
+  /// What the rider reads in the list. Nominatim's own `display_name` is
+  /// accurate but long -- "Patrice Lumumba Road, Airport Residential Area,
+  /// Accra, Ayawaso West Municipal District, Greater Accra Region, Ghana" --
+  /// which wraps to four lines in a dropdown. Truncated to the named parts.
+  final String label;
+
+  final GeoPoint point;
+}
+
+/// The shortest query [PlaceService.search] will act on.
+///
+/// Below this a query is a prefix rather than a place, and Nominatim answers a
+/// prefix with speculative matches that all look like real results. It lives
+/// here rather than on the implementation so a caller can decide when to fire
+/// a search without depending on which geocoder is behind it.
+const kMinPlaceSearchChars = 3;
+
 abstract class PlaceService {
   /// The place name for [point], or null when none could be resolved.
   Future<PlaceName?> reverse(GeoPoint point);
+
+  /// Places matching [query], best first, or an empty list.
+  Future<List<PlaceSuggestion>> search(String query);
 }
 
 /// Reverse geocoding over OpenStreetMap's Nominatim, which needs no key, no
@@ -90,6 +117,19 @@ class NominatimPlaceService implements PlaceService {
     'https://nominatim.openstreetmap.org/reverse',
   );
 
+  /// Forward search, same service.
+  static final Uri _searchEndpoint = Uri.parse(
+    'https://nominatim.openstreetmap.org/search',
+  );
+
+  /// Below this, a query is not a place but a prefix of one, and Nominatim
+  /// will happily return a handful of speculative matches for "Osu J" that all
+  /// look like real answers. Two characters matches most of a city.
+  static const int kMinSearchChars = kMinPlaceSearchChars;
+
+  /// How many results to offer. More than five is noise in a dropdown.
+  static const int kSearchLimit = 5;
+
   /// Identifying the caller, as the usage policy requires.
   ///
   /// A bare package name would not tell the operators who is calling, which is
@@ -115,6 +155,78 @@ class NominatimPlaceService implements PlaceService {
     final resolved = await _lookup(point);
     _cache[key] = resolved;
     return resolved;
+  }
+
+  @override
+  Future<List<PlaceSuggestion>> search(String query) async {
+    final q = query.trim();
+    if (q.length < kMinSearchChars) return const [];
+    final uri = _searchEndpoint.replace(queryParameters: {
+      'q': q,
+      'format': 'jsonv2',
+      'limit': '$kSearchLimit',
+      // The rider is looking for somewhere to be picked up or dropped off
+      // inside a city, not a country or a continent. Without these a search for
+      // "airport" returns Heathrow, ORD and a runway in Kazakhstan.
+      'addressdetails': '1',
+    });
+    try {
+      final response = await _client
+          .get(uri, headers: {'User-Agent': userAgent})
+          .timeout(_timeout);
+      if (response.statusCode != 200) return const [];
+      return _parseSearch(response.body);
+    } on Object {
+      // Same contract as [reverse]: a geocoder that is down is not an error
+      // the rider caused, and it must not reach the framework.
+      return const [];
+    }
+  }
+
+  List<PlaceSuggestion> _parseSearch(String body) {
+    final decoded = jsonDecode(body);
+    if (decoded is! List) return const [];
+    final out = <PlaceSuggestion>[];
+    for (final entry in decoded) {
+      if (entry is! Map<String, dynamic>) continue;
+      final lat = entry['lat'];
+      final lon = entry['lon'];
+      if (lat is! String || lon is! String) continue;
+      final dLat = double.tryParse(lat);
+      final dLon = double.tryParse(lon);
+      if (dLat == null || dLon == null) continue;
+      if (dLat.abs() > 90 || dLon.abs() > 180) continue;
+      final name = entry['name'];
+      final display = entry['display_name'];
+      out.add(PlaceSuggestion(
+        label: _shortLabel(
+          name is String && name.isNotEmpty ? name : null,
+          display is String ? display : null,
+        ),
+        point: GeoPoint(dLat, dLon),
+      ));
+    }
+    return out;
+  }
+
+  /// A label short enough for a dropdown row.
+  ///
+  /// Nominatim's `display_name` is a comma-joined path from the building to the
+  /// country and is routinely four lines long. The named place plus the next two
+  /// parts is what a rider recognises: "Osu, Accra, Ghana" rather than the
+  /// full administrative path.
+  static String _shortLabel(String? name, String? displayName) {
+    final parts = (displayName ?? '')
+        .split(',')
+        .map((p) => p.trim())
+        .where((p) => p.isNotEmpty)
+        .toList();
+    if (parts.isEmpty) return name ?? '';
+    // When the geocoder named the place, that name is the most specific and
+    // most useful part, so it leads even if `display_name` did not repeat it.
+    final head = name != null && !parts.contains(name) ? name : parts.first;
+    final tail = parts.where((p) => p != head).take(2);
+    return [head, ...tail].join(', ');
   }
 
   Future<PlaceName?> _lookup(GeoPoint point) async {

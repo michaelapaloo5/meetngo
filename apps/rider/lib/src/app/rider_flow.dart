@@ -6,61 +6,6 @@ import '../data/trip_functions.dart';
 import '../data/trip_repository.dart';
 import '../trip/trip_controller.dart';
 
-/// Vehicles the home screen offers before a driver has been matched.
-///
-/// There is no nearby-vehicles endpoint in this build: `request-ride` matches
-/// against `driver_locations` on the server and fans offers out to the five
-/// closest online drivers, so a list like this one is what the rider sees while
-/// the match is still being made. Each entry carries the `ride_category` the
-/// real driver would be matched on, so the fare the sheet quotes is the fare the
-/// server computes.
-const kNearbyVehicles = <Vehicle>[
-  Vehicle(
-    id: 'nearby-1',
-    ownerId: 'seed',
-    category: VehicleCategory.sedan,
-    make: 'Toyota',
-    model: 'Corolla',
-    plate: 'GR-1234-21',
-    seats: 4,
-    photoUrl: '',
-    rideCategory: RideCategory.standard,
-  ),
-  Vehicle(
-    id: 'nearby-2',
-    ownerId: 'seed',
-    category: VehicleCategory.sedan,
-    make: 'Nissan',
-    model: 'Note',
-    plate: 'GR-4417-22',
-    seats: 4,
-    photoUrl: '',
-    rideCategory: RideCategory.standard,
-  ),
-  Vehicle(
-    id: 'nearby-3',
-    ownerId: 'seed',
-    category: VehicleCategory.luxury,
-    make: 'Mercedes-Benz',
-    model: 'C-Class',
-    plate: 'GR-9021-23',
-    seats: 4,
-    photoUrl: '',
-    rideCategory: RideCategory.premium,
-  ),
-  Vehicle(
-    id: 'nearby-4',
-    ownerId: 'seed',
-    category: VehicleCategory.van,
-    make: 'Hyundai',
-    model: 'H100',
-    plate: 'GR-7788-24',
-    seats: 12,
-    photoUrl: '',
-    rideCategory: RideCategory.van,
-  ),
-];
-
 const kPromoCode = 'RIDE30';
 
 /// The ride flow, from tapping search to seeing a receipt.

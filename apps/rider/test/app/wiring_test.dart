@@ -91,14 +91,20 @@ void main() {
     expect(flow.requestError, isNull);
   });
 
-  testWidgets('the nearby list covers every category the chips offer', (
-    tester,
-  ) async {
-    final offered = kNearbyVehicles.map((v) => v.rideCategory).toSet();
-    expect(offered, RideCategory.values.toSet());
-    for (final vehicle in kNearbyVehicles) {
-      expect(vehicle.displayName, isNotEmpty);
-      expect(vehicle.seats, greaterThan(0));
+  // This used to assert that `kNearbyVehicles` covered every category the
+  // chips offer. That constant was four invented cars with invented
+  // registration plates -- not rows in `vehicles`, owned by nobody -- and the
+  // rider was choosing between them as if they were real. It is gone, and the
+  // guarantee now worth pinning is the one the server actually matches on: the
+  // three launch categories, which is what `request-ride` filters drivers by.
+  test('the chips offer exactly the launch categories the server matches on', () {
+    expect(RideCategory.values.map((c) => c.label), [
+      'Standard',
+      'Premium',
+      'Van',
+    ]);
+    for (final c in RideCategory.values) {
+      expect(c.perKmGhs, greaterThan(0), reason: c.name);
     }
   });
 

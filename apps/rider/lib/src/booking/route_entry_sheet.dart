@@ -1,6 +1,9 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
 import 'package:mng_core/mng_core.dart';
+import '../data/place_service.dart';
 import '../home/widgets/category_chips.dart';
 
 class RouteDraft {
@@ -23,16 +26,18 @@ class RouteDraft {
 /// the OS for a fix first and passes the answer in.
 const kDefaultPickup =
     TripStop('Pickup', GeoPoint(5.6037, -0.1870), 'Osu, Accra');
+
+/// The default destination, used only when the rider has not chosen one.
+///
+/// It is a real place and a plausible first trip, which is what makes it
+/// dangerous: a sheet that opened on this and refused to change it produced a
+/// ride to the same airport every single time, and the rider had no way to ask
+/// for anywhere else. The field is editable now; this is only what it starts
+/// as.
 const kDefaultDropoff =
     TripStop('Dropoff', GeoPoint(5.6052, -0.1660), 'Airport Residential, Accra');
 
 /// A pickup built from a real device fix.
-///
-/// There is no reverse geocoder in this build, so the address is the
-/// coordinate itself rather than a street name. Saying "5.6037, -0.1870" is
-/// worse copy than "Osu, Accra" and it is still more honest than the reverse —
-/// the rider can see it is a coordinate, and the map below it is drawn from the
-/// same two numbers.
 TripStop pickupFromFix(GeoPoint point) => TripStop(
       'Pickup',
       point,
@@ -43,6 +48,7 @@ Future<void> showRouteEntrySheet(
   BuildContext context, {
   required FareCalculator calc,
   required void Function(RouteDraft draft) onSubmit,
+  required PlaceService places,
   TripStop? pickup,
 }) {
   return showModalBottomSheet<void>(
@@ -52,6 +58,7 @@ Future<void> showRouteEntrySheet(
     builder: (_) => RouteEntrySheet(
       calc: calc,
       onSubmit: onSubmit,
+      places: places,
       pickup: pickup,
     ),
   );
@@ -62,11 +69,16 @@ class RouteEntrySheet extends StatefulWidget {
     super.key,
     required this.calc,
     required this.onSubmit,
+    required this.places,
     this.pickup,
   });
 
   final FareCalculator calc;
   final void Function(RouteDraft draft) onSubmit;
+
+  /// The geocoder, injected rather than reached for, so the sheet has no
+  /// network in it and a test can drive it from a list.
+  final PlaceService places;
 
   /// Where the rider is, when the OS said so. Null falls back to
   /// [kDefaultPickup] rather than refusing to open, because a rider who
@@ -79,13 +91,100 @@ class RouteEntrySheet extends StatefulWidget {
 }
 
 class _RouteEntrySheetState extends State<RouteEntrySheet> {
-  late final TripStop _pickup = widget.pickup ?? kDefaultPickup;
-  final TripStop _dropoff = kDefaultDropoff;
+  late TripStop _pickup = widget.pickup ?? kDefaultPickup;
+  late TripStop _dropoff = kDefaultDropoff;
   RideCategory _category = RideCategory.standard;
+
+  /// Which field the rider is editing, or null when neither has focus.
+  _Field? _editing;
+
+  /// Live results for whichever field is being edited.
+  List<PlaceSuggestion> _results = const [];
+  bool _searching = false;
+
+  /// Debounce handle, so typing does not fire a request per keystroke.
+  ///
+  /// The usage policy caps this service at one request a second and treats
+  /// autocomplete traffic as unacceptable. One request per pause in typing is
+  /// the difference between that and a policy violation.
+  Timer? _debounce;
+
+  /// The trip's own state, so the list can say "nothing matched" honestly.
+  String _query = '';
+
+  /// Long enough to be a pause rather than a keystroke, and short enough that
+  /// the list feels attached to the keyboard.
+  static const Duration _searchDelay = Duration(milliseconds: 450);
 
   double get _distanceKm => _pickup.point.distanceKmTo(_dropoff.point);
 
   int get _driveMinutes => (_distanceKm / 24 * 60).round();
+
+  /// Whether the drafted pair is a real ride rather than the two demo stops.
+  ///
+  /// Both defaults are in the same neighbourhood of Accra, so a rider who
+  /// never touches either field gets a fare and a map that are perfectly
+  /// plausible and entirely not what they asked for. Saying so beats letting
+  /// them discover it on a receipt.
+  bool get _isUneditedDefault =>
+      _pickup.address == kDefaultPickup.address &&
+      _dropoff.address == kDefaultDropoff.address;
+
+  @override
+  void dispose() {
+    _debounce?.cancel();
+    super.dispose();
+  }
+
+  void _onQueryChanged(_Field field, String value) {
+    setState(() {
+      _editing = field;
+      _query = value;
+    });
+    _debounce?.cancel();
+    if (value.trim().length < kMinPlaceSearchChars) {
+      setState(() {
+        _results = const [];
+        _searching = false;
+      });
+      return;
+    }
+    _debounce = Timer(_searchDelay, () => _runSearch(field, value));
+  }
+
+  Future<void> _runSearch(_Field field, String value) async {
+    if (!mounted) return;
+    setState(() => _searching = true);
+    final found = await widget.places.search(value);
+    if (!mounted) return;
+    // A late answer for a field the rider has since left, or for a query they
+    // have since edited, must not replace the list they are looking at.
+    if (_editing != field || _query != value) return;
+    setState(() {
+      _results = found;
+      _searching = false;
+    });
+  }
+
+  void _choose(_Field field, PlaceSuggestion hit) {
+    _debounce?.cancel();
+    setState(() {
+      final stop = TripStop(
+        field == _Field.pickup ? 'Pickup' : 'Dropoff',
+        hit.point,
+        hit.label,
+      );
+      if (field == _Field.pickup) {
+        _pickup = stop;
+      } else {
+        _dropoff = stop;
+      }
+      _editing = null;
+      _query = '';
+      _results = const [];
+      _searching = false;
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -96,76 +195,264 @@ class _RouteEntrySheetState extends State<RouteEntrySheet> {
       top: false,
       child: Padding(
         padding: EdgeInsets.fromLTRB(20.w, 8.h, 20.w, 20.h),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              _StopField(
+                fieldKey: const Key('pickupField'),
+                icon: Icons.circle,
+                iconColor: MngColors.success,
+                stop: _pickup,
+                hint: 'Where should we pick you up?',
+                active: _editing == _Field.pickup,
+                onChanged: (v) => _onQueryChanged(_Field.pickup, v),
+                onTap: () => _focus(_Field.pickup),
+              ),
+              SizedBox(height: 8.h),
+              _StopField(
+                fieldKey: const Key('dropoffField'),
+                icon: Icons.circle,
+                iconColor: MngColors.error,
+                stop: _dropoff,
+                hint: 'Where are you going?',
+                active: _editing == _Field.dropoff,
+                onChanged: (v) => _onQueryChanged(_Field.dropoff, v),
+                onTap: () => _focus(_Field.dropoff),
+              ),
+              if (_editing != null) ...[
+                SizedBox(height: 8.h),
+                _Results(
+                  results: _results,
+                  searching: _searching,
+                  query: _query,
+                  onPick: (hit) => _choose(_editing ?? _Field.dropoff, hit),
+                ),
+              ],
+              SizedBox(height: 12.h),
+              Container(
+                padding: EdgeInsets.all(12.w),
+                decoration: BoxDecoration(
+                  color: MngColors.muted,
+                  borderRadius: BorderRadius.circular(MngRadius.small),
+                ),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        '${_distanceKm.toStringAsFixed(1)} km  ·  ~$_driveMinutes min drive',
+                        overflow: TextOverflow.ellipsis,
+                        style: MngTheme.light.textTheme.titleMedium,
+                      ),
+                    ),
+                    SizedBox(width: 8.w),
+                    Text('GHS ${quote.fareGhs.toStringAsFixed(2)}',
+                        style: MngTheme.light.textTheme.titleMedium),
+                  ],
+                ),
+              ),
+              if (_isUneditedDefault) ...[
+                SizedBox(height: 10.h),
+                Row(
+                  children: [
+                    const Icon(Icons.info_outline,
+                        size: 16, color: MngColors.textSub),
+                    SizedBox(width: 6.w),
+                    Expanded(
+                      child: Text(
+                        'Still the demo route. Tap either field to pick '
+                        'somewhere else.',
+                        style: MngTheme.light.textTheme.bodySmall,
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+              SizedBox(height: 16.h),
+              CategoryChips(
+                selected: _category,
+                onSelected: (c) => setState(() => _category = c),
+              ),
+              SizedBox(height: 20.h),
+              FilledButton(
+                key: const Key('confirmRouteButton'),
+                onPressed: () => widget.onSubmit(RouteDraft(
+                  pickup: _pickup,
+                  dropoff: _dropoff,
+                  category: _category,
+                )),
+                child: const Text('Search for a ride'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _focus(_Field field) {
+    if (_editing == field) return;
+    setState(() {
+      _editing = field;
+      _query = '';
+      _results = const [];
+    });
+  }
+}
+
+enum _Field { pickup, dropoff }
+
+/// One editable stop: a dot, the current value, and a text field over the top.
+///
+/// The field is always present rather than swapping in on focus, so the value
+/// the rider sees and the value they are editing are never two different
+/// widgets, and so a test can find it without simulating a focus change first.
+class _StopField extends StatelessWidget {
+  const _StopField({
+    required this.fieldKey,
+    required this.icon,
+    required this.iconColor,
+    required this.stop,
+    required this.hint,
+    required this.active,
+    required this.onChanged,
+    required this.onTap,
+  });
+
+  final Key fieldKey;
+  final IconData icon;
+  final Color iconColor;
+  final TripStop stop;
+  final String hint;
+  final bool active;
+  final ValueChanged<String> onChanged;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: EdgeInsets.symmetric(horizontal: 12.w, vertical: 4.h),
+        decoration: BoxDecoration(
+          color: active ? MngColors.muted : MngColors.page,
+          borderRadius: BorderRadius.circular(MngRadius.small),
+          border: active
+              ? Border.all(color: MngColors.primary, width: 1.5)
+              : null,
+        ),
+        child: Row(
           children: [
-            Container(
-              padding: EdgeInsets.all(12.w),
-              decoration: BoxDecoration(
-                color: MngColors.muted,
-                borderRadius: BorderRadius.circular(MngRadius.small),
+            Icon(icon, size: 10, color: iconColor),
+            SizedBox(width: 10.w),
+            Expanded(
+              child: TextField(
+                key: fieldKey,
+                controller: TextEditingController(text: stop.address)
+                  ..selection = TextSelection.collapsed(
+                    offset: stop.address.length,
+                  ),
+                onTap: onTap,
+                onChanged: onChanged,
+                style: MngTheme.light.textTheme.bodyMedium,
+                decoration: InputDecoration(
+                  isDense: true,
+                  border: InputBorder.none,
+                  hintText: hint,
+                  hintStyle: MngTheme.light.textTheme.bodyMedium
+                      ?.copyWith(color: MngColors.textSub),
+                ),
               ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    children: [
-                      const Icon(Icons.circle,
-                          size: 10, color: MngColors.success),
-                      SizedBox(width: 8.w),
-                      Expanded(
-                        child: Text(_pickup.address,
-                            style: MngTheme.light.textTheme.bodyMedium),
-                      ),
-                    ],
-                  ),
-                  SizedBox(height: 8.h),
-                  Row(
-                    children: [
-                      const Icon(Icons.circle, size: 10, color: MngColors.error),
-                      SizedBox(width: 8.w),
-                      Expanded(
-                        child: Text(_dropoff.address,
-                            style: MngTheme.light.textTheme.bodyMedium),
-                      ),
-                    ],
-                  ),
-                  SizedBox(height: 10.h),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: Text(
-                          '${_distanceKm.toStringAsFixed(1)} km  ·  ~$_driveMinutes min drive',
-                          overflow: TextOverflow.ellipsis,
-                          style: MngTheme.light.textTheme.titleMedium,
-                        ),
-                      ),
-                      SizedBox(width: 8.w),
-                      Text('GHS ${quote.fareGhs.toStringAsFixed(2)}',
-                          style: MngTheme.light.textTheme.titleMedium),
-                    ],
-                  ),
-                ],
-              ),
-            ),
-            SizedBox(height: 16.h),
-            CategoryChips(
-              selected: _category,
-              onSelected: (c) => setState(() => _category = c),
-            ),
-            SizedBox(height: 20.h),
-            FilledButton(
-              key: const Key('confirmRouteButton'),
-              onPressed: () => widget.onSubmit(RouteDraft(
-                pickup: _pickup,
-                dropoff: _dropoff,
-                category: _category,
-              )),
-              child: const Text('Search for a ride'),
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+/// The list of matches, or the honest reason there are none.
+class _Results extends StatelessWidget {
+  const _Results({
+    required this.results,
+    required this.searching,
+    required this.query,
+    required this.onPick,
+  });
+
+  final List<PlaceSuggestion> results;
+  final bool searching;
+  final String query;
+  final ValueChanged<PlaceSuggestion> onPick;
+
+  @override
+  Widget build(BuildContext context) {
+    if (results.isEmpty) {
+      return Container(
+        key: const Key('placeResults'),
+        padding: EdgeInsets.all(12.w),
+        decoration: BoxDecoration(
+          color: MngColors.muted,
+          borderRadius: BorderRadius.circular(MngRadius.small),
+        ),
+        child: Row(
+          children: [
+            SizedBox(
+              width: 14,
+              height: 14,
+              child: searching
+                  ? const CircularProgressIndicator(strokeWidth: 2)
+                  : null,
+            ),
+            SizedBox(width: 10.w),
+            Expanded(
+              child: Text(
+                searching
+                    ? 'Looking for places...'
+                    : query.trim().length < kMinPlaceSearchChars
+                        ? 'Type at least $kMinPlaceSearchChars letters.'
+                        : 'Nothing matched "$query".',
+                style: MngTheme.light.textTheme.bodySmall,
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+    return Container(
+      key: const Key('placeResults'),
+      decoration: BoxDecoration(
+        color: MngColors.muted,
+        borderRadius: BorderRadius.circular(MngRadius.small),
+      ),
+      child: Column(
+        children: [
+          for (final hit in results)
+            InkWell(
+              key: Key('placeHit-${hit.label}'),
+              onTap: () => onPick(hit),
+              child: Padding(
+                padding: EdgeInsets.symmetric(
+                    horizontal: 12.w, vertical: 10.h),
+                child: Row(
+                  children: [
+                    const Icon(Icons.place_outlined,
+                        size: 16, color: MngColors.textSub),
+                    SizedBox(width: 10.w),
+                    Expanded(
+                      child: Text(
+                        hit.label,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: MngTheme.light.textTheme.bodyMedium,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+        ],
       ),
     );
   }

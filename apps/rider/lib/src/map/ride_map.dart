@@ -71,6 +71,7 @@ class RideMap extends StatefulWidget {
     this.dropoff,
     this.location,
     this.height = 280,
+    this.fill = false,
   });
 
   /// Where the rider is being collected. A trip row always carries one, but it
@@ -88,6 +89,19 @@ class RideMap extends StatefulWidget {
   final DeviceLocation? location;
 
   final double height;
+
+  /// Fill whatever box the parent gives this, instead of [height].
+  ///
+  /// For the screens where the map is the screen: behind the tracking card and
+  /// behind the searching copy, rather than a 280px rectangle at the top of a
+  /// scrolling column. [height] is ignored when this is set, so a caller cannot
+  /// ask for both.
+  ///
+  /// The rounded corners go with it too. A full-bleed map inside a `ClipRRect`
+  /// with a 20px radius leaves a sliver of the page background down each edge,
+  /// which on a screen-sized map is two dark stripes the rider sees on every
+  /// swipe.
+  final bool fill;
 
   /// Replaces the live map engine with an inert stand-in, under test.
   ///
@@ -197,33 +211,37 @@ class _RideMapState extends State<RideMap> {
       );
     }
 
+    // `fill` drops the SizedBox and the ClipRRect so the map takes the whole
+    // box the parent offers it, edge to edge. Everything else -- the pin
+    // layers, the attribution, the location note -- is identical either way, so
+    // the two modes cannot drift apart.
+    final body = Stack(
+      children: [
+        Positioned.fill(
+          child: RideMap.disabledForTest
+              ? _MapStandIn()
+              : _buildMap(from: from, to: to, here: here),
+        ),
+        const Positioned(
+          left: 0,
+          right: 0,
+          bottom: 0,
+          child: _Attribution(),
+        ),
+        if (note.isNotEmpty)
+          Positioned(
+            left: 8,
+            right: 8,
+            top: 8,
+            child: _LocationNote(message: note),
+          ),
+      ],
+    );
+
+    if (widget.fill) return SizedBox.expand(child: body);
     return ClipRRect(
       borderRadius: BorderRadius.circular(MngRadius.large),
-      child: SizedBox(
-        height: widget.height,
-        child: Stack(
-          children: [
-            Positioned.fill(
-              child: RideMap.disabledForTest
-                  ? _MapStandIn()
-                  : _buildMap(from: from, to: to, here: here),
-            ),
-            const Positioned(
-              left: 0,
-              right: 0,
-              bottom: 0,
-              child: _Attribution(),
-            ),
-            if (note.isNotEmpty)
-              Positioned(
-                left: 8,
-                right: 8,
-                top: 8,
-                child: _LocationNote(message: note),
-              ),
-          ],
-        ),
-      ),
+      child: SizedBox(height: widget.height, child: body),
     );
   }
 

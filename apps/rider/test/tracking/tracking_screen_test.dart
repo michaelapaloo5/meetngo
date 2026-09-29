@@ -319,11 +319,20 @@ void main() {
         ),
       ),
     ));
-    expect(find.text('3 drivers found'), findsOneWidget);
     expect(
       find.text('Asking Standard drivers near you'),
       findsOneWidget,
     );
+    // No headcount. "3 drivers found" was invented: the client is never told
+    // how many drivers were matched, only that one of them accepted, so a
+    // number on this screen was fiction -- and three coloured avatars next to
+    // it made it look like three identifiable people were on the way.
+    expect(find.textContaining('drivers found'), findsNothing);
+    expect(find.byType(CircleAvatar), findsNothing);
+    expect(find.byIcon(Icons.person), findsNothing);
+    // What it can honestly claim: a search is running.
+    expect(find.text('Searching'), findsOneWidget);
+    expect(find.byType(CircularProgressIndicator), findsOneWidget);
     await tester.tap(find.byKey(const Key('cancelSearchButton')));
     await tester.pump();
     expect(cancelled, isTrue);

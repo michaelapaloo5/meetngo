@@ -156,6 +156,7 @@ class _RiderShellState extends State<RiderShell> {
     await showRouteEntrySheet(
       context,
       calc: flow.calc,
+      places: context.read<PlaceService>(),
       pickup: reading.point == null ? null : pickupFromFix(reading.point!),
       onSubmit: (draft) => _openCarChoice(draft),
     );
@@ -167,19 +168,17 @@ class _RiderShellState extends State<RiderShell> {
     await Navigator.of(context).push(
       MaterialPageRoute<void>(
         builder: (_) => ChooseCarScreen(
-          vehicles: kNearbyVehicles,
           calc: calc,
           selected: draft.category,
           onCategory: (_) {},
-          onSelect: (_) {},
-          onConfirm: (vehicle) => _requestRide(draft, vehicle),
+          onConfirm: (_) => _requestRide(draft),
           distanceKm: draft.pickup.point.distanceKmTo(draft.dropoff.point),
         ),
       ),
     );
   }
 
-  Future<void> _requestRide(RouteDraft draft, Vehicle vehicle) async {
+  Future<void> _requestRide(RouteDraft draft) async {
     final flow = context.read<RiderFlow>();
     final navigator = Navigator.of(context);
     final trip = await flow.requestRide(draft);
