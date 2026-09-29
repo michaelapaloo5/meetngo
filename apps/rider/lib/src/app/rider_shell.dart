@@ -81,6 +81,16 @@ class _RiderShellState extends State<RiderShell> {
     // hard-coded 'Osu, Accra, Ghana' there instead, so nothing needed this
     // before and the rider was never asked.
     _readLocation();
+    // Recent rides are read on arrival, not only on the way past from a
+    // booking. They used to be loaded in `_openRouteEntry` alone, which meant
+    // that a rider who opened the app and looked at the home screen -- the
+    // first thing every returning rider does -- saw no history at all until
+    // they had booked something. The section the home screen is built around
+    // was empty on a cold start, for a rider who had five trips on file.
+    //
+    // A failure leaves it null, which draws nothing: an empty list of past
+    // rides is not worth an error message on a screen whose job is booking one.
+    unawaited(_loadRecentRides());
   }
 
   Future<void> _readLocation() async {

@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
 import 'package:mng_core/mng_core.dart';
 
@@ -88,11 +89,36 @@ class _DestinationSearchPageState extends State<DestinationSearchPage> {
   @override
   void initState() {
     super.initState();
-    // After the first frame, so the keyboard is raised once the page is
-    // actually on screen rather than while it is still being pushed.
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) _focus.requestFocus();
-    });
+    unawaited(_raiseKeyboard());
+  }
+
+  /// Focuses the field and brings the keyboard up.
+  ///
+  /// `requestFocus` alone was not enough, and this is a bug only a device
+  /// finds. On an Android 16 handset the page opened with the field visibly
+  /// focused -- the highlight ring was drawn -- while `dumpsys input_method`
+  /// reported `mInputShown=false`, and the keyboard only appeared on a second
+  /// tap. A field that takes focus in the same frame its route finishes being
+  /// pushed does not reliably bring the IME up with it, because the window has
+  /// not finished acquiring input focus at that point.
+  ///
+  /// So: wait for the frame to end, focus, and then ask the engine for the
+  /// keyboard directly. The explicit request is the part that fixes it; the
+  /// delay alone does not, and focus alone does not.
+  ///
+  /// A missing IME is not an error. The field is still focused either way, so
+  /// the rider can tap it, and a tablet with no keyboard attached would
+  /// otherwise have nothing to report.
+  Future<void> _raiseKeyboard() async {
+    await WidgetsBinding.instance.endOfFrame;
+    if (!mounted) return;
+    _focus.requestFocus();
+    try {
+      await SystemChannels.textInput.invokeMethod<void>('TextInput.show');
+    } on MissingPluginException {
+      // No engine or no IME on this device. The field is focused, which is all
+      // the page can promise.
+    }
   }
 
   @override

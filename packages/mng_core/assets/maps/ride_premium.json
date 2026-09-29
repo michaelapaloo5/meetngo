@@ -111,7 +111,7 @@
           ["*", ["get", "render_height"], 1.15]
         ],
         "fill-extrusion-base": ["get", "render_min_height"],
-        "fill-extrusion-opacity": 0.45,
+        "fill-extrusion-opacity": 0.9,
         "fill-extrusion-vertical-gradient": true
       }
     },

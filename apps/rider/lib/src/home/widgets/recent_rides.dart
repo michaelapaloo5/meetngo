@@ -3,6 +3,7 @@ import 'package:flutter_screenutil/flutter_screenutil.dart';
 import 'package:mng_core/mng_core.dart';
 
 import '../../data/booked_trip.dart';
+import '../../trip/trip_copy.dart';
 
 /// The rider's own last few trips, under the search field.
 ///
@@ -60,18 +61,22 @@ class _RideRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final trip = ride.trip;
-    final where = [
-      trip.pickup.address.trim(),
-      trip.dropoff.address.trim(),
-    ].where((a) => a.isNotEmpty).join(' to ');
+    // A coordinate is never shown. Trips booked before the build that stopped
+    // writing them have one stored in the pickup address, and a rider scanning
+    // their own history is exactly the person who cannot read "5.5879, -0.2204"
+    // as "where I was picked up". Those rows fall back to the stop's label.
+    final from = addressForDisplay(
+      trip.pickup.address,
+      trip.pickup.label.trim().isEmpty ? 'Pickup' : trip.pickup.label,
+    );
+    final to = addressForDisplay(
+      trip.dropoff.address,
+      trip.dropoff.label.trim().isEmpty ? 'Drop-off' : trip.dropoff.label,
+    );
     // A place to be picked up from is the one thing that makes a past trip
-    // recognisable, so that leads. A ride whose pickup this build could not
-    // name falls back to the destination rather than to a coordinate.
-    final line = where.isNotEmpty
-        ? where
-        : (trip.dropoff.label.trim().isEmpty
-            ? 'Past ride'
-            : trip.dropoff.label.trim());
+    // recognisable, so that leads; the destination is the fallback when the
+    // pickup is a coordinate.
+    final line = from == 'Pickup' && to != 'Drop-off' ? to : '$from to $to';
 
     return GestureDetector(
       key: Key('recentRide-${trip.id}'),

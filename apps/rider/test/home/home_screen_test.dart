@@ -231,6 +231,25 @@ void main() {
     expect(find.textContaining('GHS 12.50'), findsOneWidget);
   });
 
+  testWidgets('a trip whose address is a coordinate never shows one',
+      (tester) async {
+    // Found on a device, not reasoned about: trips booked before the pickup
+    // stopped being labelled with a coordinate have one stored in the address,
+    // and the home screen printed "5.5879, -0.2204 to Airport Residential,
+    // Accra" for four of five rows. The rider is the one person who cannot
+    // read that as where they were picked up.
+    useDesignSurface(tester);
+    await tester.pumpWidget(wrap(recentRides: [
+      _booked('t1', '5.5879, -0.2204', 'Airport Residential, Accra', 16.6),
+    ]));
+
+    expect(find.textContaining('5.58'), findsNothing);
+    expect(find.textContaining('-0.22'), findsNothing);
+    // The destination is the one part it can honestly name, so that is what the
+    // row falls back to.
+    expect(find.text('Airport Residential, Accra'), findsOneWidget);
+  });
+
   testWidgets('no recent-rides heading for a rider who has never booked', (
     tester,
   ) async {

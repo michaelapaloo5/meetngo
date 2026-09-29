@@ -332,10 +332,31 @@ void main() {
       expect(b['source'], 'openfreemap');
     });
 
-    test('uniform light gray at 0.45 opacity', () async {
+    test('uniform light gray, and actually visible against the land', () async {
       final p = layerNamed(await style(), 'building-3d')['paint'] as Map;
       expect(p['fill-extrusion-color'], '#E5E7EB');
-      expect(p['fill-extrusion-opacity'], 0.45);
+      // 0.45 was in the original brief and was wrong: #E5E7EB at 45% over
+      // #F4F4F6 land lands about five levels of luminance apart, so the
+      // extrusions rendered and could not be seen. Confirmed on a device, not
+      // reasoned about. The colour is unchanged; only the opacity is, so the
+      // buildings read as the light grey they were specified to be.
+      expect(p['fill-extrusion-opacity'], 0.9);
+    });
+
+    test('the buildings are not a shade of the land they stand on', () async {
+      // The regression this guards: any pair of colour and opacity that leaves
+      // the extrusions within a few levels of the background. Stated as a
+      // number rather than a colour so a future edit cannot quietly put them
+      // back to invisible.
+      final s = await style();
+      final land = layerNamed(s, 'background');
+      final paint = layerNamed(s, 'building-3d')['paint'] as Map;
+      expect(
+        paint['fill-extrusion-color'],
+        isNot((land['paint'] as Map)['background-color']),
+        reason: 'buildings the same colour as the ground are not buildings',
+      );
+      expect(paint['fill-extrusion-opacity'] as double, greaterThan(0.7));
     });
 
     test('a vertical gradient, without which the extrusions read as flat cutouts', () async {

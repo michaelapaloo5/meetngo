@@ -84,6 +84,36 @@ String formatGhs(double amount) => 'GHS ${amount.toStringAsFixed(2)}';
 /// it says the part it does know and stops there.
 String stopLabel(TripStop stop) {
   final address = stop.address.trim();
-  if (address.isNotEmpty) return address;
+  if (address.isNotEmpty && !looksLikeCoordinates(address)) return address;
   return stop.label.trim().isEmpty ? 'Pickup or drop-off' : stop.label.trim();
+}
+
+/// Whether a string is a bare coordinate pair rather than a place name.
+///
+/// Trips booked before this build stopped writing coordinates into the pickup
+/// address have it stored as text: on the home screen, four of five recent
+/// rides read "5.5879, -0.2204 to Airport Residential, Accra". Those rows are
+/// real and they stay in the database -- it is a record of what happened -- but
+/// a coordinate is not an address and the app has no business printing one
+/// where a rider is trying to recognise their own past trips.
+///
+/// Deliberately narrow. It has to match `"lat, lng"` and nothing else, because
+/// a house number or a shop name that happens to contain a comma and two
+/// numbers must not be mistaken for a coordinate and replaced with the
+/// fallback. Latitude first, then longitude, both signed, optional decimal
+/// parts, either order of whitespace around the comma.
+final RegExp _coordinatePair = RegExp(
+  r'^\s*[+-]?\d{1,3}(?:\.\d+)?\s*,\s*[+-]?\d{1,3}(?:\.\d+)?\s*$',
+);
+
+bool looksLikeCoordinates(String value) => _coordinatePair.hasMatch(value);
+
+/// A stop's address, with a coordinate pair never shown as one.
+///
+/// The same check as [stopLabel], applied where a list of past rides is drawn.
+/// Two copies of one rule, so both are tested.
+String addressForDisplay(String address, String fallback) {
+  final trimmed = address.trim();
+  if (trimmed.isEmpty || looksLikeCoordinates(trimmed)) return fallback;
+  return trimmed;
 }
