@@ -36,14 +36,22 @@ class PlaceName {
   /// told the street rather than only the town. The region is left out when it
   /// repeats [locality], which Nominatim does often -- both fields say "Accra"
   /// for a point in Accra, and printing it twice reads like a bug.
+  ///
+  /// Empty is treated as missing everywhere, not just null. The geocoder's own
+  /// JSON carries `"country": ""` for a point it could not place in a country,
+  /// and a null-only guard turned that into an address ending in a bare ", " --
+  /// which then got stored on the trip and read out to a driver at the pickup.
+  /// The parts are therefore filtered for emptiness rather than for null.
   String get line {
-    final street =
-        (thoroughfare != null && thoroughfare!.isNotEmpty) ? thoroughfare : null;
+    String? usable(String? value) =>
+        (value != null && value.isNotEmpty) ? value : null;
+    final street = usable(thoroughfare);
+    final where = usable(locality);
     final parts = <String>[
       ?street,
-      if (locality.isNotEmpty) locality,
-      if (country != null && country != locality) country!,
-    ];
+      ?where,
+      if (usable(country) != null && country != where) country!,
+    ].where((p) => p.isNotEmpty).toList();
     return parts.isEmpty ? locality : parts.join(', ');
   }
 }

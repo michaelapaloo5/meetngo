@@ -174,13 +174,31 @@ class RideMapState extends State<RideMap> {
   static String? _styleText;
 
   /// Whether the engine is up and the camera can be moved.
-  bool get isReady => _controller != null;
+  ///
+  /// True under [RideMap.disabledForTest], because the stand-in has no engine
+  /// to wait for. A test seam that reported "not ready" forever would leave the
+  /// live-location button permanently disabled and make it untestable, which is
+  /// the one thing the seam exists to prevent.
+  bool get isReady => RideMap.disabledForTest || _controller != null;
+
+  /// Where the last recentre was asked to go, for tests.
+  ///
+  /// Set before the engine is consulted, so a test can assert that a button
+  /// press reached the map and targeted the right point without needing a
+  /// native map to exist. Read it as "what was asked for", not "what happened":
+  /// a real camera move is not observable from here.
+  @visibleForTesting
+  GeoPoint? lastRecentredOn;
 
   /// Move the camera to [point] and back to the default 3D framing.
   ///
   /// Returns false when the engine is not ready yet, so a button pressed in the
   /// first moment after the map appears can be a no-op rather than a crash.
+  /// Callers are expected to check [isReady] first and to say something when
+  /// this returns false, because a press that silently does nothing is the one
+  /// failure mode of a live-location button.
   Future<bool> recenterOn(GeoPoint point) async {
+    lastRecentredOn = point;
     final controller = _controller;
     if (controller == null) return false;
     await controller.animateCamera(
@@ -313,7 +331,7 @@ class RideMapState extends State<RideMap> {
       children: [
         Positioned.fill(
           child: RideMap.disabledForTest
-              ? _MapStandIn()
+              ? _MapStandIn(pickup: from, onTapPoint: widget.onTapPoint)
               : _buildMap(from: from, to: to, here: here),
         ),
         const Positioned(
@@ -637,15 +655,70 @@ class _Attribution extends StatelessWidget {
 
 /// Stands in for the native map under test.
 ///
-/// Deliberately an empty tinted box and nothing else: a stand-in that drew
-/// pins and a route would let a test assert on its own fiction, which is how a
-/// test suite comes to believe a map is covered when it is not.
-class _MapStandIn extends StatelessWidget {
+/// Deliberately an empty tinted box and nothing else: a stand-in that drew pins
+/// and a route would let a test assert on its own fiction, which is how a test
+/// suite comes to believe a map is covered when it is not.
+///
+/// It does forward taps, which is the one thing it adds. MapLibre reports map
+/// clicks through its own gesture layer, so with no engine a tap never arrives
+/// at all — and the code behind that tap (a rider choosing where to be picked
+/// up) is ordinary Dart with no engine in it at all. Without this the entire
+/// tap-to-pick path would be untestable, and it would be untestable for a
+/// reason that has nothing to do with the logic.
+class _MapStandIn extends StatefulWidget {
+  const _MapStandIn({required this.pickup, this.onTapPoint});
+
+  /// The point taps are measured against, so the offset lands nearby rather
+  /// than at an arbitrary coordinate.
+  final GeoPoint? pickup;
+
+  final void Function(GeoPoint point)? onTapPoint;
+
   @override
-  Widget build(BuildContext context) => const ColoredBox(
-        key: Key('rideMapStandIn'),
-        color: MngColors.muted,
-      );
+  State<_MapStandIn> createState() => _MapStandInState();
+}
+
+class _MapStandInState extends State<_MapStandIn> {
+  /// How far the stand-in's taps can move the point, in degrees.
+  ///
+  /// About a kilometre across the whole box, which is a few city blocks. It
+  /// exists so a test can tell a tap that moved the point from one that did
+  /// not, and so the offset is a plausible place rather than an arbitrary
+  /// number: this is a real street grid, not a coordinate generator.
+  static const double _spanDegrees = 0.01;
+
+  @override
+  Widget build(BuildContext context) {
+    const box = ColoredBox(
+      key: Key('rideMapStandIn'),
+      color: MngColors.muted,
+    );
+    final tap = widget.onTapPoint;
+    final anchor = widget.pickup;
+    if (tap == null || anchor == null) return box;
+
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final width = constraints.maxWidth <= 0 ? 1.0 : constraints.maxWidth;
+        final height = constraints.maxHeight <= 0 ? 1.0 : constraints.maxHeight;
+        return GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTapUp: (details) {
+            // The centre of the box is the anchor, so a tap in the middle
+            // leaves the point alone and a tap away from the middle moves it
+            // in the direction tapped. A stand-in that moved the point no
+            // matter where it was tapped could not tell a working tap handler
+            // from a broken one.
+            final dx = (details.localPosition.dx / width - 0.5) * _spanDegrees;
+            final dy =
+                (details.localPosition.dy / height - 0.5) * _spanDegrees;
+            tap(GeoPoint(anchor.lat + dy, anchor.lng + dx));
+          },
+          child: box,
+        );
+      },
+    );
+  }
 }
 
 /// The rider-facing consequence of not having a fix, over the top of the map.

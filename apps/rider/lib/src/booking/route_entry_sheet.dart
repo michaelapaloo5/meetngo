@@ -5,6 +5,7 @@ import 'package:flutter_screenutil/flutter_screenutil.dart';
 import 'package:mng_core/mng_core.dart';
 import '../data/place_service.dart';
 import '../home/widgets/category_chips.dart';
+import '../map/ride_map.dart';
 
 class RouteDraft {
   const RouteDraft({
@@ -112,6 +113,22 @@ class _RouteEntrySheetState extends State<RouteEntrySheet> {
   late TripStop _dropoff = kDefaultDropoff;
   RideCategory _category = RideCategory.standard;
 
+  /// Whether the map picker is open over the fields.
+  bool _pickingOnMap = false;
+
+  /// Which stop the open map is setting.
+  _Field _mapField = _Field.pickup;
+
+  /// Guards a reverse-geocode answer against the rider having moved on.
+  ///
+  /// Nominatim is a free public service and a lookup takes real time, so a
+  /// rider can tap a point, then tap another, then type a search, all before
+  /// the first answer lands. Without this the *first* answer would arrive last
+  /// and overwrite the second tap, and the pickup would silently be the place
+  /// the rider rejected. A counter rather than a comparison of the point,
+  /// because two taps on nearby corners can resolve to the same place name.
+  int _pickToken = 0;
+
   /// Which field the rider is editing, or null when neither has focus.
   _Field? _editing;
 
@@ -203,6 +220,59 @@ class _RouteEntrySheetState extends State<RouteEntrySheet> {
     });
   }
 
+  /// Replaces one of the two stops.
+  void _setStop(_Field field, TripStop stop) {
+    setState(() {
+      if (field == _Field.pickup) {
+        _pickup = stop;
+      } else {
+        _dropoff = stop;
+      }
+    });
+  }
+
+  /// A point tapped on the map, with its address looked up afterwards.
+  ///
+  /// The point is applied immediately and the address upgraded when it
+  /// arrives, rather than waiting for the lookup. A rider who taps a spot and
+  /// watches the field stay blank has no way to tell a slow geocoder from a
+  /// broken one, and will tap again. "Picked on the map" is the honest
+  /// placeholder: it says a point was chosen and says nothing about where,
+  /// because as far as this app knows it does not yet know where.
+  Future<void> _pickOnMap(GeoPoint point) async {
+    final token = ++_pickToken;
+    final field = _mapField;
+    final label = field == _Field.pickup ? 'Pickup' : 'Dropoff';
+    _setStop(field, TripStop(label, point, 'Picked on the map'));
+    // The search list closes. A map tap and a search hit are the same decision
+    // reached two ways, and leaving both open at once is only clutter.
+    setState(() {
+      _editing = null;
+      _results = const [];
+      _searching = false;
+    });
+
+    final name = await widget.places.reverse(point);
+    // An answer that has been overtaken is dropped: see [_pickToken]. A failed
+    // lookup leaves "Picked on the map" in place, which is the point. The ride
+    // is still bookable and still goes to the right pin; the address is the
+    // part the geocoder could not supply, and replacing the field with an
+    // error would suggest the ride itself could not be booked.
+    if (!mounted || token != _pickToken) return;
+    if (name == null || name.line.trim().isEmpty) return;
+    _setStop(field, TripStop(label, point, name.line));
+  }
+
+  void _openMapFor(_Field field) {
+    setState(() {
+      _pickingOnMap = true;
+      _mapField = field;
+      _editing = null;
+      _results = const [];
+      _searching = false;
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     final full = widget.calc.quote(
@@ -230,6 +300,7 @@ class _RouteEntrySheetState extends State<RouteEntrySheet> {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               _StopField(
+                fieldName: 'pickup',
                 fieldKey: const Key('pickupField'),
                 icon: Icons.circle,
                 iconColor: MngColors.success,
@@ -238,9 +309,14 @@ class _RouteEntrySheetState extends State<RouteEntrySheet> {
                 active: _editing == _Field.pickup,
                 onChanged: (v) => _onQueryChanged(_Field.pickup, v),
                 onTap: () => _focus(_Field.pickup),
+                onPickOnMap: _pickingOnMap && _mapField == _Field.pickup
+                    ? () => setState(() => _pickingOnMap = false)
+                    : () => _openMapFor(_Field.pickup),
+                showMapAction: true,
               ),
               SizedBox(height: 8.h),
               _StopField(
+                fieldName: 'dropoff',
                 fieldKey: const Key('dropoffField'),
                 icon: Icons.circle,
                 iconColor: MngColors.error,
@@ -249,6 +325,10 @@ class _RouteEntrySheetState extends State<RouteEntrySheet> {
                 active: _editing == _Field.dropoff,
                 onChanged: (v) => _onQueryChanged(_Field.dropoff, v),
                 onTap: () => _focus(_Field.dropoff),
+                onPickOnMap: _pickingOnMap && _mapField == _Field.dropoff
+                    ? () => setState(() => _pickingOnMap = false)
+                    : () => _openMapFor(_Field.dropoff),
+                showMapAction: true,
               ),
               if (_editing != null) ...[
                 SizedBox(height: 8.h),
@@ -257,6 +337,15 @@ class _RouteEntrySheetState extends State<RouteEntrySheet> {
                   searching: _searching,
                   query: _query,
                   onPick: (hit) => _choose(_editing ?? _Field.dropoff, hit),
+                ),
+              ],
+              if (_pickingOnMap) ...[
+                SizedBox(height: 10.h),
+                _MapPicker(
+                  field: _mapField,
+                  stop: _mapField == _Field.pickup ? _pickup : _dropoff,
+                  onPick: _pickOnMap,
+                  onClose: () => setState(() => _pickingOnMap = false),
                 ),
               ],
               SizedBox(height: 12.h),
@@ -341,6 +430,81 @@ class _RouteEntrySheetState extends State<RouteEntrySheet> {
 
 enum _Field { pickup, dropoff }
 
+/// The map the rider picks a point on, inside the sheet.
+///
+/// A small map rather than a full-screen one, and this is a deliberate limit
+/// rather than a first version: the sheet is already the place the two stops
+/// and the fare live, and a rider comparing a map to a fare needs both on
+/// screen at once. The cost is that the map is small enough that a precise
+/// doorway needs the search field instead, which is why the field is still
+/// there and the map is an addition rather than a replacement.
+///
+/// The pin moves to the tapped point, and the field above updates. The tapped
+/// point is not reverse-geocoded here: the sheet's state does that, so a late
+/// answer can be discarded rather than landing on whichever field the rider has
+/// since moved on to.
+class _MapPicker extends StatelessWidget {
+  const _MapPicker({
+    required this.field,
+    required this.stop,
+    required this.onPick,
+    required this.onClose,
+  });
+
+  final _Field field;
+  final TripStop stop;
+  final ValueChanged<GeoPoint> onPick;
+  final VoidCallback onClose;
+
+  /// Tall enough to pan with a thumb and to see a few blocks, short enough
+  /// that the two stop fields and the fare stay on screen above it.
+  static const double height = 220;
+
+  @override
+  Widget build(BuildContext context) {
+    final what = field == _Field.pickup ? 'pickup' : 'drop-off';
+    return Column(
+      key: const Key('mapPicker'),
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        ClipRRect(
+          borderRadius: BorderRadius.circular(MngRadius.small),
+          child: SizedBox(
+            height: height,
+            // Interactive and tappable, for the same reason the finding screen's
+            // map is: the gestures are only useful if a tap can also mean
+            // something, and with `onTapPoint` unset a tap would do nothing at
+            // all while the map pretended to be fully controllable.
+            child: RideMap(
+              key: const Key('pickerMap'),
+              pickup: stop.point,
+              interactive: true,
+              onTapPoint: onPick,
+              fill: true,
+            ),
+          ),
+        ),
+        SizedBox(height: 6.h),
+        Row(
+          children: [
+            Expanded(
+              child: Text(
+                'Tap the map to move your $what point.',
+                style: MngTheme.light.textTheme.bodySmall,
+              ),
+            ),
+            TextButton(
+              key: const Key('closeMapPicker'),
+              onPressed: onClose,
+              child: const Text('Done'),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+}
+
 /// One editable stop: a dot, the current value, and a text field over the top.
 ///
 /// The field is always present rather than swapping in on focus, so the value
@@ -348,6 +512,7 @@ enum _Field { pickup, dropoff }
 /// widgets, and so a test can find it without simulating a focus change first.
 class _StopField extends StatelessWidget {
   const _StopField({
+    required this.fieldName,
     required this.fieldKey,
     required this.icon,
     required this.iconColor,
@@ -356,7 +521,16 @@ class _StopField extends StatelessWidget {
     required this.active,
     required this.onChanged,
     required this.onTap,
+    this.onPickOnMap,
+    this.showMapAction = false,
   });
+
+  /// A name for this field, used to build [fieldKey] and the map button's key.
+  ///
+  /// A name rather than interpolating [fieldKey] into the button's key: a `Key`
+  /// stringifies to `Key("pickupField")`, so the button would have been keyed
+  /// `mapAction-Key("pickupField")` and found by nobody.
+  final String fieldName;
 
   final Key fieldKey;
   final IconData icon;
@@ -366,6 +540,12 @@ class _StopField extends StatelessWidget {
   final bool active;
   final ValueChanged<String> onChanged;
   final VoidCallback onTap;
+
+  /// Opens, or closes, the map picker for this field.
+  final VoidCallback? onPickOnMap;
+
+  /// Whether to draw the map button at all.
+  final bool showMapAction;
 
   @override
   Widget build(BuildContext context) {
@@ -403,6 +583,18 @@ class _StopField extends StatelessWidget {
                 ),
               ),
             ),
+            if (showMapAction && onPickOnMap != null)
+              IconButton(
+                key: Key('mapAction-$fieldName'),
+                // Its own label, because the icon alone is ambiguous next to a
+                // text field: this sits inside the field, so a screen reader
+                // announcing "button" next to "Where should we pick you up?"
+                // would give a rider no idea what the button does.
+                tooltip: 'Choose on the map',
+                icon: const Icon(Icons.map_outlined, size: 18),
+                color: MngColors.textSub,
+                onPressed: onPickOnMap,
+              ),
           ],
         ),
       ),

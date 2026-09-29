@@ -14,6 +14,9 @@ class _StubPlaces implements PlaceService {
   final bool fail;
   final List<String> queries = [];
 
+  // `reverse` is not exercised here: the map picker's own tests cover it, and
+  // they need to control what it answers, which this stub deliberately does
+  // not.
   @override
   Future<PlaceName?> reverse(GeoPoint point) async => null;
 

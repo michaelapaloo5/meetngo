@@ -2,9 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
 import 'package:mng_core/mng_core.dart';
 import '../data/location_service.dart';
+import '../map/live_location_button.dart';
 import '../map/ride_map.dart';
 
-class FindingDriverScreen extends StatelessWidget {
+class FindingDriverScreen extends StatefulWidget {
   const FindingDriverScreen({
     super.key,
     required this.trip,
@@ -27,7 +28,22 @@ class FindingDriverScreen extends StatelessWidget {
   // `RideMap.disabledForTest` instead of through a caller-supplied provider.
 
   @override
+  State<FindingDriverScreen> createState() => _FindingDriverScreenState();
+}
+
+class _FindingDriverScreenState extends State<FindingDriverScreen> {
+  /// Reaches the map's camera for the live-location button.
+  ///
+  /// A key rather than a controller passed down: MapLibre's controller only
+  /// exists once the native view is built and lives inside `RideMap`, and a
+  /// `GlobalKey` is the ordinary way for a parent to reach a child's controller
+  /// without threading it through the layout between them.
+  final GlobalKey<RideMapState> _mapKey = GlobalKey<RideMapState>();
+
+  @override
   Widget build(BuildContext context) {
+    final trip = widget.trip;
+    final location = widget.location;
     return Scaffold(
       appBar: AppBar(
         backgroundColor: MngColors.page,
@@ -45,11 +61,33 @@ class FindingDriverScreen extends StatelessWidget {
         child: Stack(
           children: [
             Positioned.fill(
-              child: RideMap(
+              // The `KeyedSubtree` keeps the `findingMap` key that a test and
+              // a screenshot look for, while the map itself takes the
+              // `GlobalKey` the live-location button drives. A widget has one
+              // key, so the two cannot both sit on the `RideMap`.
+              child: KeyedSubtree(
                 key: const Key('findingMap'),
-                pickup: trip.pickup.point,
-                location: location,
-                fill: true,
+                child: RideMap(
+                  key: _mapKey,
+                  pickup: trip.pickup.point,
+                  location: location,
+                  fill: true,
+                  // On, because nothing on this screen scrolls. The card is a
+                  // fixed overlay at the bottom, so a drag that reached it
+                  // would not be stealing anyone's scroll, which is the reason
+                  // the tracking screen's map has to leave its gestures off.
+                  // Here they were previously off, which made the map look
+                  // broken: a rider who panned and tilted it could not get
+                  // back, and nothing on screen said the map was even movable.
+                  interactive: true,
+                ),
+              ),
+            ),
+            // The live-location button, over the map. Only drawn with a fix.
+            Positioned.fill(
+              child: LiveLocationButton(
+                mapKey: _mapKey,
+                point: location?.point,
               ),
             ),
             // The card. `Container` with a surface colour rather than
@@ -116,7 +154,7 @@ class FindingDriverScreen extends StatelessWidget {
                     SizedBox(height: 16.h),
                     OutlinedButton(
                       key: const Key('cancelSearchButton'),
-                      onPressed: onCancelSearch,
+                      onPressed: widget.onCancelSearch,
                       style: OutlinedButton.styleFrom(
                         minimumSize: const Size.fromHeight(48),
                       ),

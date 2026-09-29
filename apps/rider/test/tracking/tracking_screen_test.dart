@@ -343,6 +343,97 @@ void main() {
     expect(cancelled, isTrue);
   });
 
+  group('the finding-driver map can be moved and can be got back from', () {
+    // The map is full-bleed here and nothing else on the screen scrolls, so
+    // the gestures cost nothing and used to be off -- which made the map look
+    // broken: a rider who panned it could not get back and nothing said it was
+    // even movable. With the gestures on, a recenter control is not a nicety,
+    // it is the only way back.
+    late bool cancelled;
+
+    Future<void> pumpFinding(
+      WidgetTester tester, {
+      DeviceLocation? location,
+    }) async {
+      useDesignSurface(tester);
+      cancelled = false;
+      await tester.pumpWidget(ScreenUtilInit(
+        designSize: const Size(390, 844),
+        builder: (_, _) => MaterialApp(
+          theme: MngTheme.light,
+          home: FindingDriverScreen(
+            trip: tripInState(TripState.requested),
+            onCancelSearch: () => cancelled = true,
+            location: location,
+          ),
+        ),
+      ));
+      // Several frames: the recenter button asks for one more while the map
+      // underneath it has not registered, and a test that only pumped once
+      // would be testing the binding rather than the behaviour.
+      for (var i = 0; i < 8; i++) {
+        await tester.pump();
+      }
+    }
+
+    testWidgets('a rider with a fix gets a recenter button', (tester) async {
+      await pumpFinding(
+        tester,
+        location: const DeviceLocation(
+          LocationOutcome.granted,
+          GeoPoint(5.6037, -0.1870),
+        ),
+      );
+      expect(find.byKey(const Key('liveLocationButton')), findsOneWidget);
+    });
+
+    testWidgets('a rider without one is told why, and gets no button',
+        (tester) async {
+      // No fix, no button. A greyed-out one would invite a tap that does
+      // nothing; the map's own note is the one message that explains it.
+      await pumpFinding(
+        tester,
+        location: const DeviceLocation(LocationOutcome.denied),
+      );
+      expect(find.byKey(const Key('liveLocationButton')), findsNothing);
+      expect(find.byKey(const Key('locationNote')), findsOneWidget);
+    });
+
+    testWidgets('pressing it does not break the search', (tester) async {
+      // The obvious regression: a recenter control that swallows the tap, or
+      // that cancels the search. The search copy must survive a press.
+      await pumpFinding(
+        tester,
+        location: const DeviceLocation(
+          LocationOutcome.granted,
+          GeoPoint(5.6037, -0.1870),
+        ),
+      );
+      await tester.tap(find.byKey(const Key('liveLocationButton')));
+      await tester.pump();
+
+      expect(find.text('Searching'), findsOneWidget);
+      expect(cancelled, isFalse);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('the cancel button still works with the map interactive',
+        (tester) async {
+      // The other direction: the map's gestures must not have eaten the one
+      // control on the screen.
+      await pumpFinding(
+        tester,
+        location: const DeviceLocation(
+          LocationOutcome.granted,
+          GeoPoint(5.6037, -0.1870),
+        ),
+      );
+      await tester.tap(find.byKey(const Key('cancelSearchButton')));
+      await tester.pump();
+      expect(cancelled, isTrue);
+    });
+  });
+
   testWidgets('cancelling takes the trip to cancelled and releases the driver',
       (tester) async {
     useDesignSurface(tester);
