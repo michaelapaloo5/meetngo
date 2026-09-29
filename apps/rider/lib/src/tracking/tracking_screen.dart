@@ -68,6 +68,11 @@ class TrackingScreen extends StatelessWidget {
                 pickup: trip.pickup.point,
                 dropoff: trip.dropoff.point,
                 location: c.location,
+                // The driver, with the heading they published, so the car turns
+                // as it approaches instead of sitting pointed at north. Null
+                // until a position has been read, in which case the map is
+                // unchanged and simply has no car on it yet.
+                driver: c.driverPoint,
                 fill: true,
               ),
             ),

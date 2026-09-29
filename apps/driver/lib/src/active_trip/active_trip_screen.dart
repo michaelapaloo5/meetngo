@@ -130,6 +130,12 @@ class ActiveTripScreen extends StatelessWidget {
               // the drop-off once the rider is aboard. Before the fix lands the
               // panel says so rather than showing an empty rectangle.
               driverPoint: location.point,
+              // With it, the driver's own car is drawn pointed the way they are
+              // driving rather than as a dot. Without a compass reading nothing
+              // is drawn rather than something drawn pointing north, which on a
+              // driver's own map would be a car going the wrong way up their
+              // own street.
+              driverHeading: location.heading,
               pickup: trip.pickup.point,
               dropoff: trip.dropoff.point,
               height: 200.h,

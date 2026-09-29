@@ -67,12 +67,19 @@ abstract class DriverRepository {
   /// The driver's current position, or null when location is unavailable.
   Future<GeoPoint?> currentLocation();
 
-  /// Publishes [point] to `driver_locations`.
+  /// Publishes [point] to `driver_locations`, with the driver's [bearing] if
+  /// the device reported one.
   ///
   /// `match_offers_for_trip` requires `exists (select 1 from driver_locations l
   /// where l.driver_id = d.id)`, so a driver who has never published a position
   /// is invisible to the matcher however online and approved they are.
-  Future<void> updateLocation(GeoPoint point);
+  ///
+  /// The bearing is what the rider's map rotates their car by, so writing it
+  /// is what turns a dot on a route into a vehicle that visibly turns at each
+  /// junction. Nullable rather than defaulted to north: a driver with no
+  /// compass has no heading, and publishing a fabricated one would put a car
+  /// pointing confidently the wrong way.
+  Future<void> updateLocation(GeoPoint point, {double? bearing});
 
   /// The driver's live trip, or null when they have none.
   Future<Trip?> activeTrip();

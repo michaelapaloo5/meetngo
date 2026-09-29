@@ -39,7 +39,7 @@ class DriverFlow extends ChangeNotifier {
     required this.drivers,
     required this.earnings,
     LocationReader? locationReader,
-  }) : _locationReader = locationReader ?? const GeolocatorLocationReader();
+  }) : _locationReader = locationReader ?? GeolocatorLocationReader();
 
   final DriverRepository drivers;
   final EarningsRepository earnings;

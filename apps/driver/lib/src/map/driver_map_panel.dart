@@ -3,25 +3,28 @@ import 'package:flutter_screenutil/flutter_screenutil.dart';
 import 'package:maplibre_gl/maplibre_gl.dart';
 import 'package:mng_core/mng_core.dart';
 
-/// The free OpenStreetMap vector style, via OpenFreeMap. No key, no account,
-/// no card.
+/// The bundled map style, shared with the rider app.
 ///
-/// Google Maps needs an API key whose Maps SDK for Android is billed to a card,
-/// and this pilot has no card, so a `google_maps_flutter` build could not be
-/// pointed at a project at all. Mapbox has the same problem past its free tier.
-/// MapLibre plus OpenFreeMap is what is left that still draws real 3D, and
-/// unlike the raster tiles it replaced it carries building geometry rather than
-/// pre-rendered pixels, which is what makes the tilt below worth having.
+/// Was a remote style URL, and moving it into the app's own assets is a
+/// deliberate change: a remote style is a remote dependency on somebody else's
+/// taste, which can be repainted overnight, can lose a layer this app depends
+/// on, and is not reviewable in a diff. Shipping the JSON means the map's whole
+/// appearance is a file in this repository.
 ///
-/// `liberty` specifically: measured against the three styles OpenFreeMap
-/// publishes, it is the only one with a `fill-extrusion` layer over the
-/// `building` source-layer. `positron` and `bright` have none, so choosing
-/// either would silently flatten the map to 2D.
+/// `mng_core` also fixes the palette the rider app's overlays are matched to.
+/// Two apps that draw the same streets in two different greys are visibly two
+/// different products, and neither is a decision anybody made.
+///
+/// OpenStreetMap vector tiles through MapLibre, with no API key, no account
+/// and no card. Google Maps needs a key whose Maps SDK for Android is billed to
+/// a card, and this pilot has no card; Mapbox has the same problem past its
+/// free tier. MapLibre plus OpenFreeMap is what is left that still draws real
+/// 3D, and unlike the raster tiles it replaced it carries building geometry
+/// rather than pre-rendered pixels, which is what makes the tilt below worth
+/// having.
 ///
 /// The OSM tile usage policy still requires visible attribution, and
 /// [kOsmAttribution] is on the map at all times rather than behind a tap.
-const kOsmStyleUrl = 'https://tiles.openfreemap.org/styles/liberty';
-
 const kOsmAttribution = '© OpenStreetMap contributors';
 
 /// Camera tilt, in degrees. The whole difference between a 2D map and a 3D one.
@@ -48,6 +51,7 @@ class DriverMapPanel extends StatefulWidget {
   const DriverMapPanel({
     super.key,
     this.driverPoint,
+    this.driverHeading,
     this.pickup,
     this.dropoff,
     this.height = 220,
@@ -56,6 +60,14 @@ class DriverMapPanel extends StatefulWidget {
 
   /// Where the driver is, or null when there is no fix.
   final GeoPoint? driverPoint;
+
+  /// Which way the driver is facing, degrees clockwise from north, or null.
+  ///
+  /// Separate from [driverPoint] because the two are independently available:
+  /// a phone in a car park has a position and often no compass. A null heading
+  /// draws no car rather than one pointing north, because on the driver's own
+  /// map a car pointing the wrong way is a thing they would act on.
+  final double? driverHeading;
 
   /// Where the trip starts. Null on the offer queue, where the driver is
   /// choosing between several trips and one pin would be a lie.
@@ -89,9 +101,31 @@ class DriverMapPanel extends StatefulWidget {
 class _DriverMapPanelState extends State<DriverMapPanel> {
   MapLibreMapController? _controller;
 
+  /// The bundled style's text, loaded once and cached across instances.
+  ///
+  /// `styleString` is a plain `String` and the style lives in the asset bundle,
+  /// so it has to be read before the map is built. A `FutureBuilder` would
+  /// throw the camera away and rebuild the map the moment it arrived; a
+  /// placeholder for the frame or two it takes is better than a flash of
+  /// blank map.
+  static String? _styleText;
+
   /// Unique per instance: the offer queue and the live trip each build a panel,
   /// and MapLibre source and layer ids are global to a style.
   late final String _uid = 'driver-${identityHashCode(this)}';
+
+  @override
+  void initState() {
+    super.initState();
+    if (_styleText == null) {
+      // A failure leaves `_styleText` null and the build below shows the
+      // "no location yet" panel rather than a silently blank rectangle.
+      premiumMapStyleJson().then((text) {
+        _styleText = text;
+        if (mounted) setState(() {});
+      });
+    }
+  }
 
   @override
   void dispose() {
@@ -121,6 +155,10 @@ class _DriverMapPanelState extends State<DriverMapPanel> {
     super.didUpdateWidget(oldWidget);
     if (!_sourcesAdded) return;
     if (oldWidget.driverPoint == widget.driverPoint &&
+        // The heading changes while the position stands still: a driver at a
+        // set of lights turns on the spot, and a gate that ignored it would
+        // leave their car pointing the way they were facing when they arrived.
+        oldWidget.driverHeading == widget.driverHeading &&
         oldWidget.pickup == widget.pickup &&
         oldWidget.dropoff == widget.dropoff &&
         oldWidget.drawRoute == widget.drawRoute) {
@@ -140,9 +178,14 @@ class _DriverMapPanelState extends State<DriverMapPanel> {
       );
     }
     await controller.setGeoJsonSource('pins-src-$_uid', _pinsGeoJson(_points));
+    await _pushVehicle(controller);
   }
 
   /// Every point worth placing the camera over, in order.
+  ///
+  /// The driver's own position is included so the camera frames it, but it is
+  /// not tagged with a `role` and so is not drawn as a circle -- see
+  /// [_pushVehicle], which draws it as a rotated car instead.
   List<GeoPoint> get _points => [
         if (widget.driverPoint != null) widget.driverPoint!,
         if (widget.pickup != null) widget.pickup!,
@@ -198,9 +241,14 @@ class _DriverMapPanelState extends State<DriverMapPanel> {
 
   Widget _buildMap(List<GeoPoint> points) {
     final route = _route;
+    final style = _styleText;
+    // The style is not ready for the first frame or two. A map built with an
+    // empty style string renders a black rectangle with nothing to explain it,
+    // so the panel's own "no location" state stands in for those frames.
+    if (style == null || style.isEmpty) return const _NoLocationYet();
     return MapLibreMap(
       key: const Key('driverMap'),
-      styleString: kOsmStyleUrl,
+      styleString: style,
       initialCameraPosition: CameraPosition(
         target: _ll(points.first),
         zoom: 14,
@@ -217,6 +265,36 @@ class _DriverMapPanelState extends State<DriverMapPanel> {
       onMapCreated: (controller) => _controller = controller,
       onStyleLoadedCallback: () => _addOverlays(points, route),
     );
+  }
+
+  /// The driver's own car, as the style's `vehicles` source wants it.
+  ///
+  /// The same GeoJSON shape the rider's app writes for the driver it is
+  /// watching, from the same layer in the same style, so a car is drawn the
+  /// same way on both sides of the trip.
+  ///
+  /// Only pushed when the driver has a compass reading. A feature with no
+  /// `bearing` draws the car pointing north, which on the driver's own map
+  /// would be a vehicle apparently driving the wrong way up their own street;
+  /// no car is the honest alternative to that.
+  Future<void> _pushVehicle(MapLibreMapController controller) async {
+    final point = widget.driverPoint;
+    final bearing = widget.driverHeading;
+    if (point == null || bearing == null) return;
+    await controller.addImage(kCarTopdownIconName, carTopdownPng());
+    await controller.addGeoJsonSource(kVehicleSourceId, {
+      'type': 'FeatureCollection',
+      'features': [
+        {
+          'type': 'Feature',
+          'properties': {kVehicleBearingProperty: bearing},
+          'geometry': {
+            'type': 'Point',
+            'coordinates': [point.lng, point.lat],
+          },
+        },
+      ],
+    });
   }
 
   Future<void> _addOverlays(List<GeoPoint> points, List<GeoPoint>? route) async {
@@ -250,19 +328,23 @@ class _DriverMapPanelState extends State<DriverMapPanel> {
         circleColor: _css(MngColors.onPrimary),
       ),
     );
-    for (final role in const ['driver', 'pickup', 'dropoff']) {
+    // Pickup and dropoff only. The driver's own position is the car, drawn by
+    // the style's `moving-car-icon` layer from its `bearing`; a circle under it
+    // as well would put a blue dot in the middle of the car, which is the exact
+    // ambiguity the car was introduced to remove.
+    for (final role in const ['pickup', 'dropoff']) {
       await controller.addCircleLayer(
         'pins-src-$_uid',
         '$role-core-$_uid',
         CircleLayerProperties(
-          // The rider's own dot is smaller: it is context for the pickup, not
-          // the thing being looked at.
-          circleRadius: role == 'driver' ? 5 : 6,
+          circleRadius: 6,
           circleColor: _css(_roleColor(role)),
         ),
         filter: _roleIs(role),
       );
     }
+
+    await _pushVehicle(controller);
 
     // Set last, once every source is in place, so `didUpdateWidget` can never
     // call `setGeoJsonSource` against a source that has not been added yet.
@@ -303,11 +385,16 @@ class _DriverMapPanelState extends State<DriverMapPanel> {
       };
 
   /// Which point is which, in draw order.
+  ///
+  /// The driver's own position is skipped. It is drawn as the car and not as a
+  /// pin, and tagging it `driver` here would put a coloured dot under the car
+  /// as well -- which is the ambiguity the car exists to remove.
   Map<String, GeoPoint> _roles(List<GeoPoint> points) {
     final roles = <String, GeoPoint>{};
-    if (points.isNotEmpty) roles['driver'] = points[0];
-    if (points.length > 1) roles['pickup'] = points[1];
-    if (points.length > 2) roles['dropoff'] = points[2];
+    var next = 0;
+    if (widget.driverPoint != null) next++;
+    if (points.length > next) roles['pickup'] = points[next++];
+    if (points.length > next) roles['dropoff'] = points[next];
     return roles;
   }
 

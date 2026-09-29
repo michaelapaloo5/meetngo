@@ -1,10 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
 import 'package:mng_core/mng_core.dart';
+import '../data/booked_trip.dart';
 import '../data/location_service.dart';
 import '../data/place_service.dart';
-import 'widgets/category_chips.dart';
 import 'widgets/promo_banner.dart';
+import 'widgets/recent_rides.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({
@@ -13,6 +14,8 @@ class HomeScreen extends StatefulWidget {
     required this.promoCode,
     this.location,
     this.place,
+    this.recentRides,
+    this.onRideTap,
     this.onSearchTap,
     this.onNotificationsTap,
   });
@@ -44,7 +47,23 @@ class HomeScreen extends StatefulWidget {
   /// it failed. All three render the coordinates, which are always true.
   final PlaceName? place;
 
-  final void Function(BuildContext context)? onSearchTap;
+  /// The rider's recent trips, newest first.
+  ///
+  /// Null while the first read is in flight, which is a different state from
+  /// empty and draws nothing at all -- there is no point showing a "Recent
+  /// rides" heading over nothing.
+  final List<BookedTrip>? recentRides;
+
+  /// A recent ride was tapped.
+  final void Function(BookedTrip ride)? onRideTap;
+
+  /// `Where would you go?` was pressed, or the promo was.
+  ///
+  /// [promo] is true when the offer was the thing that was pressed, so the
+  /// route page can apply the discount rather than making the rider remember
+  /// the code they were shown.
+  final void Function(BuildContext context, {bool promo})? onSearchTap;
+
   final void Function(BuildContext context)? onNotificationsTap;
 
   @override
@@ -52,8 +71,6 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
-  RideCategory _category = RideCategory.standard;
-
   String get _greeting {
     final hour = DateTime.now().hour;
     if (hour < 12) return 'Good morning';
@@ -70,20 +87,20 @@ class _HomeScreenState extends State<HomeScreen> {
   /// [DeviceLocation.riderMessage] is the existing honest copy for the states
   /// where there is no fix, so it is reused here rather than rewritten.
   ///
-  /// With a fix, the geocoder's answer is shown when there is one, and the
-  /// coordinates when there is not. The coordinates are the floor rather than
-  /// the ceiling: they are the one thing that is always true, and a geocoder
-  /// that is slow, blocked or simply wrong must not be able to blank the line
-  /// or, worse, put a name on screen that the rider is not in.
+  /// Never coordinates. `"5.6037, -0.1870"` is true and useless, and a rider
+  /// cannot do anything with it: it is not a place, it does not read as a
+  /// location, and it is the one string on this screen that looks like a bug to
+  /// anyone who does not know what it is. So the fallback is a sentence about
+  /// the situation -- [DeviceLocation.riderMessage] where there is a reason,
+  /// and "Your location" where the geocoder simply has not answered or cannot.
+  /// The exact point belongs on the map, and it is on the map.
   String get _locationLine {
     final loc = widget.location;
     if (loc == null) return 'Finding your location';
     if (!loc.hasFix) return loc.riderMessage;
     final place = widget.place;
     if (place != null && place.line.isNotEmpty) return place.line;
-    final point = loc.point!;
-    return 'Near ${point.lat.toStringAsFixed(4)}, '
-        '${point.lng.toStringAsFixed(4)}';
+    return 'Your location';
   }
 
   @override
@@ -154,24 +171,34 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                 ),
               ),
-              SizedBox(height: 16.h),
-              CategoryChips(
-                selected: _category,
-                onSelected: (c) => setState(() => _category = c),
+              // The promo is above the search field and is pressable.
+              //
+              // It was a decorative strip under three category chips, so the
+              // one thing on this screen that could change a fare was the one
+              // thing you could not touch. It is a button now: pressing it
+              // opens the route page with the discount already applied, so the
+              // offer does something instead of sitting there.
+              PromoBanner(
+                code: widget.promoCode,
+                onPressed: () => widget.onSearchTap?.call(context, promo: true),
               ),
-              SizedBox(height: 8.h),
-              PromoBanner(code: widget.promoCode),
-              // No "Available cars" section, and nothing put in its place.
-              // The list it used to draw came from `kNearbyVehicles`, a
-              // constant in `rider_flow.dart`: four seeded Toyotas, Nissans
-              // and a Mercedes with invented plates, none of which is a row in
-              // `vehicles` and none of which any driver owns. It was not "the
-              // cars near you", it was four strings. `request-ride` matches
-              // against `driver_locations` on the server, so this build has no
-              // client-side source of real nearby cars at all, and the only
-              // honest thing to do with the space is to leave it empty. The
-              // fare quoted after a search tap is computed by
-              // `FareCalculator` from the drafted distance, not invented.
+              SizedBox(height: 12.h),
+              // No category chips. Choosing Standard, Premium or Van here was
+              // choosing a tier before there was a trip, and then choosing it
+              // again on the next screen -- two controls for one decision, with
+              // the first one easy to forget. The tier is picked once, on the
+              // ride page, where the distance and fare that depend on it sit on
+              // the same screen.
+              //
+              // Below the search field, the rider's own last few trips.
+              // `BookedTrip` is a real row from `trips`, so these are rides
+              // that happened -- unlike the vehicle list that used to sit
+              // here. Null while loading and empty forever for a rider who has
+              // never booked, and neither state draws a heading.
+              RecentRides(
+                rides: widget.recentRides ?? const [],
+                onOpen: widget.onRideTap,
+              ),
             ],
           ),
         ),

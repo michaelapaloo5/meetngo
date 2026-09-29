@@ -144,13 +144,27 @@ class KycScreen extends StatelessWidget {
             CaptureButton(
               key: const Key('selfieButton'),
               label: 'Take selfie',
-              scanner: selfieScanner ?? ScannerStub('/tmp/selfie.jpg'),
+              // The real camera, not a stub.
+              //
+              // This fell back to `ScannerStub('/tmp/selfie.jpg')`, which is
+              // the bug that made onboarding impossible: the stub returns that
+              // path immediately without opening anything, the screen saw a
+              // non-null path and said "Selfie captured", and then Continue
+              // called `submitSelfie`, which checks the file is readable and
+              // correctly refused -- so the driver was told their photo had been
+              // taken, then told it could not be read, with no way forward. A
+              // `/tmp` path is not a place on Android anyway.
+              //
+              // `submitSelfie`'s existence check is the thing that caught this
+              // and it is right to keep it: a path that cannot be read must not
+              // be reported as a selfie. The fix is to hand it a real one.
+              scanner: selfieScanner ?? ImagePickerScanner(),
               onCaptured: (path) => c.selfiePath = path,
             ),
             if (c.selfiePath != null) ...[
               const SizedBox(height: 12),
               Text(
-                'Selfie captured',
+                'Selfie captured. Press Continue.',
                 style: MngTheme.light.textTheme.bodySmall,
               ),
             ],

@@ -42,5 +42,27 @@ abstract class TripRepository {
   /// The full answer, including why there is no fix.
   Future<DeviceLocation> locate();
 
+  /// Where the driver assigned to this trip is, or null when there is none to
+  /// show.
+  ///
+  /// Reads `driver_locations` for [driverId]. The database already permits
+  /// exactly this and nothing more: the policy `rider reads driver location
+  /// while assigned` allows the read only when a trip whose `rider_id` is
+  /// `auth.uid()` names that driver and is in `matched`, `arriving` or
+  /// `ongoing`. So before a driver is assigned, and after the trip ends, this
+  /// returns null by policy rather than by a check here -- which is the right
+  /// place for the rule, because a client-side check is a thing that can be
+  /// forgotten and a policy cannot.
+  /// Where the driver on this trip is, and which way they are facing.
+  ///
+  /// A [VehicleFix] and not a [GeoPoint], because the map draws the driver as
+  /// a car pointed the way they are driving. A coordinate cannot say which way
+  /// that is, and a car that always points north is a decoration rather than a
+  /// vehicle.
+  ///
+  /// Null when there is no driver, no published position, or the read was
+  /// refused by policy. All three are answers rather than faults.
+  Future<VehicleFix?> assignedDriverLocation(String? driverId);
+
   Future<void> raiseSos(String tripId, String note);
 }

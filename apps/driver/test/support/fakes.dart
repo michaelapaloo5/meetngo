@@ -43,6 +43,13 @@ class StubDriverRepository implements DriverRepository {
   int otpAttempts = 0;
   int meCalls = 0;
   int currentLocationCalls = 0;
+
+  /// Whether [updateLocation] should fail, for the publish-failure path.
+  ///
+  /// The write to `driver_locations` can be refused by RLS or by a dropped
+  /// connection while the position read succeeded, and the controller has to
+  /// keep the position in that case.
+  bool locationWriteFails = false;
   int myTripsCalls = 0;
   int myVehicleCalls = 0;
 
@@ -136,10 +143,21 @@ class StubDriverRepository implements DriverRepository {
   }
 
   @override
-  Future<void> updateLocation(GeoPoint point) async {
+  Future<void> updateLocation(GeoPoint point, {double? bearing}) async {
     updateLocationCalls++;
+    if (locationWriteFails) {
+      throw DriverAuthFailure('row level security refused the write');
+    }
     lastLocation = point;
+    // Recorded, and normalised the same way the real repository writes it, so a
+    // test can assert on what would reach `driver_locations` rather than on
+    // what the controller happened to pass in.
+    lastHeading = normaliseBearing(bearing);
   }
+
+  /// The heading of the last publish, so a test can check the rider's car would
+  /// be drawn pointing the right way.
+  double? lastHeading;
 
   @override
   Future<Trip?> activeTrip() async {
@@ -296,6 +314,8 @@ class StubLocationReader implements LocationReader {
     this.requested = LocationPermission.whileInUse,
     this.point = const GeoPoint(5.6037, -0.1870),
     this.pointThrows,
+    this.heading = 90,
+    this.headingThrows,
   });
 
   bool serviceEnabled;
@@ -307,12 +327,30 @@ class StubLocationReader implements LocationReader {
 
   GeoPoint? point;
 
+  /// Held open by [gatePoint], so a test can have two refreshes overlap.
+  Future<void>? gatePoint;
+
   /// Thrown by [currentPoint] when the test wants a failure or a timeout.
   Object? pointThrows;
+
+  /// Thrown by [checkPermission], for the "something else broke" path.
+  Object? checkPermissionThrows;
+
+  /// The compass reading, or null for a device with none.
+  ///
+  /// Defaults to 90, not null, so that an existing test about a location fix
+  /// does not quietly stop publishing a heading. Tests about the no-compass
+  /// case set it to null explicitly.
+  double? heading;
+
+  /// Thrown by [currentHeading]. Separate from [pointThrows] because the two
+  /// are independently unavailable and the controller has to survive either.
+  Object? headingThrows;
 
   int checkCalls = 0;
   int requestCalls = 0;
   int pointCalls = 0;
+  int headingCalls = 0;
 
   @override
   Future<bool> isServiceEnabled() async => serviceEnabled;
@@ -320,6 +358,7 @@ class StubLocationReader implements LocationReader {
   @override
   Future<LocationPermission> checkPermission() async {
     checkCalls++;
+    if (checkPermissionThrows != null) throw checkPermissionThrows!;
     return permission;
   }
 
@@ -332,8 +371,16 @@ class StubLocationReader implements LocationReader {
   @override
   Future<GeoPoint> currentPoint() async {
     pointCalls++;
+    await gatePoint;
     if (pointThrows != null) throw pointThrows!;
     return point!;
+  }
+
+  @override
+  Future<double?> currentHeading() async {
+    headingCalls++;
+    if (headingThrows != null) throw headingThrows!;
+    return heading;
   }
 }
 

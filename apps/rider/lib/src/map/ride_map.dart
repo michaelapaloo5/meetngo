@@ -5,28 +5,14 @@ import 'package:mng_core/mng_core.dart';
 
 import '../data/location_service.dart';
 
-/// The free OpenStreetMap vector style this app draws from, via OpenFreeMap.
-///
-/// No key, no account, no card — the same constraint that ruled out Google Maps
-/// rules out Mapbox, and this is what is left that still gives real 3D.
-///
-/// The style is chosen from measured responses, not from a list of names.
-/// OpenFreeMap publishes several and they are not interchangeable for this
-/// purpose: `liberty` is the only one carrying a `fill-extrusion` layer over
-/// the `building` source-layer, which is where the 3D actually comes from.
-/// `positron` and `bright` have **zero** fill-extrusion layers, so swapping to
-/// either for taste would silently flatten the map back to 2D and nothing
-/// would say so.
-const kMapStyleUrl = 'https://tiles.openfreemap.org/styles/liberty';
-
-/// The credit the OSM tile usage policy requires to be visible, matching
-/// `kOsmAttribution` in the driver app's `DriverMapPanel`.
-///
-/// Still required, and still drawn by this file's own widget. MapLibre's own
-/// attribution option is off (`logoEnabled` and the attribution toggle), because
-/// MapLibre by default prints a Mapbox-branded badge, which would be a false
-/// claim about who drew the map and is not this app's to display.
-const kOsmAttribution = '© OpenStreetMap contributors';
+  /// The credit the OSM tile usage policy requires to be visible, matching
+  /// `kOsmAttribution` in the driver app's `DriverMapPanel`.
+  ///
+  /// Still required, and still drawn by this file's own widget. MapLibre's own
+  /// attribution option is off (`logoEnabled` and the attribution toggle),
+  /// because MapLibre by default prints a Mapbox-branded badge, which would be a
+  /// false claim about who drew the map and is not this app's to display.
+  const kOsmAttribution = '© OpenStreetMap contributors';
 
 /// How far the camera is tipped back from straight-down, in degrees.
 ///
@@ -34,8 +20,9 @@ const kOsmAttribution = '© OpenStreetMap contributors';
 /// stating why 45 and not 0. A tilt of 0 is a plan view: no buildings, no
 /// perspective, nothing that reads as a city. MapLibre clamps tilt by zoom —
 /// at low zoom there is nothing to extrude and a steep angle just smears the
-/// tiles — so this is paired with a zoom that is high enough for the
-/// `liberty` style's building layer to have data.
+/// tiles — so this is paired with a zoom that is high enough for the style's
+/// `building` source-layer to have data. That layer is minzoom 13, which is
+/// where the style's own `building-3d` layer starts for the same reason.
 const double kRideMapTilt = 45.0;
 
 /// A little rotation off north, so the map is not a grid.
@@ -70,9 +57,37 @@ class RideMap extends StatefulWidget {
     required this.pickup,
     this.dropoff,
     this.location,
+    this.driver,
     this.height = 280,
     this.fill = false,
+    this.interactive = false,
+    this.onTapPoint,
   });
+
+  /// Where the assigned driver is and which way it is facing, when the trip has
+  /// a driver with a position.
+  ///
+  /// A [VehicleFix] rather than a [GeoPoint], because the car is drawn pointing
+  /// the way the driver is driving and a coordinate cannot say which way that
+  /// is. See the `moving-car-icon` layer in the shared style.
+  final VehicleFix? driver;
+
+  /// Let the rider move the map: drag, pinch to zoom, twist to rotate, two
+  /// fingers to tilt.
+  ///
+  /// Off on the tracking card's map, where a vertical drag has to scroll the
+  /// details rather than move the map out from under the rider, and on while
+  /// the rider is choosing a pickup -- and on the searching screen, where
+  /// nothing else scrolls, so with the gestures off a drag does nothing at all
+  /// and the map feels broken.
+  final bool interactive;
+
+  /// A tap on the map, in coordinates.
+  ///
+  /// Only fires when [interactive] is set: MapLibre reports taps as part of
+  /// its gesture handling, so with the gestures off a tap callback would
+  /// silently never fire, which is worse than not offering one.
+  final void Function(GeoPoint point)? onTapPoint;
 
   /// Where the rider is being collected. A trip row always carries one, but it
   /// is not trusted to be a coordinate the map can draw — see [_isPlottable].
@@ -132,16 +147,87 @@ class RideMap extends StatefulWidget {
   }
 
   @override
-  State<RideMap> createState() => _RideMapState();
+  State<RideMap> createState() => RideMapState();
 }
 
-class _RideMapState extends State<RideMap> {
+/// Public so a parent can drive the camera through a `GlobalKey`.
+///
+/// The live-location button has to move the camera back to the rider, and the
+/// controller MapLibre hands out only exists after the map is built and lives
+/// inside this widget. A `GlobalKey<RideMapState>` is the ordinary way for a
+/// parent to reach a child's controller without passing it down through every
+/// screen in between.
+class RideMapState extends State<RideMap> {
   MapLibreMapController? _controller;
+
+  /// The bundled style's text, loaded once and cached.
+  ///
+  /// Needed because `MapLibreMap.styleString` is a plain `String` and
+  /// [premiumMapStyleJson] reads the asset bundle, which is asynchronous. A
+  /// `FutureBuilder` around the map would rebuild the whole map the moment the
+  /// style arrived, throwing away the camera; loading in `initState` and
+  /// rendering a labelled placeholder for the one or two frames it takes is
+  /// better than a flicker of blank map.
+  ///
+  /// Cached across instances because the style never changes for the life of
+  /// the process and more than one map can be alive at once.
+  static String? _styleText;
+
+  /// Whether the engine is up and the camera can be moved.
+  bool get isReady => _controller != null;
+
+  /// Move the camera to [point] and back to the default 3D framing.
+  ///
+  /// Returns false when the engine is not ready yet, so a button pressed in the
+  /// first moment after the map appears can be a no-op rather than a crash.
+  Future<bool> recenterOn(GeoPoint point) async {
+    final controller = _controller;
+    if (controller == null) return false;
+    await controller.animateCamera(
+      CameraUpdate.newCameraPosition(
+        CameraPosition(
+          target: LatLng(point.lat, point.lng),
+          zoom: kRideMapSinglePointZoom,
+          tilt: kRideMapTilt,
+          bearing: kRideMapBearing,
+        ),
+      ),
+    );
+    return true;
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _uid = 'ride-${identityHashCode(this)}';
+    if (_styleText == null) {
+      // Fire and forget into a `setState`, guarded on `mounted`. A failure
+      // here leaves `_styleText` null and the build below draws a placeholder
+      // that says so, rather than a silently blank map.
+      premiumMapStyleJson().then((text) {
+        _styleText = text;
+        if (mounted) setState(() {});
+      });
+    }
+  }
 
   /// Unique per instance. Two maps can be alive at once on the driver side, and
   /// MapLibre source and layer ids are global to a style, so a shared id would
   /// have one map's pins drawn onto the other.
-  late final String _uid = 'ride-${identityHashCode(this)}';
+  late final String _uid;
+
+  /// Every pin to draw as a circle, in draw order.
+  ///
+  /// The driver is *not* in this list. It is drawn by the style's own
+  /// `moving-car-icon` symbol layer, from the `vehicles` source, because that
+  /// is what makes it a rotated car rather than a circle: a circle layer can
+  /// only draw circles, and a circle gives a rider no way to tell which way the
+  /// driver is approaching from.
+  List<GeoPoint> _allPoints(GeoPoint from, GeoPoint? to, GeoPoint? here) =>
+      <GeoPoint>[from, ?to, ?here];
+
+  /// The driver's position and heading, as the style's `vehicles` source.
+  Map<String, dynamic>? _vehicleGeoJson() => vehicleGeoJson(widget.driver);
 
   @override
   void dispose() {
@@ -162,8 +248,12 @@ class _RideMapState extends State<RideMap> {
   void didUpdateWidget(RideMap oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (!_sourcesAdded) return;
+    // The driver's heading changes even when the position has not -- a car
+    // turning at a junction is the same coordinate as one second earlier -- so
+    // the vehicle is re-pushed on either having changed.
     if (oldWidget.pickup == widget.pickup &&
         oldWidget.dropoff == widget.dropoff &&
+        oldWidget.driver == widget.driver &&
         oldWidget.location?.point == widget.location?.point) {
       return;
     }
@@ -188,8 +278,12 @@ class _RideMapState extends State<RideMap> {
     }
     await controller.setGeoJsonSource(
       'pins-src-$_uid',
-      _pinsGeoJson(<GeoPoint>[from, ?to, ?widget.location?.point]),
+      _pinsGeoJson(_allPoints(from, to, widget.location?.point)),
     );
+    final vehicle = _vehicleGeoJson();
+    if (vehicle != null) {
+      await controller.setGeoJsonSource(kVehicleSourceId, vehicle);
+    }
   }
 
   @override
@@ -252,27 +346,50 @@ class _RideMapState extends State<RideMap> {
   }) {
     // `?` rather than `if (x != null) x`: same order, same list, and the
     // analyzer's `use_null_aware_elements` is an error under --fatal-infos.
-    final points = <GeoPoint>[from, ?to, ?here];
+    // The driver is last so the car draws over the route and the stop pins.
+    final points = _allPoints(from, to, here);
     // A route needs two ends; the single-point case is the finding screen.
     final hasRoute = to != null;
 
+    // The style is loaded from the bundle in `initState` and is not ready for
+    // the first frame or two. Drawing the map with an empty style string in
+    // that window produces a black rectangle with no explanation, so the
+    // placeholder is used instead -- the same one a caller gets when it has
+    // nothing honest to draw.
+    final style = _styleText;
+    if (style == null || style.isEmpty) {
+      return _Fallback(
+        height: widget.height,
+        message: 'Loading the map',
+      );
+    }
+
     return MapLibreMap(
       key: const Key('rideMap'),
-      styleString: kMapStyleUrl,
+      styleString: style,
       initialCameraPosition: CameraPosition(
         target: _ll(from),
         zoom: hasRoute ? kRideMapRouteMaxZoom : kRideMapSinglePointZoom,
         tilt: kRideMapTilt,
         bearing: kRideMapBearing,
       ),
-      // A rider is not given the map to drag. Leaving the gestures on means a
-      // vertical drag on the map scrolls nothing and eats the scroll of the
-      // screen behind it, and a rider who has found the pickup and been
-      // scrolled away from it is worse off than one who cannot move it.
-      scrollGesturesEnabled: false,
-      zoomGesturesEnabled: false,
-      rotateGesturesEnabled: false,
-      tiltGesturesEnabled: false,
+      // A rider is not given the map to drag while a driver is on the way. With
+      // the gestures on, a vertical drag moves the map and the details above it
+      // never scroll, so the rider cannot reach the buttons lower down. On the
+      // searching screen and the route page it is on, because there is nothing
+      // to scroll and a dead map reads as a broken one.
+      scrollGesturesEnabled: widget.interactive,
+      zoomGesturesEnabled: widget.interactive,
+      rotateGesturesEnabled: widget.interactive,
+      tiltGesturesEnabled: widget.interactive,
+      dragEnabled: widget.interactive,
+      // `onMapClick` is delivered through the gesture layer, so it only fires
+      // when those are on.
+      onMapClick: widget.interactive && widget.onTapPoint != null
+          ? (_, latLng) => widget.onTapPoint!(
+                GeoPoint(latLng.latitude, latLng.longitude),
+              )
+          : null,
       // No Mapbox badge: this map is OpenStreetMap's data, drawn by MapLibre,
       // and a Mapbox logo on it would be a false claim about who did the work.
       // MapLibre still draws its own small attribution *button*, which it does
@@ -315,12 +432,17 @@ class _RideMapState extends State<RideMap> {
           // stroke was for.
           lineGapWidth: 2,
         ),
-        // Deliberately no `belowLayerId`. The `liberty` style has both a 2D
-        // `building` layer and a `building-3d` extrusion, so anchoring the route
-        // under either one puts it *behind* the extrusions -- and on a tilted
-        // camera that means the rider's own route disappears behind the city
-        // it runs through. A route is drawn on top of everything, as it is in
-        // every map app worth copying.
+        // Deliberately no `belowLayerId`. A layer added without one goes on top
+        // of everything, and the style has a `building-3d` extrusion — so
+        // anchoring the route under it would put the rider's own route
+        // *behind* the city, and on a tilted camera that means it disappears
+        // behind the buildings it runs through. A route is drawn over
+        // everything, as it is in every map app worth copying.
+        //
+        // The style draws roads at #FFFFFF on #F4F4F6 land, so the route's
+        // colour is chosen to be the one thing on the map that is neither:
+        // a saturated blue cannot be mistaken for a road, a park or a
+        // building at any zoom.
       );
     }
 
@@ -333,6 +455,16 @@ class _RideMapState extends State<RideMap> {
         circleColor: _css(MngColors.page),
       ),
     );
+    // The rider's own dot stays a dot: it is the rider, not a vehicle.
+    await controller.addCircleLayer(
+      'pins-src-$_uid',
+      'device-core-$_uid',
+      CircleLayerProperties(
+        circleRadius: 5,
+        circleColor: _css(MngColors.info),
+      ),
+      filter: _roleIs('device'),
+    );
     await controller.addCircleLayer(
       'pins-src-$_uid',
       'pin-core-$_uid',
@@ -340,10 +472,6 @@ class _RideMapState extends State<RideMap> {
         circleRadius: 6,
         circleColor: _css(MngColors.primary),
       ),
-      // One layer per pin colour, picked by a feature property, so the pickup,
-      // the dropoff and the rider's own dot are told apart at a glance. The
-      // filter is a raw style expression -- the plugin types it as `dynamic` and
-      // its own tests pass the bare list.
       filter: _roleIs('pickup'),
     );
     await controller.addCircleLayer(
@@ -355,19 +483,31 @@ class _RideMapState extends State<RideMap> {
       ),
       filter: _roleIs('dropoff'),
     );
-    await controller.addCircleLayer(
-      'pins-src-$_uid',
-      'device-core-$_uid',
-      CircleLayerProperties(
-        circleRadius: 5,
-        circleColor: _css(MngColors.info),
-      ),
-      filter: _roleIs('device'),
-    );
 
-    // Set last, once every source is in place, so `didUpdateWidget` can never
-    // call `setGeoJsonSource` against a source that has not been added yet.
+    await _addVehicle(controller);
+
+    // Set last, once every source and image is in place, so `didUpdateWidget`
+    // can never call `setGeoJsonSource` against a source that has not been
+    // added yet.
     _sourcesAdded = true;
+  }
+
+  /// Registers the car's sprite and hands the style its position.
+  ///
+  /// Two things, and the order matters. `addImage` has to happen before the
+  /// source is set, because a symbol layer whose `icon-image` names an image
+  /// that does not exist draws nothing at all -- silently, with no error --
+  /// and a rider would just see no car.
+  ///
+  /// The layer itself is *not* added here. It is in the shared style, which is
+  /// where the user-facing drawing rules live; adding it from Dart as well
+  /// would produce two layers with the same id and no useful error.
+  Future<void> _addVehicle(MapLibreMapController controller) async {
+    await controller.addImage(kCarTopdownIconName, carTopdownPng());
+    final vehicle = _vehicleGeoJson();
+    if (vehicle != null) {
+      await controller.addGeoJsonSource(kVehicleSourceId, vehicle);
+    }
   }
 
   /// A route as one GeoJSON `LineString`.
@@ -429,6 +569,38 @@ class _RideMapState extends State<RideMap> {
       '#${(c.toARGB32() & 0xFFFFFF).toRadixString(16).padLeft(6, '0')}';
 
   static LatLng _ll(GeoPoint p) => LatLng(p.lat, p.lng);
+}
+
+/// The `vehicles` source for a driver's [fix], in the shape the style's
+/// `moving-car-icon` layer reads.
+///
+/// Top-level rather than a private method on the state, because the parts of it
+/// that can be wrong are all silent: GeoJSON orders coordinates longitude
+/// first, and this app uses latitude first everywhere else, so a swap puts the
+/// car in the Atlantic; and `icon-rotate` is handed the bearing as a value and
+/// adds it to an angle, so a string instead of a number fails to parse and
+/// leaves the car pointing north. Neither throws. Both are therefore only
+/// catchable by a test that can see the data, and the data is here rather than
+/// behind a widget that cannot be built under `flutter test`.
+///
+/// Returns null when there is nothing to draw, which the caller reads as "leave
+/// the source alone" rather than as "empty the source" -- a driver with no
+/// compass must not make the rider's car blink out of existence.
+Map<String, dynamic>? vehicleGeoJson(VehicleFix? fix) {
+  if (fix == null || !RideMap.isPlottable(fix.point)) return null;
+  return {
+    'type': 'FeatureCollection',
+    'features': [
+      {
+        'type': 'Feature',
+        'properties': {kVehicleBearingProperty: fix.headingDegrees},
+        'geometry': {
+          'type': 'Point',
+          'coordinates': [fix.point.lng, fix.point.lat],
+        },
+      },
+    ],
+  };
 }
 
 /// The visible OpenStreetMap credit, over the bottom-left of the map.

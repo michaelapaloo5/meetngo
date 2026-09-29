@@ -164,6 +164,12 @@ class AvailabilityController extends ChangeNotifier {
       return;
     }
     try {
+      // No heading, unlike the publish in `LocationController`. This one only
+      // runs when a driver first goes online, at which point they have not been
+      // driving and the compass reading that goes with a position is not
+      // something this call has in hand. A null is the honest answer: the
+      // rider's map falls back to pointing the car north, and the heading
+      // arrives with the first `LocationController` refresh.
       await _repo.updateLocation(here);
     } on Object {
       error = 'Your location could not be published, so ride requests cannot '

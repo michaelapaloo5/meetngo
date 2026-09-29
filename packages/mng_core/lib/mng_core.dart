@@ -6,6 +6,9 @@
 library;
 
 export 'src/fare/fare_calculator.dart';
+export 'src/map/car_topdown_icon.dart';
+export 'src/map/premium_map_style.dart';
+export 'src/map/vehicle_fix.dart';
 export 'src/models/category.dart';
 export 'src/models/driver.dart';
 export 'src/models/geo_point.dart';

@@ -13,6 +13,7 @@ import '../bookings/bookings_screen.dart';
 import '../chat/chat_controller.dart';
 import '../chat/chat_screen.dart';
 import '../data/chat_repository.dart';
+import '../data/booked_trip.dart';
 import '../data/location_service.dart';
 import '../data/place_service.dart';
 import '../data/profile_repository.dart';
@@ -143,7 +144,7 @@ class _RiderShellState extends State<RiderShell> {
     }
   }
 
-  Future<void> _openRouteEntry() async {
+  Future<void> _openRouteEntry({bool promo = false}) async {
     final flow = context.read<RiderFlow>();
     // Asked for before the sheet opens rather than inside it, so the permission
     // dialog is not stacked under a modal bottom sheet on Android. A rider who
@@ -157,9 +158,28 @@ class _RiderShellState extends State<RiderShell> {
       context,
       calc: flow.calc,
       places: context.read<PlaceService>(),
-      pickup: reading.point == null ? null : pickupFromFix(reading.point!),
+      pickup: reading.point == null
+          ? null
+          : pickupFromFix(reading.point!, label: _place?.line),
+      promoApplied: promo,
       onSubmit: (draft) => _openCarChoice(draft),
     );
+    // Read the rider's history on the way past, so Recent rides on the home
+    // screen is populated by the time they get back to it. A failure leaves it
+    // null, which draws nothing -- an empty list of past rides is not worth an
+    // error message on a screen whose job is booking one.
+    unawaited(_loadRecentRides());
+  }
+
+  Future<void> _loadRecentRides() async {
+    try {
+      final rows = await context.read<TripRepository>().history(limit: 5);
+      if (!mounted) return;
+      setState(() => _recentRides = rows);
+    } on Object {
+      // Left null. The screen draws nothing for null and nothing for empty, so
+      // a failed history read is invisible rather than alarming.
+    }
   }
 
   Future<void> _openCarChoice(RouteDraft draft) async {
@@ -337,9 +357,20 @@ class _RiderShellState extends State<RiderShell> {
         promoCode: kPromoCode,
         location: _location,
         place: _place,
-        onSearchTap: (_) => _openRouteEntry(),
+        recentRides: _recentRides,
+        onSearchTap: (_, {bool promo = false}) =>
+            _openRouteEntry(promo: promo),
         onNotificationsTap: (_) => _openNotifications(),
       );
+
+  /// The rider's last few trips for the home screen.
+  ///
+  /// Loaded once, alongside the position, and deliberately not watched. The
+  /// home screen is not the bookings tab: a rider who has finished a ride should
+  /// see it appear in Recent rides, and a rider who has not scrolled away from
+  /// the home screen does not need the list rebuilt on every keystroke in a
+  /// search field.
+  List<BookedTrip>? _recentRides;
 
   Future<void> _openNotifications() async {
     // Pushed with a bookings controller of its own rather than reusing the one

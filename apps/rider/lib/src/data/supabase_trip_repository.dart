@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:mng_core/mng_core.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'booked_trip.dart';
@@ -129,6 +130,80 @@ class SupabaseTripRepository implements TripRepository {
   Future<GeoPoint?> currentLocation() async {
     final reading = await _locations.current();
     return reading.point;
+  }
+
+  @override
+  Future<VehicleFix?> assignedDriverLocation(String? driverId) async {
+    // No driver yet means there is nothing to look up, and asking anyway would
+    // spend a round trip to be told the same thing by the policy.
+    if (driverId == null || driverId.isEmpty) return null;
+    final List<dynamic> rows;
+    try {
+      rows = await _client
+          .from('driver_locations')
+          // `heading` is selected alongside `point` because the map draws the
+          // driver as a car pointed the way they are driving. The column is
+          // nullable in the schema -- a driver app that never published one
+          // writes null -- which is why the return type carries a null bearing
+          // rather than defaulting to north: a car quietly pointing the wrong
+          // way is worse than one pointing an arbitrary way.
+          .select('point, heading')
+          .eq('driver_id', driverId)
+          // `limit(1)` and never `single()`: a driver who has gone offline
+          // mid-trip has no row, and `.single()` throws on a zero-row read --
+          // which would turn "the driver has no position right now" into a
+          // thrown error on a screen that has a perfectly good way to render
+      // that. The TripRepository README says the same about trip reads.
+          .limit(1);
+    } on PostgrestException {
+      // A refused read is not a crash: the policy denies it before a driver is
+      // assigned and after the trip ends, and that is the answer, not a fault.
+      return null;
+    }
+    if (rows.isEmpty) return null;
+    final row = rows.first as Map<String, dynamic>;
+    final point = _geographyToPoint(row['point']);
+    // A row with a point this build cannot parse is not a vehicle, and
+    // returning null is what lets the caller keep the last good one rather
+    // than blanking the car.
+    if (point == null) return null;
+    return VehicleFix(point, normaliseBearing(row['heading']));
+  }
+
+  /// A PostGIS `geography(Point,4326)` as PostgREST hands it back.
+  ///
+  /// GeoJSON, and in GeoJSON's order: `{"type":"Point","coordinates":[lng,lat]}`.
+  /// `GeoPoint.fromJson` is the wrong tool here and fails on it -- it expects
+  /// `{"lat":..,"lng":..}`, which is the shape `request-ride` normalises the
+  /// trip's own stops into. Two different shapes for the same idea in the same
+  /// app, so it is worth saying which is which: trip stops are `{lat,lng}`,
+  /// anything read straight out of a geography column is `[lng,lat]`.
+  ///
+  /// Returns null for anything it does not recognise rather than throwing. A
+  /// malformed point should leave the car off the map, not take the tracking
+  /// screen down with it.
+  /// Exposed for the tests only.
+  ///
+  /// The `[lng, lat]` ordering is the single most breakable thing in this file
+  /// -- it is the reverse of every other coordinate shape in the app, so a
+  /// "cleanup" that swaps it produces a driver in the Atlantic rather than an
+  /// error. Asserting on it through a public method is the only way the test
+  /// suite can notice.
+  @visibleForTesting
+  static GeoPoint? geographyToPointForTest(Object? value) =>
+      _geographyToPoint(value);
+
+  static GeoPoint? _geographyToPoint(Object? value) {
+    if (value is! Map<String, dynamic>) return null;
+    if (value['type'] != 'Point') return null;
+    final coords = value['coordinates'];
+    if (coords is! List || coords.length < 2) return null;
+    final lng = coords[0];
+    final lat = coords[1];
+    if (lng is! num || lat is! num) return null;
+    final point = GeoPoint(lat.toDouble(), lng.toDouble());
+    if (point.lat.abs() > 90 || point.lng.abs() > 180) return null;
+    return point;
   }
 
   @override

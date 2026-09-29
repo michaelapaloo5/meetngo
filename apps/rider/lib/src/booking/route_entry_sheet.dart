@@ -38,11 +38,18 @@ const kDefaultDropoff =
     TripStop('Dropoff', GeoPoint(5.6052, -0.1660), 'Airport Residential, Accra');
 
 /// A pickup built from a real device fix.
-TripStop pickupFromFix(GeoPoint point) => TripStop(
-      'Pickup',
-      point,
-      '${point.lat.toStringAsFixed(4)}, ${point.lng.toStringAsFixed(4)}',
-    );
+///
+/// The address is [label], not the coordinate. A `TripStop` needs an address
+/// string and `"5.6037, -0.1870"` is not one: a rider reading the pickup they
+/// are about to confirm has no way to tell that it is them, and it is the only
+/// string on the screen that reads like a fault. The exact point travels in
+/// [TripStop.point], and is drawn on the map and sent to the server, which is
+/// where a coordinate belongs.
+///
+/// [label] is the reverse-geocoded place when the shell already has one, and
+/// "Your location" when it does not.
+TripStop pickupFromFix(GeoPoint point, {String? label}) =>
+    TripStop('Pickup', point, label ?? 'Your location');
 
 Future<void> showRouteEntrySheet(
   BuildContext context, {
@@ -50,6 +57,7 @@ Future<void> showRouteEntrySheet(
   required void Function(RouteDraft draft) onSubmit,
   required PlaceService places,
   TripStop? pickup,
+  bool promoApplied = false,
 }) {
   return showModalBottomSheet<void>(
     context: context,
@@ -60,6 +68,7 @@ Future<void> showRouteEntrySheet(
       onSubmit: onSubmit,
       places: places,
       pickup: pickup,
+      promoApplied: promoApplied,
     ),
   );
 }
@@ -71,6 +80,7 @@ class RouteEntrySheet extends StatefulWidget {
     required this.onSubmit,
     required this.places,
     this.pickup,
+    this.promoApplied = false,
   });
 
   final FareCalculator calc;
@@ -85,6 +95,13 @@ class RouteEntrySheet extends StatefulWidget {
   /// refused location permission can still book a ride from a remembered
   /// pickup, and a sheet that will not open is a worse answer than a default.
   final TripStop? pickup;
+
+  /// The rider arrived here by pressing the offer on the home screen.
+  ///
+  /// Carries through to the fare as a 30% discount, so pressing "30% off" is
+  /// worth something. The banner used to advertise it and could not be pressed,
+  /// and a rider who tapped it got nothing and no reason why.
+  final bool promoApplied;
 
   @override
   State<RouteEntrySheet> createState() => _RouteEntrySheetState();
@@ -188,7 +205,19 @@ class _RouteEntrySheetState extends State<RouteEntrySheet> {
 
   @override
   Widget build(BuildContext context) {
-    final quote = widget.calc.quote(category: _category, distanceKm: _distanceKm);
+    final full = widget.calc.quote(
+      category: _category,
+      distanceKm: _distanceKm,
+    );
+    // 30% off when the rider arrived by pressing the offer, applied here on
+    // the one screen that shows a fare rather than on the home screen where
+    // none is shown, so the discount is visible where it is spent.
+    //
+    // Taken off the quoted fare rather than pushed through the calculator as a
+    // `discountGhs`, because a flat amount off depends on the distance while
+    // the offer is 30% off whatever the ride costs. A rider in Kumasi and one
+    // in Osu should both be paying 70%.
+    final fare = widget.promoApplied ? full.fareGhs * 0.7 : full.fareGhs;
     // `useSafeArea` on the modal covers the top only: it wraps the sheet in
     // `SafeArea(bottom: false)`, so the bottom inset is this widget's job.
     return SafeArea(
@@ -247,8 +276,17 @@ class _RouteEntrySheetState extends State<RouteEntrySheet> {
                       ),
                     ),
                     SizedBox(width: 8.w),
-                    Text('GHS ${quote.fareGhs.toStringAsFixed(2)}',
+                    Text('GHS ${fare.toStringAsFixed(2)}',
                         style: MngTheme.light.textTheme.titleMedium),
+                    if (widget.promoApplied)
+                      Padding(
+                        padding: EdgeInsets.only(left: 6.w),
+                        child: Text(
+                          '30% off',
+                          style: MngTheme.light.textTheme.bodySmall
+                              ?.copyWith(color: MngColors.success),
+                        ),
+                      ),
                   ],
                 ),
               ),

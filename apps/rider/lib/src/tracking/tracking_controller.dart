@@ -52,6 +52,17 @@ class TrackingController extends ChangeNotifier {
   /// rider can fix in Settings without the ride being affected.
   DeviceLocation? location;
 
+  /// Where the driver assigned to this trip is, and which way it is facing.
+  ///
+  /// Null until a driver is assigned and has published a position. The rider's
+  /// map draws this as a car pointing the way the driver is driving, because
+  /// the thing they are watching is a vehicle arriving: a dot is the same mark
+  /// used for "this is you", and it has no way of showing which way the driver
+  /// is approaching from.
+  ///
+  /// Only ever advanced, never cleared -- see the read in [refresh].
+  VehicleFix? driverPoint;
+
   /// How many times [refresh] has run. The location read is skipped until the
   /// trip read has succeeded, because asking the OS for a fix before the map
   /// has anything to draw it on spends a permission prompt on nothing.
@@ -94,7 +105,10 @@ class TrackingController extends ChangeNotifier {
       // whole reason to exist away.
       _report(e);
     }
-    if (_tripReadAtLeastOnce) await _readLocation();
+    if (_tripReadAtLeastOnce) {
+      await _readLocation();
+      await _readDriverPosition();
+    }
     notifyListeners();
   }
 
@@ -108,6 +122,33 @@ class TrackingController extends ChangeNotifier {
   Future<void> _readLocation() async {
     try {
       location = await trips.locate();
+    } on Object {
+      // Left as it was.
+    }
+  }
+
+  /// Reads where the assigned driver is, so the car can be drawn on the map.
+  ///
+  /// Same contract as [_readLocation]: failures are swallowed and the last good
+  /// position is kept, because a car that stops updating for one poll is a car
+  /// that is still where it was, and a car that vanishes is worse than one that
+  /// lags. The database decides whether this is readable at all -- the
+  /// `rider reads driver location while assigned` policy allows it only while a
+  /// trip of the rider's is live with that driver on it -- so before a driver is
+  /// assigned this is null by policy, not by a check here.
+  Future<void> _readDriverPosition() async {
+    try {
+      final read = await trips.assignedDriverLocation(trip?.driverId);
+      // Only ever advanced, never cleared on a null. A driver whose phone has
+      // no fix this second is still somewhere on the last road they were on,
+      // and blanking the car because one poll came back empty would make the
+      // map flicker through the whole ride.
+      //
+      // The same applies to the heading, and it is why the previous fix is kept
+      // rather than replaced by a bearing-less one: a car whose heading drops
+      // to north mid-junction looks like it turned around, which is the one
+      // thing a rider watching it approach would be certain of and wrong about.
+      if (read != null && read.bearing != null) driverPoint = read;
     } on Object {
       // Left as it was.
     }

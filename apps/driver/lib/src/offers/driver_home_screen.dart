@@ -105,7 +105,13 @@ class DriverHomeScreen extends StatelessWidget {
               LocationBanner(location: location),
               Padding(
                 padding: EdgeInsets.symmetric(horizontal: 20.w),
-                child: DriverMapPanel(driverPoint: location.point),
+                // The driver's own car, with the heading, so the offer queue's
+                // map shows which way they are facing rather than a bare dot
+                // that could be anywhere.
+                child: DriverMapPanel(
+                  driverPoint: location.point,
+                  driverHeading: location.heading,
+                ),
               ),
               Expanded(
                 child: offers.offers.isEmpty

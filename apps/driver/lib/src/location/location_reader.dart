@@ -30,6 +30,16 @@ abstract class LocationReader {
   /// "no fix arrived" and "the plugin could not be reached" are different
   /// faults with different sentences, and a null cannot tell them apart.
   Future<GeoPoint> currentPoint();
+
+  /// Which way the device is facing, degrees clockwise from north, or null.
+  ///
+  /// A separate method rather than a second return from [currentPoint], because
+  /// geolocator reports the two independently and one is routinely missing: a
+  /// position fix is available in a car park, a compass reading often is not.
+  /// Bundling them would make a missing compass indistinguishable from a
+  /// missing fix, and a driver unable to go online because their phone has no
+  /// magnetometer is a real and very bad outcome.
+  Future<double?> currentHeading();
 }
 
 /// The real one, over `geolocator`.
@@ -39,7 +49,17 @@ abstract class LocationReader {
 /// which answered null for every outcome. The distinctions below are the ones
 /// that method threw away.
 class GeolocatorLocationReader implements LocationReader {
-  const GeolocatorLocationReader();
+  GeolocatorLocationReader();
+
+  /// The heading off the last fix, kept so the compass is not asked twice.
+  ///
+  /// `getCurrentPosition` already returns a heading, so re-reading it would be
+  /// a second platform call for a number that was in hand a moment ago -- and a
+  /// driver standing still can turn on the spot between the two.
+  ///
+  /// Mutable, which is why the constructor is not `const`. The alternative
+  /// would be a fresh reader per fix and a plugin call per heading.
+  Position? _last;
 
   /// How long to wait for a fix before saying so.
   ///
@@ -66,6 +86,17 @@ class GeolocatorLocationReader implements LocationReader {
         timeLimit: fixTimeLimit,
       ),
     );
+    _last = position;
     return GeoPoint(position.latitude, position.longitude);
+  }
+
+  @override
+  Future<double?> currentHeading() async {
+    final heading = _last?.heading;
+    if (heading == null) return null;
+    // The plugin reports -1 for "no compass" and can hand back a NaN. Both are
+    // turned into null here rather than at the consumer, so there is exactly one
+    // place where a heading becomes a number.
+    return normaliseBearing(heading);
   }
 }

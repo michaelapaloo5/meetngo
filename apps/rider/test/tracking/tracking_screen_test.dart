@@ -94,6 +94,9 @@ class FakeTripRepository implements TripRepository {
   /// early return and the trip on screen is not replaced.
   Trip? active;
 
+  /// Where the assigned driver is, for the tests that draw the car.
+  VehicleFix? driverPoint;
+
   @override
   Future<Trip?> activeTrip() async {
     final failure = refreshFailure;
@@ -116,6 +119,8 @@ class FakeTripRepository implements TripRepository {
   @override
   Future<GeoPoint?> currentLocation() async => null;
 
+  @override
+  Future<VehicleFix?> assignedDriverLocation(String? driverId) async => driverPoint;
   @override
   Future<void> cancelTrip(String tripId) async {
     // Counted before the failure check, exactly as `sosCalls` is: the count is

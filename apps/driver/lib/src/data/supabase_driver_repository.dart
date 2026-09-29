@@ -241,12 +241,17 @@ class SupabaseDriverRepository implements DriverRepository {
   }
 
   @override
-  Future<void> updateLocation(GeoPoint point) async {
+  Future<void> updateLocation(GeoPoint point, {double? bearing}) async {
     final uid = _uid;
     try {
       await _client.from('driver_locations').upsert({
         'driver_id': uid,
         'point': 'POINT(${point.lng} ${point.lat})',
+        // Written as a number, not a string, and omitted entirely when the
+        // device has no compass. The rider's map feeds it straight to
+        // MapLibre's `icon-rotate`, which needs a number; a text column would
+        // be rotated as a CSS value and would silently not rotate at all.
+        'heading': bearing,
         'updated_at': DateTime.now().toIso8601String(),
       });
     } on PostgrestException catch (e) {

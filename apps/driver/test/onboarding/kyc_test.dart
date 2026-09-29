@@ -10,10 +10,19 @@ import 'package:provider/provider.dart';
 import '../support/fakes.dart';
 import '../support/harness.dart';
 
-Widget wrap(KycController c, {VoidCallback? onContinue}) => appHarness(
+Widget wrap(
+  KycController c, {
+  VoidCallback? onContinue,
+  DocumentScanner? selfieScanner,
+}) =>
+    appHarness(
       ChangeNotifierProvider<KycController>.value(
         value: c,
-        child: KycScreen(controller: c, onContinue: onContinue),
+        child: KycScreen(
+          controller: c,
+          onContinue: onContinue,
+          selfieScanner: selfieScanner,
+        ),
       ),
     );
 
@@ -424,12 +433,18 @@ void main() {
     testWidgets('the selfie step captures and says so', (tester) async {
       useDesignSurface(tester);
       final c = KycController(StubDriverRepository())..step = KycStep.selfie;
-      await tester.pumpWidget(wrap(c));
+      // A scanner has to be injected for this one. The default is now the real
+      // camera, which cannot open under `flutter test`, so without this the
+      // capture correctly returns null and there is nothing to announce. The
+      // default being the camera is the point of the next test down.
+      await tester.pumpWidget(
+        wrap(c, selfieScanner: ScannerStub('/tmp/selfie.jpg')),
+      );
 
-      expect(find.text('Selfie captured'), findsNothing);
+      expect(find.text('Selfie captured. Press Continue.'), findsNothing);
       await tester.tap(find.byKey(const Key('selfieButton')));
       await tester.pumpAndSettle();
-      expect(find.text('Selfie captured'), findsOneWidget);
+      expect(find.text('Selfie captured. Press Continue.'), findsOneWidget);
     });
 
     testWidgets('a cancelled capture is not a capture', (tester) async {
@@ -445,8 +460,46 @@ void main() {
       );
       await tester.tap(find.byKey(const Key('selfieButton')));
       await tester.pumpAndSettle();
-      expect(find.text('Selfie captured'), findsNothing);
+      expect(find.text('Selfie captured. Press Continue.'), findsNothing);
     });
+
+    // This is the bug that stopped a driver dead, pinned so it cannot come
+    // back.
+    //
+    // The screen defaulted to `ScannerStub('/tmp/selfie.jpg')`. A stub returns
+    // that path without opening a camera, so the step reported "Selfie
+    // captured" for a file that was never created -- and `submitSelfie`, which
+    // checks the path is a readable file, then refused it with "The selfie
+    // could not be read back". Onboarding was impossible and every test passed,
+    // because the tests that exercise this inject their own scanner and never
+    // looked at the default.
+    testWidgets('with no scanner injected the button opens the real camera', (
+      tester,
+    ) async {
+      useDesignSurface(tester);
+      final c = KycController(StubDriverRepository())..step = KycStep.selfie;
+      await tester.pumpWidget(
+        appHarness(
+          ChangeNotifierProvider<KycController>.value(
+            value: c,
+            child: KycScreen(controller: c),
+          ),
+        ),
+      );
+
+      final button =
+          tester.widget<CaptureButton>(find.byKey(const Key('selfieButton')));
+
+      // Not merely "not a ScannerStub" but positively the camera: a stub of
+      // some other shape would still be a stub.
+      expect(button.scanner, isA<ImagePickerScanner>());
+      expect(button.scanner, isNot(isA<ScannerStub>()));
+    });
+
+    // A path that is not a readable file is already covered where it belongs,
+    // in `data_layer_test.dart`, against the real `SupabaseDriverRepository`.
+    // `StubDriverRepository` does no I/O, so a test here would only be pinning
+    // the fake's behaviour.
 
     testWidgets('the vehicle step shows the vehicle form', (tester) async {
       useDesignSurface(tester);

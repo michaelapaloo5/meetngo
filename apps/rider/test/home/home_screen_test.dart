@@ -1,10 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:meetngo_rider/src/data/booked_trip.dart';
 import 'package:meetngo_rider/src/data/location_service.dart';
 import 'package:meetngo_rider/src/data/place_service.dart';
 import 'package:meetngo_rider/src/home/home_screen.dart';
-import 'package:meetngo_rider/src/home/widgets/category_chips.dart';
 import 'package:meetngo_rider/src/home/widgets/promo_banner.dart';
 import 'package:mng_core/mng_core.dart';
 
@@ -12,7 +12,8 @@ Widget wrap({
   String? riderName = 'Alex',
   DeviceLocation? location,
   PlaceName? place,
-  void Function(BuildContext context)? onSearchTap,
+  List<BookedTrip>? recentRides,
+  void Function(BuildContext context, {bool promo})? onSearchTap,
   void Function(BuildContext context)? onNotificationsTap,
 }) =>
     ScreenUtilInit(
@@ -26,10 +27,28 @@ Widget wrap({
           promoCode: 'RIDE30',
           location: location,
           place: place,
+          recentRides: recentRides,
           onSearchTap: onSearchTap,
           onNotificationsTap: onNotificationsTap,
         ),
       ),
+    );
+
+/// A trip that happened, shaped as `trips` hands it back.
+BookedTrip _booked(String id, String from, String to, double fare) =>
+    BookedTrip(
+      trip: Trip(
+        id: id,
+        riderId: 'r1',
+        driverId: 'd1',
+        category: RideCategory.standard,
+        state: TripState.completed,
+        pickup: TripStop('Pickup', const GeoPoint(5.6037, -0.1870), from),
+        dropoff: TripStop('Dropoff', const GeoPoint(5.6200, -0.1870), to),
+        distanceKm: 2.0,
+        fareGhs: fare,
+      ),
+      createdAt: DateTime(2026, 9, 27, 9, 5),
     );
 
 void useDesignSurface(WidgetTester tester) {
@@ -64,7 +83,9 @@ void main() {
     expect(find.textContaining('Osu'), findsNothing);
   });
 
-  testWidgets('a real fix is shown as the rider own coordinates', (tester) async {
+  testWidgets('a real fix with no place name reads as your location', (
+    tester,
+  ) async {
     useDesignSurface(tester);
     await tester.pumpWidget(wrap(
       location: const DeviceLocation(
@@ -72,20 +93,22 @@ void main() {
         GeoPoint(5.6037, -0.1870),
       ),
     ));
-    expect(find.text('Near 5.6037, -0.1870'), findsOneWidget);
-    expect(find.text('Osu, Accra, Ghana'), findsNothing);
+    // Not the coordinate. "5.6037, -0.1870" is true and useless, and it is the
+    // one string on this screen that reads like a fault to anyone who does not
+    // know what it is. The point is on the map; the line is a place.
+    expect(find.text('Your location'), findsOneWidget);
+    expect(find.textContaining('5.60'), findsNothing);
+    expect(find.textContaining('-0.18'), findsNothing);
   });
 
-  // The geocoder's answer is preferred over coordinates, because "Oxford
-  // Street, Osu" is a thing a rider can act on and "5.6037, -0.1870" is not.
-  testWidgets('a geocoded place name is preferred over the coordinates', (
+  testWidgets('a geocoded place name is preferred over the fallback', (
     tester,
   ) async {
     useDesignSurface(tester);
     await tester.pumpWidget(wrap(
       location: const DeviceLocation(
         LocationOutcome.granted,
-        GeoPoint(5.5600, -0.1800),
+        GeoPoint(5.6037, -0.1870),
       ),
       place: const PlaceName(
         locality: 'Osu',
@@ -94,13 +117,10 @@ void main() {
       ),
     ));
     expect(find.text('Oxford Street, Osu, Ghana'), findsOneWidget);
-    expect(find.textContaining('5.56'), findsNothing);
+    expect(find.text('Your location'), findsNothing);
   });
 
-  // The geocoder is a third party on a metered volunteer service. It is allowed
-  // to be slow, blocked or wrong, and none of those may blank the line or leave
-  // it on a name the rider is not in -- the coordinates are the floor.
-  testWidgets('a geocoder that failed falls back to the coordinates', (
+  testWidgets('a geocoder that failed falls back to your location', (
     tester,
   ) async {
     useDesignSurface(tester);
@@ -111,24 +131,10 @@ void main() {
       ),
       place: null,
     ));
-    expect(find.text('Near 5.6037, -0.1870'), findsOneWidget);
-  });
-
-  // A refused permission is a different failure from a failed geocode, and it
-  // must not be papered over with a name or a coordinate the rider never gave.
-  testWidgets('a refused permission is never replaced by a place name', (
-    tester,
-  ) async {
-    useDesignSurface(tester);
-    await tester.pumpWidget(wrap(
-      location: const DeviceLocation(LocationOutcome.denied),
-      place: const PlaceName(locality: 'Osu'),
-    ));
-    expect(
-      find.textContaining('not allowed to use your location'),
-      findsOneWidget,
-    );
-    expect(find.text('Osu'), findsNothing);
+    // The fallback is a sentence, not a coordinate. A geocoder that is slow,
+    // blocked or simply wrong must not be able to put a number on the screen.
+    expect(find.text('Your location'), findsOneWidget);
+    expect(find.textContaining('5.60'), findsNothing);
   });
 
   testWidgets('a refused permission says so instead of naming a place', (
@@ -138,8 +144,6 @@ void main() {
     await tester.pumpWidget(wrap(
       location: const DeviceLocation(LocationOutcome.denied),
     ));
-    // The existing shared copy, not a bespoke sentence, so the home line and
-    // the two map screens cannot drift apart.
     expect(
       find.textContaining('not allowed to use your location'),
       findsOneWidget,
@@ -153,86 +157,100 @@ void main() {
     expect(find.byKey(const Key('searchField')), findsOneWidget);
   });
 
-  testWidgets('renders the three launch categories and no moto', (tester) async {
+  testWidgets('no category chips are on the home screen', (tester) async {
     useDesignSurface(tester);
     await tester.pumpWidget(wrap());
-    expect(find.byKey(const Key('chip-standard')), findsOneWidget);
-    expect(find.byKey(const Key('chip-premium')), findsOneWidget);
-    expect(find.byKey(const Key('chip-van')), findsOneWidget);
-    expect(find.text('Moto'), findsNothing);
-    final unselected = tester.widget<Text>(
-      find.descendant(
-        of: find.byKey(const Key('chip-van')),
-        matching: find.text('Van'),
-      ),
-    );
-    // `textSub` on `muted` measures 3.16:1, under the 4.5:1 WCAG AA minimum
-    // for text this size. The tokens are Task 1's, so this pins the value.
-    expect(unselected.style!.color, MngColors.textSub);
+    // The tier is picked once, on the ride page, where the distance and fare
+    // that depend on it are on the same screen. Two controls for one decision
+    // meant the first one was easy to forget.
+    for (final c in RideCategory.values) {
+      expect(find.byKey(Key('chip-${c.name}')), findsNothing, reason: c.name);
+    }
   });
 
-  testWidgets('tapping a category chip moves the selection', (tester) async {
+  testWidgets('the promo is a button and says it can be used', (tester) async {
     useDesignSurface(tester);
-    await tester.pumpWidget(wrap());
-    await tester.tap(find.byKey(const Key('chip-van')));
+    var promoTaps = 0;
+    await tester.pumpWidget(
+      wrap(onSearchTap: (_, {bool promo = false}) {
+        if (promo) promoTaps++;
+      }),
+    );
+    expect(find.byKey(const Key('promoBanner')), findsOneWidget);
+    // "Code RIDE30" invited a rider to retype it. Pressing it now takes the
+    // offer, so the copy says so.
+    expect(find.text('Tap to use RIDE30'), findsOneWidget);
+    expect(find.text('Code RIDE30'), findsNothing);
+
+    await tester.tap(find.byKey(const Key('promoBanner')));
     await tester.pump();
-    final chips = tester.widget<CategoryChips>(find.byType(CategoryChips));
-    expect(chips.selected, RideCategory.van);
+    expect(promoTaps, 1, reason: 'the offer has to actually do something');
   });
 
-  testWidgets('promo banner shows the discount and code', (tester) async {
+  testWidgets('pressing the search field is not the promo', (tester) async {
     useDesignSurface(tester);
-    await tester.pumpWidget(wrap());
-    expect(find.text('30% off your first ride'), findsOneWidget);
-    expect(find.text('Code RIDE30'), findsOneWidget);
+    bool sawPromo = true;
+    await tester.pumpWidget(
+      wrap(onSearchTap: (_, {bool promo = false}) => sawPromo = promo),
+    );
+    await tester.tap(find.byKey(const Key('searchField')));
+    await tester.pump();
+    // The two open the same page but mean different things, and the sheet
+    // needs to know which -- otherwise the 30% would be applied to every
+    // booking.
+    expect(sawPromo, isFalse);
   });
 
-  // The "Available cars" section and the `kNearbyVehicles` constant behind it
-  // are gone: four seeded Toyotas, Nissans and a Mercedes with invented plates
-  // that are not rows in `vehicles` and are owned by nobody. These two tests
-  // replace the ones that listed them, and they assert the *absence*, which is
-  // a stronger claim than the presence they used to make -- a screen can only
-  // print a fake plate if the constant comes back.
-  testWidgets('no fake nearby-cars section is drawn', (tester) async {
+  testWidgets('no invented car, plate or fake list is drawn', (tester) async {
     useDesignSurface(tester);
     await tester.pumpWidget(wrap());
-    expect(find.text('Available cars'), findsNothing);
-    expect(find.text('See all'), findsNothing);
-    expect(find.text('No cars nearby right now'), findsNothing);
-    expect(find.text('Toyota Corolla'), findsNothing);
-    expect(find.text('Nissan Note'), findsNothing);
-    expect(find.text('Mercedes-Benz C-Class'), findsNothing);
-    expect(find.text('Hyundai H100'), findsNothing);
-    // No seeded plate leaks through the ride picker either, and no car icon
-    // is drawn anywhere on the home screen.
-    expect(find.text('GR-1234-21'), findsNothing);
-    expect(find.text('GR-4417-22'), findsNothing);
-    expect(find.text('GR-9021-23'), findsNothing);
-    expect(find.text('GR-7788-24'), findsNothing);
-    // Scoped to the Standard chip rather than banned outright.
-    //
-    // `CategoryChips` gives `RideCategory.standard` a `directions_car`,
-    // `premium` an `auto_awesome` and `van` an `airport_shuttle`
-    // (`category_chips.dart:27-31`), so one car icon is a correct control and
-    // the old blanket `findsNothing` forbade it. What this test is really
-    // guarding is that the hard-coded vehicle list cannot come back, and that
-    // is what the names and the plates above pin. So: the car on screen is the
-    // Standard chip's, and there is no second one -- which is what a restored
-    // list of four fake cars would add.
-    expect(
-      find.descendant(
-        of: find.byKey(const Key('chip-standard')),
-        matching: find.byIcon(Icons.directions_car),
-      ),
-      findsOneWidget,
-      reason: 'the one car icon is the Standard category chip',
-    );
-    expect(
-      find.byIcon(Icons.directions_car),
-      findsOneWidget,
-      reason: 'a second car icon would be a row in the removed vehicle list',
-    );
-    expect(find.byType(ListTile), findsNothing);
+    for (final ghost in [
+      'Toyota Corolla',
+      'Nissan Note',
+      'Mercedes-Benz C-Class',
+      'Hyundai H100',
+      'GR-1234-21',
+      'GR-4417-22',
+      'GR-9021-23',
+      'GR-7788-24',
+      'Available cars',
+      'No cars nearby right now',
+    ]) {
+      expect(find.text(ghost), findsNothing, reason: ghost);
+    }
+  });
+
+  testWidgets('recent rides are listed, and only real ones', (tester) async {
+    useDesignSurface(tester);
+    await tester.pumpWidget(wrap(recentRides: [
+      _booked('t1', 'Osu, Accra', 'Airport Residential, Accra', 12.5),
+      _booked('t2', 'Labone', 'Spintex', 8.0),
+    ]));
+    expect(find.byKey(const Key('recentRides')), findsOneWidget);
+    expect(find.textContaining('Osu, Accra'), findsOneWidget);
+    expect(find.textContaining('GHS 12.50'), findsOneWidget);
+  });
+
+  testWidgets('no recent-rides heading for a rider who has never booked', (
+    tester,
+  ) async {
+    useDesignSurface(tester);
+    await tester.pumpWidget(wrap(recentRides: const []));
+    // A heading over an empty list is a promise the app has not kept.
+    expect(find.byKey(const Key('recentRides')), findsNothing);
+    expect(find.text('Recent rides'), findsNothing);
+  });
+
+  testWidgets('recent rides are capped at five', (tester) async {
+    useDesignSurface(tester);
+    await tester.pumpWidget(wrap(recentRides: [
+      for (var i = 1; i <= 9; i++) _booked('t$i', 'From $i', 'To $i', 5.0),
+    ]));
+    expect(find.byKey(const Key('recentRides')), findsOneWidget);
+    for (var i = 1; i <= 5; i++) {
+      expect(find.byKey(Key('recentRide-t$i')), findsOneWidget, reason: 't$i');
+    }
+    expect(find.byKey(const Key('recentRide-t6')), findsNothing);
   });
 
   testWidgets('the notification bell is live and reports its tap', (tester) async {
@@ -286,44 +304,12 @@ void main() {
   testWidgets('tapping the search field reports the tap', (tester) async {
     useDesignSurface(tester);
     var taps = 0;
-    await tester.pumpWidget(wrap(onSearchTap: (_) => taps++));
+    await tester.pumpWidget(wrap(onSearchTap: (_, {bool promo = false}) => taps++));
     await tester.tap(find.byKey(const Key('searchField')));
     expect(taps, 1);
   });
 
-  testWidgets('a selected Premium chip is legible against its own colour',
-      (tester) async {
-    useDesignSurface(tester);
-    await tester.pumpWidget(wrap());
-    await tester.tap(find.byKey(const Key('chip-premium')));
-    await tester.pump();
-    final chip = find.byKey(const Key('chip-premium'));
-    final icon = tester.widget<Icon>(
-      find.descendant(of: chip, matching: find.byIcon(Icons.auto_awesome)),
-    );
-    final label = tester.widget<Text>(
-      find.descendant(of: chip, matching: find.text('Premium')),
-    );
-    expect(icon.color, MngColors.page);
-    expect(label.style!.color, MngColors.page);
-  });
 
-  testWidgets('a selected Van chip is legible against its own colour',
-      (tester) async {
-    useDesignSurface(tester);
-    await tester.pumpWidget(wrap());
-    await tester.tap(find.byKey(const Key('chip-van')));
-    await tester.pump();
-    final chip = find.byKey(const Key('chip-van'));
-    final icon = tester.widget<Icon>(
-      find.descendant(of: chip, matching: find.byIcon(Icons.airport_shuttle)),
-    );
-    final label = tester.widget<Text>(
-      find.descendant(of: chip, matching: find.text('Van')),
-    );
-    expect(icon.color, MngColors.onPrimary);
-    expect(label.style!.color, MngColors.onPrimary);
-  });
 
   testWidgets('the home screen has no overflow at 200% text scale',
       (tester) async {

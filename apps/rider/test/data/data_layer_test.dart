@@ -3,6 +3,7 @@ import 'package:meetngo_rider/src/data/function_failure.dart';
 import 'package:meetngo_rider/src/data/supabase_auth_repository.dart';
 import 'package:meetngo_rider/src/data/supabase_trip_repository.dart';
 import 'package:meetngo_rider/src/data/trip_repository.dart';
+import 'package:mng_core/mng_core.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 /// The two Supabase repositories are imported here for one reason, and the test
@@ -114,6 +115,122 @@ void main() {
 
     test('activeTrip is null, and asks nobody', () async {
       expect(await repo.activeTrip(), isNull);
+    });
+  });
+
+  group('reading the assigned driver', () {
+    // The parser is the load-bearing part. `driver_locations.point` is a
+    // PostGIS `geography`, so PostgREST hands it back as GeoJSON in GeoJSON's
+    // order, `[lng, lat]` -- which is the *reverse* of the `{lat, lng}` shape
+    // the rest of the app uses for trip stops. Reading it the other way round
+    // puts the driver in the sea off the coast of Ghana, and it looks like a
+    // plausible position rather than an error.
+
+    final repo = SupabaseTripRepository(
+      SupabaseClient('http://localhost:54321', 'anon-key'),
+    );
+
+    GeoPoint? parse(Object? value) =>
+        SupabaseTripRepository.geographyToPointForTest(value);
+
+    test('a geography comes back as the point it names', () {
+      final point = parse({
+        'type': 'Point',
+        'coordinates': [-0.187, 5.6037],
+      });
+      // Note the order: GeoJSON puts longitude first. Swapped, Accra's
+      // longitude would be read as a latitude of -0.187 and its latitude as a
+      // longitude of 5.6, which is the middle of the Atlantic.
+      expect(point?.lng, -0.187);
+      expect(point?.lat, 5.6037);
+    });
+
+    test('the {lat, lng} parser cannot read a geography column', () {
+      // The two shapes coexist in this app: trip stops are normalised into
+      // `{lat, lng}` by `request-ride`, while anything read straight out of a
+      // geography column is GeoJSON's `[lng, lat]`. `GeoPoint.fromJson` casts
+      // `json['lat'] as num`, so handing it GeoJSON does not return null -- it
+      // throws a TypeError, which no `on PostgrestException` would catch. That
+      // is precisely why a separate parser exists rather than a call to it.
+      expect(
+        () => GeoPoint.fromJson({
+          'type': 'Point',
+          'coordinates': [-0.187, 5.6037],
+        }),
+        throwsA(isA<TypeError>()),
+        reason: 'if this stops throwing, fromJson can read a geography column '
+            'and the two shapes are no longer distinguishable at a call site',
+      );
+      expect(
+        parse({'type': 'Point', 'coordinates': [-0.187, 5.6037]}),
+        isNotNull,
+      );
+    });
+
+    test('a null column is null, not a crash', () {
+      expect(parse(null), isNull);
+    });
+
+    test('a point of the wrong type is refused', () {
+      expect(parse({'type': 'LineString', 'coordinates': [0, 0]}), isNull);
+    });
+
+    test('coordinates that are not numbers are refused', () {
+      expect(
+        parse({'type': 'Point', 'coordinates': ['nope', 5.6]}),
+        isNull,
+      );
+    });
+
+    test('too few coordinates are refused', () {
+      expect(parse({'type': 'Point', 'coordinates': [5.6]}), isNull);
+    });
+
+    test('an impossible latitude is refused rather than drawn', () {
+      // A latitude of 187 is not a place, and a car drawn there is a car a
+      // rider cannot tell from a bug.
+      expect(
+        parse({'type': 'Point', 'coordinates': [5.6, 187]}),
+        isNull,
+      );
+    });
+
+    test('an impossible longitude is refused', () {
+      expect(
+        parse({'type': 'Point', 'coordinates': [900, 5.6]}),
+        isNull,
+      );
+    });
+
+    test('a row with no driver never asks the server', () async {
+      // Spending a round trip to be told the same thing by the policy.
+      expect(await repo.assignedDriverLocation(null), isNull);
+      expect(await repo.assignedDriverLocation(''), isNull);
+    });
+  });
+
+  group('the heading the driver is published with', () {
+    test('a bearing of 0 is a real reading, not "none"', () {
+      // North is a heading. Treating 0 as absent would leave a car heading
+      // exactly north unrotated by the map for a reason nobody can see.
+      expect(normaliseBearing(0), 0);
+    });
+
+    test('a bearing of -1 is the plugin saying it has no compass', () {
+      // Taken at face value, -1 rotates a car to 359 degrees -- a car
+      // apparently reversing while it drives forwards.
+      expect(normaliseBearing(-1), isNull);
+    });
+
+    test('a NaN bearing is refused', () {
+      expect(normaliseBearing(double.nan), isNull);
+    });
+
+    test('a heading survives the round trip to the map', () {
+      // 450 degrees is a legal compass reading of 90, and MapLibre's
+      // `icon-rotate` would take it as written.
+      final fix = VehicleFix(const GeoPoint(5.6037, -0.1870), normaliseBearing(450));
+      expect(fix.headingDegrees, 90);
     });
   });
 }

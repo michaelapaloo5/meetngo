@@ -12,6 +12,26 @@
          and a driver who does that still gets matched, just less precisely. -->
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>
+    <!-- The selfie step of KYC, via `image_picker`'s camera source. Without
+         this the camera does not open: `ImagePicker.pickImage` returns null on
+         a denied or undeclared permission, so the step could never be
+         completed and no driver could ever finish onboarding.
+
+         `required="false"` because a phone without a camera is a legitimate
+         device: the app installs and runs everywhere else, and only the selfie
+         button is unavailable on it. Declaring it required would exclude those
+         devices from the store listing and from the pilot's phone.
+
+         Note for whoever edits this file: XML forbids a double hyphen inside a
+         comment, and a manifest containing one fails Gradle's manifest merger
+         with "Error parsing" and no line number. Write an em dash in full. -->
+    <uses-permission android:name="android.permission.CAMERA"/>
+    <uses-feature android:name="android.hardware.camera" android:required="false"/>
+    <!-- A heading comes off the same fix the position does, so there is no
+         extra sensor permission to declare here: ACCESS_FINE_LOCATION is what
+         carries a compass bearing. A device with no magnetometer reports no
+         heading at all, which the app draws as no car rather than as one
+         pointing the wrong way. -->
     <application
         android:label="meetngo_driver"
         android:name="${applicationName}"

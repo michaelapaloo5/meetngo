@@ -98,6 +98,9 @@ class FakeTripRepository implements TripRepository {
   /// The row `activeTrip` answers with. Null by default.
   Trip? active;
 
+  /// Where the assigned driver is, for the tests that draw the car.
+  VehicleFix? driverPoint;
+
   @override
   Future<Trip?> activeTrip() async {
     final thrown = refreshFailure;
@@ -117,6 +120,8 @@ class FakeTripRepository implements TripRepository {
   }) async =>
       tripInState(TripState.requested);
 
+  @override
+  Future<VehicleFix?> assignedDriverLocation(String? driverId) async => driverPoint;
   @override
   Future<void> cancelTrip(String tripId) async {}
 

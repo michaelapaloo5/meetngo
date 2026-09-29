@@ -66,6 +66,15 @@ class LocationController extends ChangeNotifier {
   GeoPoint? _point;
   GeoPoint? get point => _point;
 
+  /// Which way the driver's device is facing, degrees clockwise from north.
+  ///
+  /// Null whenever the device has no compass to offer: a phone flat on a seat,
+  /// a tablet indoors, a simulator. Never defaulted to a number, because the
+  /// rider's map rotates their car by it and a fabricated heading puts a car
+  /// confidently driving the wrong way down the road.
+  double? _heading;
+  double? get heading => _heading;
+
   LocationPermission _permission = LocationPermission.unableToDetermine;
   LocationPermission get permission => _permission;
 
@@ -133,9 +142,14 @@ class LocationController extends ChangeNotifier {
       }
 
       var permission = await _reader.checkPermission();
-      // Only prompt when the answer was "not asked yet". A driver who already
-      // said no is not asked again on every refresh; they are told where to
-      // undo it, which is the only thing that can actually change the answer.
+      // Re-asked only when the platform still allows it. `denied` means the
+      // prompt was refused but the OS will still show it, and
+      // `deniedForever` means it will not -- and the OS itself throttles a
+      // dialog dismissed a moment ago, so re-asking on a pull-to-refresh
+      // cannot make a driver be nagged in a way the platform has not already
+      // decided. What the app guarantees is the sentence: a driver who has said
+      // no is told where to undo it, which is the only thing that can change
+      // the answer.
       if (permission == LocationPermission.denied) {
         permission = await _reader.requestPermission();
       }
@@ -161,6 +175,17 @@ class LocationController extends ChangeNotifier {
         return;
       }
       _point = point;
+      // Read separately from the point and never allowed to fail the read: a
+      // device with no compass is a perfectly ordinary device, and turning a
+      // location refresh into an error because the heading was unavailable
+      // would stop a driver from going online at all. A *thrown* read is
+      // caught here for the same reason -- a plugin that cannot answer the
+      // compass question is not a reason to withhold the position.
+      try {
+        _heading = normaliseBearing(await _reader.currentHeading());
+      } on Object {
+        _heading = null;
+      }
       _set(DriverLocationStatus.ready);
       await _publish(point);
     } on Object catch (e) {
@@ -187,14 +212,21 @@ class LocationController extends ChangeNotifier {
     }
   }
 
-  /// Publishes the fix so the matcher can see this driver at all.
+  /// Publishes the fix so the matcher can see this driver at all, with the
+  /// heading the device reported alongside it.
+  ///
+  /// The heading is what the rider's map rotates their car by, so publishing it
+  /// is what makes their car visibly turn at each junction rather than sit
+  /// pointing north. It goes out even when the position has not changed: a
+  /// driver stopped at a set of lights turns on the spot, and a publish
+  /// gated on a position change would keep the old heading until they moved.
   ///
   /// A failure here does not un-ready the position. The driver genuinely is
   /// where the map says, and the write is the only thing lost; reporting a
   /// location failure would send them to fix something that is not broken.
   Future<void> _publish(GeoPoint point) async {
     try {
-      await _drivers.updateLocation(point);
+      await _drivers.updateLocation(point, bearing: _heading);
     } on DriverAuthFailure catch (e) {
       _failure = 'Your location could not be published, so ride requests cannot '
           'reach you: ${e.message}';

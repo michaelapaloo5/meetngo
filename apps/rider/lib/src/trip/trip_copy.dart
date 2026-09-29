@@ -77,13 +77,13 @@ String formatGhs(double amount) => 'GHS ${amount.toStringAsFixed(2)}';
 /// One end of a route, for a list row.
 ///
 /// `TripStop` has no value equality, so nothing compares stops; this reads the
-/// two fields a rider recognises and falls back to a coordinate when the
-/// address is blank, because a row reading "Pickup" tells a rider nothing
-/// about which of their own rides they tapped.
+/// field a rider recognises. The fallback used to be the coordinate, and it was
+/// wrong twice over: a row of `5.6037, -0.1870` tells a rider nothing they can
+/// act on, and it is the one entry in a list of real places that does not look
+/// like a place. A stop with no address is a stop this build could not name, so
+/// it says the part it does know and stops there.
 String stopLabel(TripStop stop) {
   final address = stop.address.trim();
   if (address.isNotEmpty) return address;
-  final lat = stop.point.lat.toStringAsFixed(4);
-  final lng = stop.point.lng.toStringAsFixed(4);
-  return '$lat, $lng';
+  return stop.label.trim().isEmpty ? 'Pickup or drop-off' : stop.label.trim();
 }

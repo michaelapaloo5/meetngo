@@ -1,0 +1,199 @@
+{
+  "version": 8,
+  "name": "Meet 'N Go Premium",
+  "metadata": {
+    "mng:palette": {
+      "land": "#F4F4F6",
+      "water": "#C4D3DF",
+      "park": "#E2F0D9",
+      "road": "#FFFFFF",
+      "roadCasing": "#E0E0E5",
+      "building": "#E5E7EB",
+      "car": "#F5B301"
+    },
+    "mng:declutter": "No poi, place, transportation_name, water_name, boundary, aerodrome_label, housenumber or mountain_peak layer is present. Text is not drawn anywhere in this style."
+  },
+  "glyphs": "https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf",
+  "sources": {
+    "openfreemap": {
+      "type": "vector",
+      "url": "https://tiles.openfreemap.org/planet",
+      "attribution": "© OpenStreetMap contributors"
+    },
+    "vehicles": {
+      "type": "geojson",
+      "data": {
+        "type": "FeatureCollection",
+        "features": []
+      }
+    }
+  },
+  "layers": [
+    {
+      "id": "background",
+      "type": "background",
+      "paint": {
+        "background-color": "#F4F4F6"
+      }
+    },
+    {
+      "id": "park-fill",
+      "type": "fill",
+      "source": "openfreemap",
+      "source-layer": "landcover",
+      "filter": ["in", ["get", "class"], ["literal", ["wood", "grass", "scrub", "farmland"]]],
+      "paint": {
+        "fill-color": "#E2F0D9",
+        "fill-opacity": 0.9
+      }
+    },
+    {
+      "id": "park-fill-polygons",
+      "type": "fill",
+      "source": "openfreemap",
+      "source-layer": "landuse",
+      "filter": [
+        "in",
+        ["get", "class"],
+        ["literal", ["park", "garden", "recreation_ground", "cemetery", "golf_course", "pitch", "playground", "grass", "village_green", "allotments"]]
+      ],
+      "paint": {
+        "fill-color": "#E2F0D9",
+        "fill-opacity": 0.9
+      }
+    },
+    {
+      "id": "water-fill",
+      "type": "fill",
+      "source": "openfreemap",
+      "source-layer": "water",
+      "filter": ["!=", ["get", "brunnel"], "tunnel"],
+      "paint": {
+        "fill-color": "#C4D3DF",
+        "fill-opacity": 1
+      }
+    },
+    {
+      "id": "waterway-line",
+      "type": "line",
+      "source": "openfreemap",
+      "source-layer": "waterway",
+      "filter": ["!=", ["get", "brunnel"], "tunnel"],
+      "layout": {
+        "line-cap": "round",
+        "line-join": "round"
+      },
+      "paint": {
+        "line-color": "#C4D3DF",
+        "line-opacity": 1,
+        "line-width": ["interpolate", ["exponential", 1.4], ["zoom"], 10, 0.6, 14, 3, 18, 8]
+      }
+    },
+    {
+      "id": "building-3d",
+      "type": "fill-extrusion",
+      "source": "openfreemap",
+      "source-layer": "building",
+      "minzoom": 13,
+      "filter": ["!=", ["get", "hide_3d"], true],
+      "paint": {
+        "fill-extrusion-color": "#E5E7EB",
+        "fill-extrusion-height": [
+          "interpolate",
+          ["linear"],
+          ["zoom"],
+          13,
+          ["*", ["get", "render_height"], 0.85],
+          15,
+          ["*", ["get", "render_height"], 1.0],
+          18,
+          ["*", ["get", "render_height"], 1.15]
+        ],
+        "fill-extrusion-base": ["get", "render_min_height"],
+        "fill-extrusion-opacity": 0.45,
+        "fill-extrusion-vertical-gradient": true
+      }
+    },
+    {
+      "id": "road-casing",
+      "type": "line",
+      "source": "openfreemap",
+      "source-layer": "transportation",
+      "filter": ["all", ["in", ["get", "class"], ["literal", ["motorway", "trunk", "primary"]]], ["!=", ["get", "brunnel"], "tunnel"]],
+      "layout": {
+        "line-cap": "butt",
+        "line-join": "round",
+        "visibility": "visible"
+      },
+      "paint": {
+        "line-color": "#E0E0E5",
+        "line-opacity": 1,
+        "line-width": ["interpolate", ["exponential", 1.6], ["zoom"], 6, 0.6, 10, 1.4, 14, 3.4, 18, 11]
+      }
+    },
+    {
+      "id": "road-major",
+      "type": "line",
+      "source": "openfreemap",
+      "source-layer": "transportation",
+      "filter": ["all", ["in", ["get", "class"], ["literal", ["motorway", "trunk", "primary"]]], ["!=", ["get", "brunnel"], "tunnel"]],
+      "layout": {
+        "line-cap": "round",
+        "line-join": "round"
+      },
+      "paint": {
+        "line-color": "#FFFFFF",
+        "line-opacity": 1,
+        "line-width": ["interpolate", ["exponential", 1.6], ["zoom"], 6, 0.4, 10, 1.0, 14, 2.4, 18, 8.5]
+      }
+    },
+    {
+      "id": "road-secondary",
+      "type": "line",
+      "source": "openfreemap",
+      "source-layer": "transportation",
+      "filter": ["all", ["in", ["get", "class"], ["literal", ["secondary", "tertiary"]]], ["!=", ["get", "brunnel"], "tunnel"]],
+      "layout": {
+        "line-cap": "round",
+        "line-join": "round"
+      },
+      "paint": {
+        "line-color": "#FFFFFF",
+        "line-opacity": 1,
+        "line-width": ["interpolate", ["exponential", 1.6], ["zoom"], 8, 0.3, 12, 0.9, 16, 3.2, 18, 6]
+      }
+    },
+    {
+      "id": "road-minor",
+      "type": "line",
+      "source": "openfreemap",
+      "source-layer": "transportation",
+      "filter": ["all", ["in", ["get", "class"], ["literal", ["minor", "service", "track", "path"]]], ["!=", ["get", "brunnel"], "tunnel"]],
+      "minzoom": 12,
+      "layout": {
+        "line-cap": "round",
+        "line-join": "round"
+      },
+      "paint": {
+        "line-color": "#FFFFFF",
+        "line-opacity": 0.85,
+        "line-width": ["interpolate", ["exponential", 1.6], ["zoom"], 12, 0.25, 15, 1.0, 18, 3.2]
+      }
+    },
+    {
+      "id": "moving-car-icon",
+      "type": "symbol",
+      "source": "vehicles",
+      "layout": {
+        "icon-image": "car-topdown",
+        "icon-size": 0.6,
+        "icon-rotate": ["coalesce", ["get", "bearing"], 0],
+        "icon-rotation-alignment": "map",
+        "icon-pitch-alignment": "map",
+        "icon-allow-overlap": true,
+        "icon-ignore-placement": true,
+        "icon-anchor": "center"
+      }
+    }
+  ]
+}

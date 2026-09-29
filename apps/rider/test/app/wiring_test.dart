@@ -23,6 +23,8 @@ class _StubTrips implements TripRepository {
   Future<Trip?> activeTrip() async => null;
 
   @override
+  Future<VehicleFix?> assignedDriverLocation(String? driverId) async => null;
+  @override
   Future<void> cancelTrip(String tripId) async {}
 
   @override
