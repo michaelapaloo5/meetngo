@@ -216,9 +216,74 @@ Flutter was **not** installed and had to be installed to run any of this.
   the `clients.ts` files, which the port-level tests cannot otherwise reach, so
   that one file is the only reason the flag is needed.
 
+### Building the APKs on Windows
+
+Both release APKs now build here, so Codemagic is no longer the only route. This
+is what it took, and two of the four items are **hard requirements** that will
+bite any machine or cloud runner that does not have them:
+
+```powershell
+$env:JAVA_HOME='C:\dev\jdk21\jdk-21.0.12.1+1'   # JDK 21, see below
+cd apps\rider
+flutter build apk --release --target-platform android-arm64,android-x64 `
+  -Dorg.gradle.jvmargs=-Xmx2560m -XX:MaxMetaspaceSize=768m
+```
+
+- **JDK 21 is required, not preferred.** `maplibre_gl` 0.27.1 sets
+  `sourceCompatibility`/`targetCompatibility` to `VERSION_21` in its own
+  `android/build.gradle`. On JDK 17 the build dies in
+  `:maplibre_gl:compileReleaseJavaWithJavac` with
+  `error: invalid source release: 21`. Installed at `C:\dev\jdk21`.
+- **`--target-platform android-arm64,android-x64` is required.** 32-bit arm is
+  broken: `gen_snapshot` for `armeabi-v7a` exits 255 after about ten minutes,
+  reporting `Unable to read file: app.dill` for a file that exists and is
+  readable. It is the only invocation that passes the legacy
+  `--no-sim-use-hardfp --no-use-integer-division` flags; arm64 and x86_64 both
+  produce `app.so` cleanly. **A default `flutter build apk` still tries
+  `armeabi-v7a` and fails**, so this flag is needed in `codemagic.yaml` and
+  `.github/workflows/ci.yml` too, not just locally. The APKs therefore carry no
+  32-bit Dart code and will not install on a 32-bit-only device; the S10 Lite is
+  arm64.
+- **`org.gradle.jvmargs` needs overriding on a small machine.** The repo's
+  `android/gradle.properties` asks for `-Xmx8G`, more than this box's entire
+  7.7 GB. The Dart AOT compiler runs as a separate process and was starved
+  into dying silently. Passed on the command line rather than edited into the
+  repo, so cloud runners are unaffected — but it is a latent footgun.
+- Android SDK 36 at `C:\dev\android-sdk`: platform-tools, `platforms;android-36`,
+  `build-tools;36.0.0`, and `ndk;28.2.13676358`. The NDK version is
+  `maplibre_gl`'s own pin, not a free choice. `flutter doctor` reports the
+  Android toolchain clean.
+- The Gradle wrapper's own downloader **stalls at 0 bytes** on the
+  `services.gradle.org` redirect. Every other large download worked, so it is
+  the wrapper rather than the network: fetch `gradle-<v>-all.zip` with
+  `Invoke-WebRequest` into `~/.gradle/wrapper/dists/<name>/<hash>/` by hand and
+  the build proceeds.
+
+Verified in the built artifacts rather than from the build's exit code:
+`libmaplibre.so` present for all three ABIs, and
+`android.permission.INTERNET` present in the release manifest.
+
 ## 6. Traps that will bite you
 
 These cost real time in this build. All verified, not assumed.
+
+- **The 3D map is not covered by the test suite, and cannot be.** MapLibre draws
+  through a native platform view; under `flutter test` there is no platform view
+  to create, so the widget cannot be built at all. The old `flutter_map` version
+  *could* be rendered in a test with only its tile source swapped, so every test
+  that rendered a screen also exercised that screen's map. `disabledForTest` now
+  substitutes an empty box. This is a real loss of coverage, taken knowingly to
+  get 3D without a billing account, and the map is verified by compiling and by
+  looking at it on a phone instead.
+- **Only the `liberty` OpenFreeMap style has 3D buildings.** Measured against
+  all three the service publishes: `liberty` has one `fill-extrusion` layer over
+  the `building` source-layer, `positron` and `bright` have **zero**. Swapping
+  to either for aesthetics silently flattens the map back to 2D.
+- **A style filter is a raw list, not a typed object.** `maplibre_gl`'s `filter`
+  parameter is `dynamic` and `LineLayerProperties.lineCap`/`lineJoin` are
+  `dynamic` too, so they take the style's own string values (`'round'`) and a
+  bare expression list (`['==', ['get', 'role'], 'pickup']`). There is no
+  `PropertyValueExpression` class and no `LineCap` enum.
 
 - **`postgrest 2.9.1`:** `PostgrestBuilder implements Future<T>` and has **no
   `data` and no `error`**. Awaiting yields the **rows**; failure **throws**.
