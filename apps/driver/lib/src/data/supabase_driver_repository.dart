@@ -16,6 +16,42 @@ import 'function_failure.dart';
 /// `20260929000002_driver_documents.sql` is where it has to match.
 const String kDocumentBucket = 'kyc-documents';
 
+/// What a driver is told when an upload fails.
+///
+/// A top-level function rather than a line inside the `catch`, because the
+/// choice of message is the whole of this decision and a choice buried in a
+/// catch block is a choice nothing can test. `uploadDocument` needs a real
+/// Supabase client to reach; this does not.
+///
+/// Two different failures arrive here and they are not the same news:
+///
+///   * A 404 is a missing bucket -- the migration has not been applied, or was
+///     applied to a different project. Retrying will never fix it and neither
+///     will checking their signal, so the message must not send a driver off to
+///     inspect their Wi-Fi when the fault is entirely on the server. Found on a
+///     device: the checklist said "check your connection" and the connection was
+///     fine.
+///   * Everything else is treated as transient. That is the safe assumption for
+///     a 5xx or a dropped connection and the only one worth making, because the
+///     cost of telling a driver to retry a server that was briefly down is one
+///     wasted tap, and the cost of the reverse assumption -- telling them it is
+///     not their problem when it is -- is a driver who gives up on a photo they
+///     could have saved.
+DriverAuthFailure documentUploadFailure(StorageException e) {
+  final missingBucket = e.statusCode == '404' ||
+      (e.error?.toLowerCase().contains('not found') ?? false) ||
+      e.message.toLowerCase().contains('not found');
+  if (missingBucket) {
+    return const DriverAuthFailure(
+      'Photos cannot be saved right now. This is nothing you need to fix — '
+      'please try again later or contact support.',
+    );
+  }
+  return const DriverAuthFailure(
+    'That photo could not be saved. Check your connection and try again.',
+  );
+}
+
 /// One model per row out of a realtime event.
 ///
 /// A `SupabaseStreamBuilder` yields a whole row list per event
@@ -175,13 +211,8 @@ class SupabaseDriverRepository implements DriverRepository {
           upsert: false,
         ),
       );
-    } on StorageException {
-      // The most likely cause by far is that the bucket migration has not been
-      // applied, and "bucket not found" is not something a driver can act on.
-      // The driver's own words for it are better than the server's.
-      throw const DriverAuthFailure(
-        'That photo could not be saved. Check your connection and try again.',
-      );
+    } on StorageException catch (e) {
+      throw documentUploadFailure(e);
     } on PostgrestException catch (e) {
       throw DriverAuthFailure(e.message);
     }
