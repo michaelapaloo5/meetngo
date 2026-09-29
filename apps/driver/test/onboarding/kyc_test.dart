@@ -3,6 +3,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:mng_core/mng_core.dart';
 import 'package:meetngo_driver/src/data/driver_repository.dart';
 import 'package:meetngo_driver/src/onboarding/document_scanner_stub.dart';
+import 'package:meetngo_driver/src/onboarding/driver_document.dart';
 import 'package:meetngo_driver/src/onboarding/kyc_controller.dart';
 import 'package:meetngo_driver/src/onboarding/kyc_screen.dart';
 import 'package:provider/provider.dart';
@@ -117,24 +118,68 @@ void main() {
     });
   });
 
+  /// A document as the checklist records one.
+  DriverDocument sentDoc(DriverDocumentKind kind) => DriverDocument(
+        kind: kind,
+        path: 'u1/${kind.wire}/1.jpg',
+        createdAt: DateTime.utc(2026, 9, 28),
+      );
+
   group('KycController', () {
-    test('starts on the identity step', () {
+    test('starts on the document list', () {
+      // A driver who has just signed up is shown what to fetch before being
+      // asked to type anything. Finding out at the sixth step that a road
+      // worthy certificate is needed is how a verification quietly stalls.
       final c = KycController(StubDriverRepository());
-      expect(c.step, KycStep.identity);
+      expect(c.step, KycStep.documents);
+    });
+
+    test('cannot leave the document list with nothing sent', () {
+      final c = KycController(StubDriverRepository());
+      expect(c.canAdvance, isFalse);
+    });
+
+    test('cannot leave the document list with only some sent', () {
+      final c = KycController(StubDriverRepository())
+        ..recordDocument(sentDoc(DriverDocumentKind.roadWorthy));
+      expect(c.canAdvance, isFalse,
+          reason: 'five documents are still missing');
+    });
+
+    test('leaves the document list once all six are in', () {
+      final c = KycController(StubDriverRepository());
+      for (final kind in driverDocumentKinds) {
+        c.recordDocument(sentDoc(kind));
+      }
+      expect(c.canAdvance, isTrue);
+    });
+
+    test('re-recording a document replaces it rather than adding one', () {
+      // A driver photographing a blurry licence twice must end with one row, or
+      // the count says seven and the checklist can never complete.
+      final c = KycController(StubDriverRepository());
+      c.recordDocument(sentDoc(DriverDocumentKind.driversLicence));
+      c.recordDocument(sentDoc(DriverDocumentKind.driversLicence));
+      expect(c.documents, hasLength(1));
     });
 
     test('cannot advance past identity with no name', () {
-      final c = KycController(StubDriverRepository());
+      final c = KycController(StubDriverRepository())
+        ..step = KycStep.identity;
       expect(c.canAdvance, isFalse);
     });
 
     test('a one-letter name is not a name', () {
-      final c = KycController(StubDriverRepository())..fullName = 'J';
+      final c = KycController(StubDriverRepository())
+        ..step = KycStep.identity
+        ..fullName = 'J';
       expect(c.canAdvance, isFalse);
     });
 
     test('advances once the identity name is set', () {
-      final c = KycController(StubDriverRepository())..fullName = 'Jane Cooper';
+      final c = KycController(StubDriverRepository())
+        ..step = KycStep.identity
+        ..fullName = 'Jane Cooper';
       expect(c.canAdvance, isTrue);
     });
 
@@ -143,7 +188,7 @@ void main() {
     // button below it -- which reads `canAdvance` -- stayed disabled for the
     // whole time the driver was typing.
     test('typing a name wakes the Continue button', () {
-      final c = KycController(StubDriverRepository());
+      final c = KycController(StubDriverRepository())..step = KycStep.identity;
       var notifications = 0;
       c.addListener(() => notifications++);
       c.fullName = 'Jane Cooper';
@@ -319,7 +364,12 @@ void main() {
       c.back();
       expect(c.step, KycStep.identity);
       c.back();
-      expect(c.step, KycStep.identity);
+      expect(c.step, KycStep.documents,
+          reason: 'the document list is the first step now, so walking back '
+              'from the name lands on the list and not off the end');
+      c.back();
+      expect(c.step, KycStep.documents,
+          reason: 'there is nothing before the first step');
     });
 
     test('a scan fills the three card fields', () {
@@ -354,7 +404,11 @@ void main() {
   group('KycScreen', () {
     testWidgets('the identity step shows the name field', (tester) async {
       useDesignSurface(tester);
-      final c = KycController(StubDriverRepository());
+      // Pinned to the identity step rather than left wherever a fresh
+      // controller is, because the first step is now the document list and a
+      // test named for the name field that was passing on the previous step by
+      // accident is worse than no test.
+      final c = KycController(StubDriverRepository())..step = KycStep.identity;
       await tester.pumpWidget(wrap(c));
       expect(find.byKey(const Key('fullNameField')), findsOneWidget);
       expect(find.byKey(const Key('kycNextButton')), findsOneWidget);
@@ -362,7 +416,7 @@ void main() {
 
     testWidgets('typing a name enables Continue', (tester) async {
       useDesignSurface(tester);
-      final c = KycController(StubDriverRepository());
+      final c = KycController(StubDriverRepository())..step = KycStep.identity;
       await tester.pumpWidget(wrap(c));
 
       await tester.enterText(find.byKey(const Key('fullNameField')), 'Jane Cooper');

@@ -1,5 +1,6 @@
 import 'package:mng_core/mng_core.dart';
 
+import '../onboarding/driver_document.dart';
 import 'driver_trip.dart';
 
 /// A failure the driver can be shown.
@@ -52,6 +53,32 @@ abstract class DriverRepository {
 
   /// Records the selfie the driver captured on this device.
   Future<void> submitSelfie(String path);
+
+  /// Uploads one document and records it, replacing any previous one of the same
+  /// kind.
+  ///
+  /// The upload and the row are one call on purpose. Written separately, a
+  /// driver whose row succeeded and whose upload failed would be shown a
+  /// document the server cannot produce, and one whose upload succeeded and
+  /// whose row failed would leave an object no policy lets anybody delete.
+  ///
+  /// Throws [DriverAuthFailure] rather than returning a bool: "your licence was
+  /// not saved" is a sentence a driver has to be told, and a checklist that
+  /// quietly leaves a row unticked reads as "we have it".
+  Future<void> uploadDocument({
+    required DriverDocumentKind kind,
+    required String filePath,
+  });
+
+  /// What this driver has already sent, so the checklist can survive a restart.
+  ///
+  /// Empty rather than throwing when the read fails, for the same reason the
+  /// home screen's history read is: a driver opening the app on a bad
+  /// connection should see a checklist to fill in, not an error page. The
+  /// difference is that an empty list here makes the driver re-send a document
+  /// they already sent, which is a worse outcome than an error would be -- so
+  /// this one is a failure the caller is told about.
+  Future<List<DriverDocument>> myDocuments();
 
   /// Creates or replaces the one vehicle this driver owns.
   Future<void> saveVehicle({

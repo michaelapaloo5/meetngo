@@ -1,4 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:meetngo_driver/src/onboarding/driver_document.dart';
 import 'package:meetngo_driver/src/onboarding/kyc_controller.dart';
 import 'package:mng_core/mng_core.dart';
 
@@ -49,7 +50,7 @@ void main() {
       KycController(repo);
 
   group('a driver who has not started', () {
-    test('lands on the identity step', () async {
+    test('lands on the document list, which is where a new driver starts', () async {
       final repo = StubDriverRepository(
         profile: profileWith(KycStatus.notStarted),
       );
@@ -57,7 +58,7 @@ void main() {
 
       await c.resumeFromServer();
 
-      expect(c.step, KycStep.identity);
+      expect(c.step, KycStep.documents);
     });
 
     test('is not asked for a vehicle it cannot have', () async {
@@ -170,7 +171,10 @@ void main() {
 
       await c.resumeFromServer();
 
-      expect(c.step, KycStep.identity);
+      // Wherever it lands, it lands on the first step and says nothing: a
+      // driver who cannot be read is in the position they would have been in
+      // anyway, and a red message on an onboarding form is worse than the form.
+      expect(c.step, KycStep.documents);
       expect(c.error, isNull);
     });
 
@@ -192,7 +196,72 @@ void main() {
 
       await c.resumeFromServer();
 
-      expect(c.step, KycStep.identity);
+      // `null` profile means "carry on from wherever this controller already is",
+      // which for a fresh launch is the document list. The point is that a
+      // missing profile is not a crash and not a redirect somewhere odd.
+      expect(c.step, KycStep.documents);
+    });
+  });
+
+  group('the documents survive a restart too', () {
+    test('a driver who has sent some sends only the rest', () async {
+      // The same bug as the step, one level down: a licence photographed
+      // yesterday and a force-close overnight should not mean photographing it
+      // again today.
+      final repo = StubDriverRepository(
+        profile: profileWith(KycStatus.notStarted),
+      )..documents = [
+        DriverDocument(
+          kind: DriverDocumentKind.ghanaCardPhoto,
+          path: 'u1/ghanaCardPhoto/1.jpg',
+          createdAt: DateTime.utc(2026, 9, 28),
+        ),
+        DriverDocument(
+          kind: DriverDocumentKind.insuranceSticker,
+          path: 'u1/insuranceSticker/1.jpg',
+          createdAt: DateTime.utc(2026, 9, 28),
+        ),
+      ];
+      final c = fresh(repo);
+
+      await c.resumeFromServer();
+
+      expect(c.documents, hasLength(2));
+      expect(c.canAdvance, isFalse,
+          reason: 'four documents are still missing');
+    });
+
+    test('a driver who has sent all six can move on', () async {
+      final repo = StubDriverRepository(
+        profile: profileWith(KycStatus.notStarted),
+      )..documents = [
+        for (final kind in driverDocumentKinds)
+          DriverDocument(
+          kind: kind,
+          path: 'u1/${kind.wire}/1.jpg',
+          createdAt: DateTime.utc(2026, 9, 28),
+        ),
+      ];
+      final c = fresh(repo);
+
+      await c.resumeFromServer();
+
+      expect(c.canAdvance, isTrue);
+    });
+
+    test('a document read that fails does not lose the step', () async {
+      // The profile said one thing and the documents said another, and a driver
+      // has to land on the step the profile told us about.
+      final repo = StubDriverRepository(
+        profile: profileWith(KycStatus.pending, vehicleId: 'v1'),
+        vehicle: aVehicle(),
+      )..myDocumentsFails = true;
+      final c = fresh(repo);
+
+      await c.resumeFromServer();
+
+      expect(c.step, KycStep.review);
+      expect(c.documents, isEmpty);
     });
   });
 

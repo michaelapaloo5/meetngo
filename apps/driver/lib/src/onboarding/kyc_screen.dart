@@ -5,6 +5,8 @@ import 'package:flutter_screenutil/flutter_screenutil.dart';
 import 'package:mng_core/mng_core.dart';
 import 'package:provider/provider.dart';
 
+import 'document_capture.dart';
+import 'document_checklist.dart';
 import 'document_scanner_stub.dart';
 import 'kyc_controller.dart';
 import 'vehicle_form.dart';
@@ -24,6 +26,7 @@ class KycScreen extends StatefulWidget {
     required this.controller,
     this.cardScanner,
     this.selfieScanner,
+    this.documentCapture,
     this.onContinue,
   });
 
@@ -39,6 +42,13 @@ class KycScreen extends StatefulWidget {
   final DocumentScanner? cardScanner;
 
   final DocumentScanner? selfieScanner;
+
+  /// How a document photo is taken.
+  ///
+  /// Injected rather than reached for, so the checklist can be driven through
+  /// captured, cancelled and refused in a test with no camera present. Null is
+  /// the real camera.
+  final DocumentCapture? documentCapture;
 
   /// Called from the `approved` step's button. The shell wires this to a
   /// profile re-read, so the app only leaves the KYC flow when the server
@@ -69,8 +79,13 @@ class _KycScreenState extends State<KycScreen> {
 
   DocumentScanner? get selfieScanner => widget.selfieScanner;
 
+  /// How a document photo is taken. Overridable so a test can drive a capture
+  /// without a camera; null means the real one.
+  DocumentCapture? get documentCapture => widget.documentCapture;
+
   VoidCallback? get onContinue => widget.onContinue;
   static const _headlines = <KycStep, String>{
+    KycStep.documents: 'What we need from you',
     KycStep.identity: 'Tell us about yourself',
     KycStep.ghanaCard: 'Scan your Ghana Card',
     KycStep.selfie: 'Take a selfie',
@@ -145,11 +160,25 @@ class _KycScreenState extends State<KycScreen> {
           onPressed: c.canAdvance && !c.busy ? c.advance : null,
           child: const Text('Continue'),
         );
+      // The document list brings its own "Continue", and putting a second one
+      // under it would be two controls for one decision. The empty state of
+      // that button is the progress: "4 still needed".
+      case KycStep.documents:
+        return const SizedBox.shrink();
     }
   }
 
   Widget _body(BuildContext context, KycController c) {
     switch (c.step) {
+      case KycStep.documents:
+        return DocumentChecklist(
+          documents: c.documents,
+          capture: documentCapture ?? CameraDocumentCapture(),
+          onUpload: (kind, path) async {
+            await controller.uploadDocument(kind: kind, filePath: path);
+          },
+          onContinue: c.canAdvance && !c.busy ? c.advance : null,
+        );
       case KycStep.identity:
         return Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,

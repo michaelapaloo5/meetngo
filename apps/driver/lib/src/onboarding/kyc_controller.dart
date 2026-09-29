@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 import 'package:mng_core/mng_core.dart';
 
 import '../data/driver_repository.dart';
+import 'driver_document.dart';
 
 /// The steps of driver onboarding, in the order the driver walks them.
 ///
@@ -12,7 +13,31 @@ import '../data/driver_repository.dart';
 /// through the service role. A controller that reported "You are verified" from
 /// its own `submit()` would be telling a driver they can drive when the row
 /// says they cannot.
-enum KycStep { identity, ghanaCard, selfie, vehicle, review, underReview, approved }
+/// The steps of driver onboarding, in the order the driver walks them.
+///
+/// `documents` is first on purpose. A driver who has just signed up has not
+/// thought about a road worthy certificate, and a flow that asks for it at the
+/// sixth step means they have already driven to the depot for it -- or, more
+/// likely for a pilot, that they never find out and the verification quietly
+/// stalls with nobody able to say why. The list first is a packing list.
+///
+/// `underReview` is not in the plan's list and is the reason [submit] cannot
+/// land on `approved` by itself. `submitGhanaCard` writes `kyc_status =
+/// 'pending'` -- `guard_profile_update` raises on any other value, so `pending`
+/// is the only one a client can write -- and an admin moves it to `approved`
+/// through the service role. A controller that reported "You are verified" from
+/// its own `submit()` would be telling a driver they can drive when the row
+/// says they cannot.
+enum KycStep {
+  documents,
+  identity,
+  ghanaCard,
+  selfie,
+  vehicle,
+  review,
+  underReview,
+  approved,
+}
 
 class CardParseResult {
   const CardParseResult({this.cardNumber, this.expiry, this.name, this.error});
@@ -103,13 +128,60 @@ class KycController extends ChangeNotifier {
 
   final DriverRepository _repo;
 
-  KycStep _step = KycStep.identity;
+  KycStep _step = KycStep.documents;
   KycStep get step => _step;
   set step(KycStep value) {
     if (_step == value) return;
     _step = value;
     notifyListeners();
   }
+
+  /// The documents the server already holds, so the checklist survives a restart.
+  List<DriverDocument> _documents = const [];
+  List<DriverDocument> get documents => _documents;
+
+  /// Records a document the driver has just sent.
+  void recordDocument(DriverDocument document) {
+    _documents = [
+      ..._documents.where((d) => d.kind != document.kind),
+      document,
+    ];
+    notifyListeners();
+  }
+
+  /// Uploads one document and records it, so the checklist ticks.
+  ///
+  /// On the controller rather than in the screen, because the row has to be
+  /// marked sent from the same object the checklist reads and because the
+  /// upload is a thing that can fail, and a failure has to leave the row
+  /// unticked. The screen owns only the error message.
+  Future<void> uploadDocument({
+    required DriverDocumentKind kind,
+    required String filePath,
+  }) async {
+    await _repo.uploadDocument(kind: kind, filePath: filePath);
+    recordDocument(
+      DriverDocument(
+        kind: kind,
+        // The controller does not know the storage path the repository chose,
+        // and does not need to: nothing in the app reads it back, and inventing
+        // one here would put a path in the app that the server never issued.
+        path: filePath,
+        createdAt: DateTime.now(),
+      ),
+    );
+  }
+
+  /// The liveness check, and whether it has been done.
+  ///
+  /// Not local, and not fake. See `_LivenessRow` in `document_checklist.dart`:
+  /// liveness and a face match against the licence are bought from a provider,
+  /// and this app does not claim otherwise. [livenessProvider] is the name, or
+  /// null when none is configured, and null is what the checklist reads as "not
+  /// connected yet" rather than as a pass.
+  static const String? livenessProvider = null;
+
+  bool get livenessComplete => livenessProvider != null;
 
   String? error;
   bool busy = false;
@@ -185,6 +257,11 @@ class KycController extends ChangeNotifier {
   }
 
   bool get canAdvance => switch (step) {
+        // All six documents, because this is the step that exists to collect
+        // them. `continue` is disabled until every one is in, which is what
+        // stops a driver reaching the review step with three of six and
+        // finding out at the far end.
+        KycStep.documents => _documents.length >= driverDocumentKinds.length,
         KycStep.identity => (_fullName ?? '').trim().length >= 3,
         KycStep.ghanaCard =>
           (_cardNumber ?? '').isNotEmpty && (_cardExpiry ?? '').isNotEmpty,
@@ -234,6 +311,9 @@ class KycController extends ChangeNotifier {
     notifyListeners();
     try {
       switch (step) {
+        case KycStep.documents:
+          step = KycStep.identity;
+          break;
         case KycStep.identity:
           step = KycStep.ghanaCard;
           break;
@@ -392,6 +472,16 @@ class KycController extends ChangeNotifier {
       _vehicleSeats = vehicle.seats;
       _vehicleCategory = vehicle.rideCategory;
     }
+    // The documents, so a driver who force-closed the app does not have to
+    // re-photograph a licence they already sent. Read separately from the
+    // profile because they are in a different table and can fail
+    // independently -- and a failure here must not lose the step the profile
+    // just told us about.
+    try {
+      _documents = await _repo.myDocuments();
+    } on Object {
+      _documents = const [];
+    }
     _step = restored;
     notifyListeners();
   }
@@ -411,9 +501,11 @@ class KycController extends ChangeNotifier {
       // A rejection sends the driver back to the beginning on purpose: the
       // card is the document that was refused, so re-entering the name and
       // scanning a new card is the honest retry rather than carrying on past
-      // a refused identity check.
+      // a refused identity check. The document list is not reset with it --
+      // their licence and road worthy certificate are still valid, and asking
+      // for those again is the kind of thing that makes a driver give up.
       KycStatus.rejected => KycStep.identity,
-      KycStatus.notStarted => KycStep.identity,
+      KycStatus.notStarted => KycStep.documents,
       KycStatus.approved => KycStep.approved,
     };
   }

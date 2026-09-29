@@ -5,6 +5,7 @@ import 'package:meetngo_driver/src/data/driver_repository.dart';
 import 'package:meetngo_driver/src/data/driver_trip.dart';
 import 'package:meetngo_driver/src/earnings/earnings_repository.dart';
 import 'package:meetngo_driver/src/location/location_reader.dart';
+import 'package:meetngo_driver/src/onboarding/driver_document.dart';
 
 /// A driver repository that records what it was asked and answers from memory.
 ///
@@ -103,6 +104,40 @@ class StubDriverRepository implements DriverRepository {
 
   @override
   Future<void> submitSelfie(String path) async => selfiePath = path;
+
+  /// The documents the fake repository is answering with, and what it was sent.
+  List<DriverDocument> documents = const [];
+  final List<DriverDocumentKind> uploaded = [];
+
+  /// Set to refuse an upload, for the "that photo could not be saved" path.
+  bool uploadFails = false;
+
+  /// Set to refuse the document read, for the "the step survives a failed
+  /// document read" path.
+  bool myDocumentsFails = false;
+
+  @override
+  Future<void> uploadDocument({
+    required DriverDocumentKind kind,
+    required String filePath,
+  }) async {
+    if (uploadFails) {
+      throw const DriverAuthFailure('That photo could not be saved');
+    }
+    uploaded.add(kind);
+    documents = [
+      ...documents.where((d) => d.kind != kind),
+      DriverDocument(kind: kind, path: filePath, createdAt: DateTime(2026, 9, 29)),
+    ];
+  }
+
+  @override
+  Future<List<DriverDocument>> myDocuments() async {
+    if (myDocumentsFails) {
+      throw const DriverAuthFailure('document read failed');
+    }
+    return documents;
+  }
 
   @override
   Future<void> saveVehicle({

@@ -381,8 +381,11 @@ void main() {
     ) async {
       useDesignSurface(tester);
       await pumpShell(tester, StubDriverRepository());
-      // No profile at all: nothing to resume from, so the first step.
-      expect(find.byKey(const Key('fullNameField')), findsOneWidget);
+      // No profile at all: nothing to resume from, so the first step, which is
+      // the list of documents to send. The name field is two steps further on
+      // and asserting on it here would be asserting on a step this driver has
+      // not reached.
+      expect(find.byKey(const Key('documentChecklist')), findsOneWidget);
       expect(find.byKey(const Key('onlineToggle')), findsNothing);
     });
 
@@ -513,8 +516,13 @@ void main() {
       final repo = StubDriverRepository(profile: driverProfile())..meFails = true;
       await pumpShell(tester, repo);
 
+      // The gate is "no offer queue", which is the thing that would let an
+      // unapproved driver be matched. That it is the document list rather than
+      // the name field is a detail of where a driver with no readable profile
+      // starts, and it is asserted on the document list so both tests are
+      // saying the same thing about the same gate.
       expect(find.byKey(const Key('onlineToggle')), findsNothing);
-      expect(find.byKey(const Key('fullNameField')), findsOneWidget);
+      expect(find.byKey(const Key('documentChecklist')), findsOneWidget);
     });
   });
 

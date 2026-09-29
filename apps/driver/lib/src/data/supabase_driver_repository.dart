@@ -4,9 +4,17 @@ import 'package:geolocator/geolocator.dart';
 import 'package:mng_core/mng_core.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import '../onboarding/driver_document.dart';
 import 'driver_repository.dart';
 import 'driver_trip.dart';
 import 'function_failure.dart';
+
+/// The private bucket driver documents live in.
+///
+/// Named here rather than inline at the two call sites because a bucket name
+/// that appears twice is a bucket name that can be changed in one place, and
+/// `20260929000002_driver_documents.sql` is where it has to match.
+const String kDocumentBucket = 'kyc-documents';
 
 /// One model per row out of a realtime event.
 ///
@@ -133,6 +141,86 @@ class SupabaseDriverRepository implements DriverRepository {
     if (!file.existsSync()) {
       throw const DriverAuthFailure('The selfie could not be read back');
     }
+  }
+
+  @override
+  Future<void> uploadDocument({
+    required DriverDocumentKind kind,
+    required String filePath,
+  }) async {
+    final uid = _uid;
+    final file = File(filePath);
+    // Checked before the upload rather than after. A missing file would fail the
+    // upload with a message about buckets and policies, which tells a driver
+    // nothing; this tells them the photo was not there, which is the truth and
+    // is actionable.
+    if (!file.existsSync()) {
+      throw DriverAuthFailure('That ${kind.label.toLowerCase()} could not be read');
+    }
+
+    // The object path carries the driver's own uid as its first folder, because
+    // the storage policy that stops one driver writing into another's folder is
+    // `storage.foldername(name))[1] = auth.uid()::text` and that is the only
+    // place the object name exists. The timestamp means a re-upload never
+    // overwrites in place: Storage has no UPDATE, so an in-place write would
+    // either fail or leave the old object reachable.
+    final objectPath = '$uid/${kind.wire}/${DateTime.now().toUtc().millisecondsSinceEpoch}.jpg';
+
+    try {
+      await _client.storage.from(kDocumentBucket).upload(
+        objectPath,
+        file,
+        fileOptions: const FileOptions(
+          contentType: 'image/jpeg',
+          upsert: false,
+        ),
+      );
+    } on StorageException {
+      // The most likely cause by far is that the bucket migration has not been
+      // applied, and "bucket not found" is not something a driver can act on.
+      // The driver's own words for it are better than the server's.
+      throw const DriverAuthFailure(
+        'That photo could not be saved. Check your connection and try again.',
+      );
+    } on PostgrestException catch (e) {
+      throw DriverAuthFailure(e.message);
+    }
+
+    try {
+      // Upsert, not insert. `unique (driver_id, kind)` means a second photo of
+      // the same kind would fail as a duplicate, and a driver replacing a blurry
+      // licence has to be able to -- so the row is replaced, and the old object
+      // is left alone rather than deleted, because a delete that failed after a
+      // successful upload would lose the new photo over tidying the old one.
+      await _client.from('driver_documents').upsert({
+        'driver_id': uid,
+        'kind': kind.wire,
+        'path': objectPath,
+        'created_at': DateTime.now().toIso8601String(),
+      });
+    } on PostgrestException catch (e) {
+      throw DriverAuthFailure(e.message);
+    }
+  }
+
+  @override
+  Future<List<DriverDocument>> myDocuments() async {
+    final List<dynamic> rows;
+    try {
+      rows = await _client
+          .from('driver_documents')
+          .select('kind, path, created_at')
+          .eq('driver_id', _uid);
+    } on PostgrestException catch (e) {
+      throw DriverAuthFailure(e.message);
+    }
+    // A row whose `kind` is not one of the six is dropped rather than guessed
+    // at. A migration that removes a document must not make the checklist throw.
+    return rows
+        .cast<Map<String, dynamic>>()
+        .map(DriverDocument.fromJson)
+        .nonNulls
+        .toList();
   }
 
   @override
