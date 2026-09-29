@@ -99,6 +99,49 @@ class _DriverMapPanelState extends State<DriverMapPanel> {
     super.dispose();
   }
 
+  /// Whether the sources exist yet, so an update cannot race the first load.
+  bool _sourcesAdded = false;
+
+  /// Pushes new geometry into sources that already exist.
+  ///
+  /// The overlays are created once, in `onStyleLoadedCallback`, because a
+  /// MapLibre source cannot be added before the style has loaded. But the
+  /// driver's own position changes every few seconds -- `LocationController`
+  /// streams it and this panel is rebuilt with a new `driverPoint` each time --
+  /// so creating them once and never touching them again would leave the blue
+  /// dot frozen wherever the driver was when the map loaded. A live map whose
+  /// dot does not move is worse than no map at all.
+  ///
+  /// `setGeoJsonSource` is the update counterpart of `addGeoJsonSource`: the
+  /// same id with new data and no layer churn. Guarded on [_sourcesAdded],
+  /// because calling it before the style has loaded targets a source that does
+  /// not exist yet.
+  @override
+  void didUpdateWidget(DriverMapPanel oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!_sourcesAdded) return;
+    if (oldWidget.driverPoint == widget.driverPoint &&
+        oldWidget.pickup == widget.pickup &&
+        oldWidget.dropoff == widget.dropoff &&
+        oldWidget.drawRoute == widget.drawRoute) {
+      return;
+    }
+    _pushOverlays();
+  }
+
+  Future<void> _pushOverlays() async {
+    final controller = _controller;
+    if (controller == null) return;
+    final route = _route;
+    if (route != null && route.length >= 2) {
+      await controller.setGeoJsonSource(
+        'route-src-$_uid',
+        _lineGeoJson(route),
+      );
+    }
+    await controller.setGeoJsonSource('pins-src-$_uid', _pinsGeoJson(_points));
+  }
+
   /// Every point worth placing the camera over, in order.
   List<GeoPoint> get _points => [
         if (widget.driverPoint != null) widget.driverPoint!,
@@ -220,6 +263,10 @@ class _DriverMapPanelState extends State<DriverMapPanel> {
         filter: _roleIs(role),
       );
     }
+
+    // Set last, once every source is in place, so `didUpdateWidget` can never
+    // call `setGeoJsonSource` against a source that has not been added yet.
+    _sourcesAdded = true;
   }
 
   /// The colour each role is drawn in, matching what the 2D map used.

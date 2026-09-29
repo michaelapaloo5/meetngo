@@ -135,6 +135,49 @@ class _RideMapState extends State<RideMap> {
     super.dispose();
   }
 
+  /// Whether the sources exist yet, so an update cannot race the first load.
+  bool _sourcesAdded = false;
+
+  /// Pushes new geometry into sources that already exist.
+  ///
+  /// Same reason as the driver panel: sources can only be added once the style
+  /// has loaded, so the overlays are created in `onStyleLoadedCallback` and
+  /// refreshed from here. The rider's own dot is the one that moves -- the
+  /// shell re-reads the position and rebuilds this widget with a new `here`.
+  @override
+  void didUpdateWidget(RideMap oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!_sourcesAdded) return;
+    if (oldWidget.pickup == widget.pickup &&
+        oldWidget.dropoff == widget.dropoff &&
+        oldWidget.location?.point == widget.location?.point) {
+      return;
+    }
+    _pushOverlays();
+  }
+
+  Future<void> _pushOverlays() async {
+    final controller = _controller;
+    if (controller == null) return;
+    final from = widget.pickup != null && RideMap.isPlottable(widget.pickup!)
+        ? widget.pickup
+        : null;
+    if (from == null) return;
+    final to = widget.dropoff != null && RideMap.isPlottable(widget.dropoff!)
+        ? widget.dropoff
+        : null;
+    if (to != null) {
+      await controller.setGeoJsonSource(
+        'route-src-$_uid',
+        _lineGeoJson([from, to]),
+      );
+    }
+    await controller.setGeoJsonSource(
+      'pins-src-$_uid',
+      _pinsGeoJson(<GeoPoint>[from, ?to, ?widget.location?.point]),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final from =
@@ -303,6 +346,10 @@ class _RideMapState extends State<RideMap> {
       ),
       filter: _roleIs('device'),
     );
+
+    // Set last, once every source is in place, so `didUpdateWidget` can never
+    // call `setGeoJsonSource` against a source that has not been added yet.
+    _sourcesAdded = true;
   }
 
   /// A route as one GeoJSON `LineString`.
