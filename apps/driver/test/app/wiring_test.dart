@@ -360,9 +360,20 @@ void main() {
         StubDriverRepository(profile: driverProfile(kyc: KycStatus.pending)),
       );
 
-      expect(find.byKey(const Key('fullNameField')), findsOneWidget);
-      expect(find.byKey(const Key('onlineToggle')), findsNothing);
+      // The contract is "in the KYC flow, not the offer queue", and which step
+      // of the flow is a different question. This test used to pin the identity
+      // step, which is what the app did before it learned to resume -- and a
+      // `pending` driver has their Ghana Card in, so resuming at the identity
+      // step would be asking a driver to re-enter a name the server already
+      // holds. The gate is asserted; the step is not.
       expect(find.text('Earnings'), findsNothing);
+      expect(find.byKey(const Key('onlineToggle')), findsNothing);
+      // Something from the flow itself. Any of the step headlines will do.
+      final inFlow = find.textContaining('Verification').evaluate().isNotEmpty ||
+          find.text('Take a selfie').evaluate().isNotEmpty ||
+          find.text('Add your vehicle').evaluate().isNotEmpty ||
+          find.text('Review your details').evaluate().isNotEmpty;
+      expect(inFlow, isTrue, reason: 'not in KYC and not in the queue');
     });
 
     testWidgets('a driver with no profile is walked through KYC', (
@@ -370,6 +381,7 @@ void main() {
     ) async {
       useDesignSurface(tester);
       await pumpShell(tester, StubDriverRepository());
+      // No profile at all: nothing to resume from, so the first step.
       expect(find.byKey(const Key('fullNameField')), findsOneWidget);
       expect(find.byKey(const Key('onlineToggle')), findsNothing);
     });

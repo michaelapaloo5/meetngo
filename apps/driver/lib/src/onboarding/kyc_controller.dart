@@ -326,4 +326,95 @@ class KycController extends ChangeNotifier {
       notifyListeners();
     }
   }
+
+  /// Works out how far through onboarding this driver already is, and resumes
+  /// there instead of starting again.
+  ///
+  /// Found on a device: force-closing the driver app mid-onboarding sent the
+  /// driver back to the identity step, and every step they had already
+  /// completed looked as though it had not been. [advance] writes each step to
+  /// the server on the way past, precisely so that a driver who loses their
+  /// connection does not have to re-enter what has already been accepted -- and
+  /// then the app threw that away on the next launch and started from
+  /// `KycStep.identity` regardless of what the server said.
+  ///
+  /// So the step is *reconstructed* from the server rather than remembered
+  /// locally. That is the only copy that matters: a local cache of it would be
+  /// a second answer to a question the database already answers, and the two
+  /// would disagree the moment a driver onboarded on one device and reopened on
+  /// another. No new storage, and nothing to migrate.
+  ///
+  /// What this cannot bring back is the text typed into the *current* step and
+  /// not yet submitted, and a selfie taken but not yet sent. Both are written
+  /// only when that step is left, so until then they exist in one place: the
+  /// screen in front of the driver. That is a real cost and it is the price of
+  /// not keeping a second copy of the driver's identity documents on the phone.
+  ///
+  /// A read that fails changes nothing: the driver lands on the first step,
+  /// which is where they would have been anyway, rather than on an error.
+  Future<void> resumeFromServer() async {
+    final DriverProfile? profile;
+    try {
+      profile = await _repo.me();
+    } on Object {
+      // A driver who cannot be read is on the first step, which is where they
+      // would have been anyway. Nothing to say about it.
+      return;
+    }
+
+    // The vehicle read is separate on purpose. A driver whose profile is
+    // readable has at least sent their card, so the flow can continue past the
+    // card step even when the vehicle read is refused -- and refusing to
+    // continue would send a driver who had already sent a card, a selfie and a
+    // vehicle back to typing their name. A failed vehicle read is read as "no
+    // vehicle", which lands on a step that can be completed rather than on one
+    // that assumes something exists.
+    Vehicle? vehicle;
+    if (profile?.vehicleId != null) {
+      try {
+        vehicle = await _repo.myVehicle();
+      } on Object {
+        vehicle = null;
+      }
+    }
+
+    final restored = _stepFor(profile, vehicle);
+    if (restored == null) return;
+    // Full name and selfie come back with the profile, so the review step can
+    // show what was actually submitted rather than empty fields.
+    final name = profile?.fullName.trim() ?? '';
+    if (name.isNotEmpty) _fullName = name;
+    if (profile?.photoUrl.isNotEmpty ?? false) _selfiePath = profile!.photoUrl;
+    if (vehicle != null) {
+      _vehicleMake = vehicle.make;
+      _vehicleModel = vehicle.model;
+      _vehiclePlate = vehicle.plate;
+      _vehicleSeats = vehicle.seats;
+      _vehicleCategory = vehicle.rideCategory;
+    }
+    _step = restored;
+    notifyListeners();
+  }
+
+  /// Which step the server's state corresponds to, or null to leave it alone.
+  ///
+  /// Null means "carry on from wherever this controller already is", which is
+  /// what a driver who is midway through and simply re-opened the app needs.
+  static KycStep? _stepFor(DriverProfile? profile, Vehicle? vehicle) {
+    if (profile == null) return null;
+    if (profile.isApproved) return KycStep.approved;
+
+    return switch (profile.kyc) {
+      // The Ghana Card went in, which is the step that writes `pending`. What
+      // came after it is decided by what else exists.
+      KycStatus.pending => vehicle != null ? KycStep.review : KycStep.selfie,
+      // A rejection sends the driver back to the beginning on purpose: the
+      // card is the document that was refused, so re-entering the name and
+      // scanning a new card is the honest retry rather than carrying on past
+      // a refused identity check.
+      KycStatus.rejected => KycStep.identity,
+      KycStatus.notStarted => KycStep.identity,
+      KycStatus.approved => KycStep.approved,
+    };
+  }
 }

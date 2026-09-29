@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
 import 'package:mng_core/mng_core.dart';
@@ -7,7 +9,16 @@ import 'document_scanner_stub.dart';
 import 'kyc_controller.dart';
 import 'vehicle_form.dart';
 
-class KycScreen extends StatelessWidget {
+/// The driver's verification flow.
+///
+/// Reads the server's answer on open, so a driver who force-closed the app
+/// half-way through comes back to the step they had reached rather than to the
+/// first one. This was found on a device: every completed step looked as though
+/// it had never happened, because the step was only ever held in memory.
+///
+/// The read is fired once, from [initState], and its answer is applied through
+/// the controller, so the screen's own rebuilds cannot start a second read.
+class KycScreen extends StatefulWidget {
   const KycScreen({
     super.key,
     required this.controller,
@@ -34,6 +45,31 @@ class KycScreen extends StatelessWidget {
   /// agrees the driver is approved.
   final VoidCallback? onContinue;
 
+  @override
+  State<KycScreen> createState() => _KycScreenState();
+}
+
+class _KycScreenState extends State<KycScreen> {
+  @override
+  void initState() {
+    super.initState();
+    // Unawaited on purpose, and only once. The controller swallows a failed
+    // read and leaves the driver on the first step, which is where they would
+    // have been anyway, so there is nothing here worth blocking the first
+    // frame on and nothing to report if it fails.
+    //
+    // Not fired from `build`: this screen is watched by the shell, so a
+    // `build`-time read would ask the server on every rebuild of the whole app.
+    unawaited(widget.controller.resumeFromServer());
+  }
+
+  KycController get controller => widget.controller;
+
+  DocumentScanner? get cardScanner => widget.cardScanner;
+
+  DocumentScanner? get selfieScanner => widget.selfieScanner;
+
+  VoidCallback? get onContinue => widget.onContinue;
   static const _headlines = <KycStep, String>{
     KycStep.identity: 'Tell us about yourself',
     KycStep.ghanaCard: 'Scan your Ghana Card',
