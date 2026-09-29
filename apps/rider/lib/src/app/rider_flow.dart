@@ -1,7 +1,7 @@
 import 'package:flutter/foundation.dart';
 import 'package:mng_core/mng_core.dart';
 
-import '../booking/route_entry_sheet.dart';
+import '../booking/route_confirm_page.dart';
 import '../data/trip_functions.dart';
 import '../data/trip_repository.dart';
 import '../trip/trip_controller.dart';

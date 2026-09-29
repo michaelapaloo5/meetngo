@@ -52,35 +52,46 @@ const kDefaultDropoff =
 TripStop pickupFromFix(GeoPoint point, {String? label}) =>
     TripStop('Pickup', point, label ?? 'Your location');
 
-Future<void> showRouteEntrySheet(
+/// Pushes the confirm page and hands back the draft the rider confirmed.
+///
+/// A pushed page, not `showModalBottomSheet`. The sheet it replaces covered the
+/// map it was describing and asked for four decisions at once; see
+/// `DestinationSearchPage` for why the flow is two screens.
+///
+/// Returns null when the rider backs out, which is the ordinary case and not a
+/// failure. The caller re-reads the rider's trip history either way, because a
+/// ride they started from the home screen may finish while this page is open.
+Future<RouteDraft?> pushRouteConfirmPage(
   BuildContext context, {
   required FareCalculator calc,
   required void Function(RouteDraft draft) onSubmit,
   required PlaceService places,
   TripStop? pickup,
+  TripStop? dropoff,
   bool promoApplied = false,
 }) {
-  return showModalBottomSheet<void>(
-    context: context,
-    isScrollControlled: true,
-    useSafeArea: true,
-    builder: (_) => RouteEntrySheet(
-      calc: calc,
-      onSubmit: onSubmit,
-      places: places,
-      pickup: pickup,
-      promoApplied: promoApplied,
+  return Navigator.of(context).push<RouteDraft>(
+    MaterialPageRoute<RouteDraft>(
+      builder: (_) => RouteConfirmPage(
+        calc: calc,
+        onSubmit: onSubmit,
+        places: places,
+        pickup: pickup,
+        dropoff: dropoff,
+        promoApplied: promoApplied,
+      ),
     ),
   );
 }
 
-class RouteEntrySheet extends StatefulWidget {
-  const RouteEntrySheet({
+class RouteConfirmPage extends StatefulWidget {
+  const RouteConfirmPage({
     super.key,
     required this.calc,
     required this.onSubmit,
     required this.places,
     this.pickup,
+    this.dropoff,
     this.promoApplied = false,
   });
 
@@ -97,6 +108,15 @@ class RouteEntrySheet extends StatefulWidget {
   /// pickup, and a sheet that will not open is a worse answer than a default.
   final TripStop? pickup;
 
+  /// Where the rider already decided to go, when they came from the search
+  /// page.
+  ///
+  /// Null means they have not chosen one, and the page says so rather than
+  /// quietly offering the demo destination. [kDefaultDropoff] is what a rider
+  /// with no choice would get, and a ride to the same airport every single time
+  /// is the outcome that default was dangerous for.
+  final TripStop? dropoff;
+
   /// The rider arrived here by pressing the offer on the home screen.
   ///
   /// Carries through to the fare as a 30% discount, so pressing "30% off" is
@@ -105,12 +125,16 @@ class RouteEntrySheet extends StatefulWidget {
   final bool promoApplied;
 
   @override
-  State<RouteEntrySheet> createState() => _RouteEntrySheetState();
+  State<RouteConfirmPage> createState() => _RouteConfirmPageState();
 }
 
-class _RouteEntrySheetState extends State<RouteEntrySheet> {
+class _RouteConfirmPageState extends State<RouteConfirmPage> {
   late TripStop _pickup = widget.pickup ?? kDefaultPickup;
-  late TripStop _dropoff = kDefaultDropoff;
+  // No demo destination as a starting value. The search page is where a
+  // destination is chosen, and arriving here without one means the rider
+  // backed out of that and came in another way -- so the field is empty and
+  // says what it wants, rather than quietly booking everyone to the airport.
+  late TripStop? _dropoff = widget.dropoff;
   RideCategory _category = RideCategory.standard;
 
   /// Whether the map picker is open over the fields.
@@ -150,9 +174,28 @@ class _RouteEntrySheetState extends State<RouteEntrySheet> {
   /// the list feels attached to the keyboard.
   static const Duration _searchDelay = Duration(milliseconds: 450);
 
-  double get _distanceKm => _pickup.point.distanceKmTo(_dropoff.point);
+  /// The distance, or null while there is no destination to measure from.
+  ///
+  /// Null rather than zero, and computed lazily at the point of use. A `0.0`
+  /// here would produce a fare of a few pesewas for a ride with no destination,
+  /// which is a price and a wrong one; and a non-null `get` that force-unwraps
+  /// would crash the build of a screen whose entire job is to let a rider fix a
+  /// missing destination.
+  double? get _distanceKm =>
+      _dropoff == null ? null : _pickup.point.distanceKmTo(_dropoff!.point);
 
-  int get _driveMinutes => (_distanceKm / 24 * 60).round();
+  int? get _driveMinutes {
+    final km = _distanceKm;
+    return km == null ? null : (km / 24 * 60).round();
+  }
+
+  /// Whether there is enough on screen to book a ride.
+  ///
+  /// Without a destination there is no distance, no fare, and nothing to send.
+  /// The button is disabled and says why, rather than being absent: a rider who
+  /// cannot see why the button is dead will tap it repeatedly, and one who is
+  /// not told a destination is missing will think the app lost what they typed.
+  bool get _canSubmit => _dropoff != null;
 
   /// Whether the drafted pair is a real ride rather than the two demo stops.
   ///
@@ -162,7 +205,7 @@ class _RouteEntrySheetState extends State<RouteEntrySheet> {
   /// them discover it on a receipt.
   bool get _isUneditedDefault =>
       _pickup.address == kDefaultPickup.address &&
-      _dropoff.address == kDefaultDropoff.address;
+      _dropoff?.address == kDefaultDropoff.address;
 
   @override
   void dispose() {
@@ -220,6 +263,25 @@ class _RouteEntrySheetState extends State<RouteEntrySheet> {
     });
   }
 
+  /// Submits the draft and closes the page.
+  ///
+  /// The draft goes back through `Navigator.pop` as well as through
+  /// [RouteConfirmPage.onSubmit], so a caller that pushed the page gets its
+  /// draft without having to thread a callback through two navigators. The
+  /// callback is the primary route; the pop is what lets the search page's own
+  /// caller chain the flow.
+  void _submit() {
+    final destination = _dropoff;
+    if (destination == null) return;
+    final draft = RouteDraft(
+      pickup: _pickup,
+      dropoff: destination,
+      category: _category,
+    );
+    Navigator.of(context).pop<RouteDraft>(draft);
+    widget.onSubmit(draft);
+  }
+
   /// Replaces one of the two stops.
   void _setStop(_Field field, TripStop stop) {
     setState(() {
@@ -275,9 +337,13 @@ class _RouteEntrySheetState extends State<RouteEntrySheet> {
 
   @override
   Widget build(BuildContext context) {
-    final full = widget.calc.quote(
+    // Quoted only once both ends exist. See [_distanceKm]: a quote against a
+    // missing destination is a number, and a wrong number on a price is worse
+    // than no number at all.
+    final km = _distanceKm;
+    final full = km == null ? null : widget.calc.quote(
       category: _category,
-      distanceKm: _distanceKm,
+      distanceKm: km,
     );
     // 30% off when the rider arrived by pressing the offer, applied here on
     // the one screen that shows a fare rather than on the home screen where
@@ -287,18 +353,28 @@ class _RouteEntrySheetState extends State<RouteEntrySheet> {
     // `discountGhs`, because a flat amount off depends on the distance while
     // the offer is 30% off whatever the ride costs. A rider in Kumasi and one
     // in Osu should both be paying 70%.
-    final fare = widget.promoApplied ? full.fareGhs * 0.7 : full.fareGhs;
-    // `useSafeArea` on the modal covers the top only: it wraps the sheet in
-    // `SafeArea(bottom: false)`, so the bottom inset is this widget's job.
-    return SafeArea(
-      top: false,
-      child: Padding(
-        padding: EdgeInsets.fromLTRB(20.w, 8.h, 20.w, 20.h),
-        child: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
+    final fare = (full == null || !widget.promoApplied)
+        ? full?.fareGhs
+        : full.fareGhs * 0.7;
+    return Scaffold(
+      // Opaque white. A scrim over the map is what this page used to be, and a
+      // rider confirming where they are going should be able to see it.
+      backgroundColor: MngColors.page,
+      appBar: AppBar(
+        backgroundColor: MngColors.page,
+        surfaceTintColor: Colors.transparent,
+        elevation: 0,
+        leading: const BackButton(),
+        title: const Text('Confirm your ride'),
+      ),
+      body: SafeArea(
+        child: Padding(
+          padding: EdgeInsets.fromLTRB(20.w, 8.h, 20.w, 20.h),
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
               _StopField(
                 fieldName: 'pickup',
                 fieldKey: const Key('pickupField'),
@@ -343,42 +419,76 @@ class _RouteEntrySheetState extends State<RouteEntrySheet> {
                 SizedBox(height: 10.h),
                 _MapPicker(
                   field: _mapField,
-                  stop: _mapField == _Field.pickup ? _pickup : _dropoff,
+                  // The point the map is centred on. Null when the field being
+                  // set is the destination and there is not one yet, in which
+                  // case the map falls back to the pickup rather than inventing
+                  // a centre: the rider can pan anywhere, and a map centred on
+                  // a fabricated point is a map centred on a lie.
+                  point: _mapField == _Field.pickup
+                      ? _pickup.point
+                      : _dropoff?.point ?? _pickup.point,
                   onPick: _pickOnMap,
                   onClose: () => setState(() => _pickingOnMap = false),
                 ),
               ],
               SizedBox(height: 12.h),
-              Container(
-                padding: EdgeInsets.all(12.w),
-                decoration: BoxDecoration(
-                  color: MngColors.muted,
-                  borderRadius: BorderRadius.circular(MngRadius.small),
-                ),
-                child: Row(
-                  children: [
-                    Expanded(
-                      child: Text(
-                        '${_distanceKm.toStringAsFixed(1)} km  ·  ~$_driveMinutes min drive',
-                        overflow: TextOverflow.ellipsis,
-                        style: MngTheme.light.textTheme.titleMedium,
-                      ),
-                    ),
-                    SizedBox(width: 8.w),
-                    Text('GHS ${fare.toStringAsFixed(2)}',
-                        style: MngTheme.light.textTheme.titleMedium),
-                    if (widget.promoApplied)
-                      Padding(
-                        padding: EdgeInsets.only(left: 6.w),
+              // The fare and distance only exist once both ends are known. A
+              // row reading "GHS 0.00" before a destination has been chosen is
+              // a price, and a wrong one is worse than no price.
+              if (_canSubmit)
+                Container(
+                  padding: EdgeInsets.all(12.w),
+                  decoration: BoxDecoration(
+                    color: MngColors.muted,
+                    borderRadius: BorderRadius.circular(MngRadius.small),
+                  ),
+                  child: Row(
+                    children: [
+                      Expanded(
                         child: Text(
-                          '30% off',
-                          style: MngTheme.light.textTheme.bodySmall
-                              ?.copyWith(color: MngColors.success),
+                          // Safe: this block only draws when both ends exist.
+                          '${_distanceKm!.toStringAsFixed(1)} km  ·  ~$_driveMinutes min drive',
+                          overflow: TextOverflow.ellipsis,
+                          style: MngTheme.light.textTheme.titleMedium,
                         ),
                       ),
-                  ],
+                      SizedBox(width: 8.w),
+                      Text('GHS ${fare!.toStringAsFixed(2)}',
+                          style: MngTheme.light.textTheme.titleMedium),
+                      if (widget.promoApplied)
+                        Padding(
+                          padding: EdgeInsets.only(left: 6.w),
+                          child: Text(
+                            '30% off',
+                            style: MngTheme.light.textTheme.bodySmall
+                                ?.copyWith(color: MngColors.success),
+                          ),
+                        ),
+                    ],
+                  ),
+                )
+              else
+                Container(
+                  key: const Key('noDestinationYet'),
+                  padding: EdgeInsets.all(12.w),
+                  decoration: BoxDecoration(
+                    color: MngColors.muted,
+                    borderRadius: BorderRadius.circular(MngRadius.small),
+                  ),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.info_outline,
+                          size: 16, color: MngColors.textSub),
+                      SizedBox(width: 8.w),
+                      Expanded(
+                        child: Text(
+                          'Choose where you are going to see the fare.',
+                          style: MngTheme.light.textTheme.bodySmall,
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
-              ),
               if (_isUneditedDefault) ...[
                 SizedBox(height: 10.h),
                 Row(
@@ -404,14 +514,11 @@ class _RouteEntrySheetState extends State<RouteEntrySheet> {
               SizedBox(height: 20.h),
               FilledButton(
                 key: const Key('confirmRouteButton'),
-                onPressed: () => widget.onSubmit(RouteDraft(
-                  pickup: _pickup,
-                  dropoff: _dropoff,
-                  category: _category,
-                )),
+                onPressed: _canSubmit ? _submit : null,
                 child: const Text('Search for a ride'),
               ),
-            ],
+              ],
+            ),
           ),
         ),
       ),
@@ -446,13 +553,15 @@ enum _Field { pickup, dropoff }
 class _MapPicker extends StatelessWidget {
   const _MapPicker({
     required this.field,
-    required this.stop,
+    required this.point,
     required this.onPick,
     required this.onClose,
   });
 
   final _Field field;
-  final TripStop stop;
+
+  /// The point the map is centred on. Never null: see the call site.
+  final GeoPoint point;
   final ValueChanged<GeoPoint> onPick;
   final VoidCallback onClose;
 
@@ -477,7 +586,7 @@ class _MapPicker extends StatelessWidget {
             // all while the map pretended to be fully controllable.
             child: RideMap(
               key: const Key('pickerMap'),
-              pickup: stop.point,
+              pickup: point,
               interactive: true,
               onTapPoint: onPick,
               fill: true,
@@ -535,7 +644,14 @@ class _StopField extends StatelessWidget {
   final Key fieldKey;
   final IconData icon;
   final Color iconColor;
-  final TripStop stop;
+
+  /// The stop this field is showing, or null when there is not one yet.
+  ///
+  /// Null rather than a `TripStop` with an empty address over some placeholder
+  /// coordinate. A blank stop is a real state -- the rider has not chosen a
+  /// destination -- and inventing a point for it would put a pin in the Gulf of
+  /// Guinea the moment anything downstream read it.
+  final TripStop? stop;
   final String hint;
   final bool active;
   final ValueChanged<String> onChanged;
@@ -567,9 +683,9 @@ class _StopField extends StatelessWidget {
             Expanded(
               child: TextField(
                 key: fieldKey,
-                controller: TextEditingController(text: stop.address)
+                controller: TextEditingController(text: stop?.address ?? '')
                   ..selection = TextSelection.collapsed(
-                    offset: stop.address.length,
+                    offset: stop?.address.length ?? 0,
                   ),
                 onTap: onTap,
                 onChanged: onChanged,

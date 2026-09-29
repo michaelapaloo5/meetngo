@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:meetngo_rider/src/booking/route_entry_sheet.dart';
+import 'package:meetngo_rider/src/booking/route_confirm_page.dart';
 import 'package:meetngo_rider/src/data/place_service.dart';
 import 'package:mng_core/mng_core.dart';
 
@@ -31,9 +31,30 @@ class _StubPlaces implements PlaceService {
 PlaceSuggestion _hit(String label, double lat, double lng) =>
     PlaceSuggestion(label: label, point: GeoPoint(lat, lng));
 
+/// With a destination already chosen, as the search page always supplies.
+TripStop _dest() => const TripStop(
+      'Dropoff',
+      GeoPoint(5.6052, -0.1660),
+      'Airport Residential, Accra',
+    );
+
+Widget wrapWithDestination({
+  void Function(RouteDraft draft)? onSubmit,
+  PlaceService? places,
+  bool promoApplied = false,
+}) =>
+    wrap(
+      onSubmit: onSubmit,
+      places: places,
+      dropoff: _dest(),
+      promoApplied: promoApplied,
+    );
+
 Widget wrap({
   void Function(RouteDraft draft)? onSubmit,
   PlaceService? places,
+  TripStop? dropoff,
+  bool promoApplied = false,
 }) =>
     ScreenUtilInit(
       designSize: const Size(390, 844),
@@ -42,10 +63,12 @@ Widget wrap({
       builder: (_, _) => MaterialApp(
         theme: MngTheme.light,
         home: Scaffold(
-          body: RouteEntrySheet(
+          body: RouteConfirmPage(
             calc: FareCalculator(),
             onSubmit: onSubmit ?? (_) {},
             places: places ?? _StubPlaces(),
+            dropoff: dropoff,
+            promoApplied: promoApplied,
           ),
         ),
       ),
@@ -54,6 +77,7 @@ Widget wrap({
 Widget openHarness({
   void Function(RouteDraft draft)? onSubmit,
   PlaceService? places,
+  TripStop? dropoff,
 }) =>
     ScreenUtilInit(
       designSize: const Size(390, 844),
@@ -65,11 +89,12 @@ Widget openHarness({
           body: Builder(
             builder: (context) => Center(
               child: ElevatedButton(
-                onPressed: () => showRouteEntrySheet(
+                onPressed: () => pushRouteConfirmPage(
                   context,
                   calc: FareCalculator(),
                   onSubmit: onSubmit ?? (_) {},
                   places: places ?? _StubPlaces(),
+                  dropoff: dropoff,
                 ),
                 child: const Text('open'),
               ),
@@ -89,7 +114,7 @@ void main() {
   testWidgets('shows the pickup and the dropoff, not the distance twice',
       (tester) async {
     useDesignSurface(tester);
-    await tester.pumpWidget(wrap());
+    await tester.pumpWidget(wrapWithDestination());
     expect(find.text('Osu, Accra'), findsOneWidget);
     expect(find.text('Airport Residential, Accra'), findsOneWidget);
   });
@@ -97,7 +122,7 @@ void main() {
   testWidgets('summarises the measured distance, drive time and fare',
       (tester) async {
     useDesignSurface(tester);
-    await tester.pumpWidget(wrap());
+    await tester.pumpWidget(wrapWithDestination());
     // Haversine over the two Accra constants, R = 6371.0088: 2.3299 km.
     // (5.00 + 1.80 * 2.3299) * 1.0 + 1.00 = 10.1938 -> GHS 10.19.
     expect(find.text('2.3 km  ·  ~6 min drive'), findsOneWidget);
@@ -106,7 +131,7 @@ void main() {
 
   testWidgets('changing the category requotes the fare', (tester) async {
     useDesignSurface(tester);
-    await tester.pumpWidget(wrap());
+    await tester.pumpWidget(wrapWithDestination());
     await tester.tap(find.byKey(const Key('chip-van')));
     await tester.pump();
     // (5.00 + 2.20 * 2.3299) * 1.0 + 1.00 = 11.1258 -> GHS 11.13.
@@ -116,7 +141,7 @@ void main() {
   testWidgets('confirm submits the draft with the chosen stops', (tester) async {
     useDesignSurface(tester);
     RouteDraft? draft;
-    await tester.pumpWidget(wrap(onSubmit: (d) => draft = d));
+    await tester.pumpWidget(wrapWithDestination(onSubmit: (d) => draft = d));
     await tester.tap(find.byKey(const Key('chip-van')));
     await tester.pump();
     await tester.tap(find.byKey(const Key('confirmRouteButton')));
@@ -124,8 +149,89 @@ void main() {
     expect(draft, isNotNull);
     expect(draft!.pickup.address, kDefaultPickup.address);
     expect(draft!.pickup.point, kDefaultPickup.point);
-    expect(draft!.dropoff.address, kDefaultDropoff.address);
+    expect(draft!.dropoff.address, _dest().address);
     expect(draft!.category, RideCategory.van);
+  });
+
+  group('with no destination chosen', () {
+    // The page used to start on a fixed Accra destination, which meant a rider
+    // who never touched the second field got a ride to the same airport every
+    // single time. The destination is now chosen on the search page and arrives
+    // here, so "not chosen" is a state this page has to survive.
+
+    testWidgets('there is no demo destination to confirm', (tester) async {
+      useDesignSurface(tester);
+      await tester.pumpWidget(wrap());
+      expect(find.text('Airport Residential, Accra'), findsNothing);
+      expect(find.text(kDefaultDropoff.address), findsNothing);
+    });
+
+    testWidgets('the fare is absent, not zero', (tester) async {
+      useDesignSurface(tester);
+      await tester.pumpWidget(wrap());
+      // "GHS 0.00" is a price, and a wrong one. A rider would book it.
+      expect(find.textContaining('GHS'), findsNothing);
+      expect(find.textContaining('km  ·  ~'), findsNothing);
+    });
+
+    testWidgets('it says what is missing instead', (tester) async {
+      useDesignSurface(tester);
+      await tester.pumpWidget(wrap());
+      expect(find.byKey(const Key('noDestinationYet')), findsOneWidget);
+      expect(
+        find.textContaining('Choose where you are going'),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('confirm is disabled, and pressing it submits nothing',
+        (tester) async {
+      useDesignSurface(tester);
+      var submits = 0;
+      await tester.pumpWidget(wrap(onSubmit: (_) => submits++));
+      final button = tester.widget<FilledButton>(
+        find.byKey(const Key('confirmRouteButton')),
+      );
+      expect(button.onPressed, isNull,
+          reason: 'there is no route to book, so there is nothing to press');
+
+      await tester.tap(
+        find.byKey(const Key('confirmRouteButton')),
+        warnIfMissed: false,
+      );
+      await tester.pump();
+      expect(submits, 0);
+    });
+
+    testWidgets('it does not crash, which is the whole point', (tester) async {
+      // A null force-unwrap in the distance getter used to take down the build
+      // of this page for every rider who arrived without a destination --
+      // which, with the destination now chosen on the search page, is a state
+      // the page can genuinely be in.
+      useDesignSurface(tester);
+      await tester.pumpWidget(wrap());
+      expect(tester.takeException(), isNull);
+      expect(find.byKey(const Key('pickupField')), findsOneWidget);
+    });
+
+    testWidgets('a destination typed here fills the fare in', (tester) async {
+      useDesignSurface(tester);
+      await tester.pumpWidget(
+        wrap(places: _StubPlaces(matches: [_hit('Spintex Road', 5.58, -0.14)])),
+      );
+
+      await tester.tap(find.byKey(const Key('dropoffField')));
+      await tester.pump();
+      await tester.enterText(find.byKey(const Key('dropoffField')), 'Spintex');
+      await tester.pump(const Duration(milliseconds: 500));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('placeHit-Spintex Road')));
+      await tester.pump();
+
+      expect(find.text('Spintex Road'), findsOneWidget);
+      expect(find.textContaining('GHS'), findsOneWidget);
+      expect(find.byKey(const Key('noDestinationYet')), findsNothing);
+    });
   });
 
   testWidgets('the sheet keeps its button clear of the bottom inset',
@@ -140,19 +246,26 @@ void main() {
     expect(button.dy, lessThanOrEqualTo(844 - 34));
   });
 
-  testWidgets('showRouteEntrySheet opens the sheet and submits its draft',
+  testWidgets('pushRouteConfirmPage opens the page and submits its draft',
       (tester) async {
     useDesignSurface(tester);
     RouteDraft? draft;
-    await tester.pumpWidget(openHarness(onSubmit: (d) => draft = d));
+    await tester.pumpWidget(openHarness(
+      onSubmit: (d) => draft = d,
+      dropoff: _dest(),
+    ));
     await tester.tap(find.text('open'));
     await tester.pumpAndSettle();
+    // A pushed page, not a scrim over a map: there is a title bar and a back
+    // button, and nothing behind it to dismiss.
+    expect(find.byType(BackButton), findsOneWidget);
+    expect(find.text('Confirm your ride'), findsOneWidget);
     expect(find.byKey(const Key('confirmRouteButton')), findsOneWidget);
     await tester.tap(find.byKey(const Key('confirmRouteButton')));
     await tester.pumpAndSettle();
     expect(draft, isNotNull);
     expect(draft!.pickup.address, kDefaultPickup.address);
-    expect(draft!.dropoff.address, kDefaultDropoff.address);
+    expect(draft!.dropoff.address, _dest().address);
   });
 
   testWidgets('the route sheet has no overflow at 200% text scale',
@@ -267,13 +380,16 @@ void main() {
     expect(find.textContaining('Nothing matched'), findsOneWidget);
   });
 
-  // Both defaults sit in the same part of Accra, so an untouched sheet produces
-  // a plausible fare for a trip nobody asked for. Say so on the sheet.
-  testWidgets('an untouched route says it is still the demo route', (
+  // The demo-route warning now only fires when a rider has explicitly arrived
+  // with the demo destination -- which the search page no longer does, but the
+  // constant is still exported and a caller may still pass it. What matters is
+  // that an *unchosen* destination produces no fare at all rather than the demo
+  // one, and that is asserted in the "with no destination chosen" group above.
+  testWidgets('a page with the demo destination still warns about it', (
     tester,
   ) async {
     useDesignSurface(tester);
-    await tester.pumpWidget(wrap());
+    await tester.pumpWidget(wrap(dropoff: kDefaultDropoff));
     expect(find.textContaining('demo route'), findsOneWidget);
   });
 
@@ -284,7 +400,7 @@ void main() {
     final places = _StubPlaces(matches: [
       _hit('Kumasi, Ghana', 6.6885, -1.6244),
     ]);
-    await tester.pumpWidget(wrap(places: places));
+    await tester.pumpWidget(wrap(places: places, dropoff: kDefaultDropoff));
     await tester.enterText(find.byKey(const Key('dropoffField')), 'Kumasi');
     await tester.pump(const Duration(milliseconds: 600));
     await tester.pump();

@@ -6,7 +6,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:meetngo_rider/src/booking/route_entry_sheet.dart';
+import 'package:meetngo_rider/src/booking/route_confirm_page.dart';
 import 'package:meetngo_rider/src/data/place_service.dart';
 import 'package:meetngo_rider/src/map/ride_map.dart';
 import 'package:mng_core/mng_core.dart';
@@ -47,11 +47,21 @@ Widget wrap(PlaceService places) => ScreenUtilInit(
       builder: (_, _) => MaterialApp(
         theme: MngTheme.light,
         home: Scaffold(
-          body: RouteEntrySheet(
+          body: RouteConfirmPage(
             calc: FareCalculator(),
             onSubmit: (draft) => submitted = draft,
             places: places,
             pickup: pickupFromFix(const GeoPoint(5.6037, -0.1870)),
+            // A destination, because these tests are about the map picker and
+            // not about an unchosen destination -- and because a page with no
+            // destination is a page whose confirm button is disabled, which
+            // would make the "what the draft is submitted with" test below
+            // untestable for the wrong reason.
+            dropoff: const TripStop(
+              'Dropoff',
+              GeoPoint(5.6052, -0.1660),
+              'Airport Residential, Accra',
+            ),
           ),
         ),
       ),

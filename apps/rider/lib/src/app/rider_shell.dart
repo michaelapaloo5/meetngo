@@ -7,7 +7,8 @@ import 'package:provider/provider.dart';
 
 import '../auth/auth_controller.dart';
 import '../booking/choose_car_screen.dart';
-import '../booking/route_entry_sheet.dart';
+import '../booking/destination_search_page.dart';
+import '../booking/route_confirm_page.dart';
 import '../bookings/bookings_controller.dart';
 import '../bookings/bookings_screen.dart';
 import '../chat/chat_controller.dart';
@@ -146,29 +147,71 @@ class _RiderShellState extends State<RiderShell> {
 
   Future<void> _openRouteEntry({bool promo = false}) async {
     final flow = context.read<RiderFlow>();
-    // Asked for before the sheet opens rather than inside it, so the permission
-    // dialog is not stacked under a modal bottom sheet on Android. A rider who
-    // says no still gets the sheet, with `kDefaultPickup` and the note that
-    // explains why — the sheet never blocks on this.
+    // Asked for before the page opens rather than inside it, so the permission
+    // dialog is not stacked under a pushed route on Android. A rider who says
+    // no still gets the flow, with `kDefaultPickup` and the note that explains
+    // why -- the search never blocks on this.
     final reading = await context.read<TripRepository>().locate();
     if (!mounted) return;
     setState(() => _location = reading);
     _locating = false;
-    await showRouteEntrySheet(
+
+    // Step one: where are you going. A whole screen, a search field focused on
+    // arrival, and a full-width list. This replaces a modal sheet that asked for
+    // two stops, a tier and a fare at once over a map the rider could not move.
+    final destination = await Navigator.of(context).push<PlaceSuggestion>(
+      MaterialPageRoute<PlaceSuggestion>(
+        builder: (_) => DestinationSearchPage(
+          places: context.read<PlaceService>(),
+          recent: _recentDestinations(),
+        ),
+      ),
+    );
+    if (destination == null || !mounted) {
+      unawaited(_loadRecentRides());
+      return;
+    }
+
+    // Step two: confirm the route and the tier.
+    final draft = await pushRouteConfirmPage(
       context,
       calc: flow.calc,
       places: context.read<PlaceService>(),
       pickup: reading.point == null
           ? null
           : pickupFromFix(reading.point!, label: _place?.line),
+      dropoff: TripStop('Dropoff', destination.point, destination.label),
       promoApplied: promo,
-      onSubmit: (draft) => _openCarChoice(draft),
+      onSubmit: _openCarChoice,
     );
+
     // Read the rider's history on the way past, so Recent rides on the home
     // screen is populated by the time they get back to it. A failure leaves it
     // null, which draws nothing -- an empty list of past rides is not worth an
     // error message on a screen whose job is booking one.
     unawaited(_loadRecentRides());
+    // `draft` is unused here on purpose: `onSubmit` already advanced the flow,
+    // and the pop value exists for a caller that wants to chain without a
+    // callback. Assigning it would be a statement about nothing.
+    assert(draft == null || draft.dropoff.address == destination.label);
+  }
+
+  /// Destinations this rider has actually been to, newest first, deduplicated.
+  ///
+  /// Real trips and nothing else. The alternative for an empty search is a
+  /// "popular destinations" list, which in a pilot with a handful of drivers
+  /// would be a set of places nobody in the pilot has ever ridden to -- the
+  /// same invention as the four fake cars, wearing a different hat.
+  List<PlaceSuggestion> _recentDestinations() {
+    final seen = <String>{};
+    final out = <PlaceSuggestion>[];
+    for (final ride in _recentRides ?? const <BookedTrip>[]) {
+      final address = ride.trip.dropoff.address.trim();
+      if (address.isEmpty || !seen.add(address)) continue;
+      out.add(PlaceSuggestion(label: address, point: ride.trip.dropoff.point));
+      if (out.length >= 5) break;
+    }
+    return out;
   }
 
   Future<void> _loadRecentRides() async {

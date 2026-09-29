@@ -3,7 +3,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:meetngo_rider/main.dart';
 import 'package:meetngo_rider/src/app/app_config.dart';
 import 'package:meetngo_rider/src/app/rider_flow.dart';
-import 'package:meetngo_rider/src/booking/route_entry_sheet.dart';
+import 'package:meetngo_rider/src/booking/route_confirm_page.dart';
 import 'package:mng_core/mng_core.dart';
 import 'package:meetngo_rider/src/data/trip_functions.dart';
 import 'package:meetngo_rider/src/data/booked_trip.dart';

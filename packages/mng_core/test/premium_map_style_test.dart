@@ -85,6 +85,7 @@ void main() {
         PremiumMapPalette.road,
         PremiumMapPalette.roadCasing,
         PremiumMapPalette.building,
+        PremiumMapPalette.label,
       }.map((c) => c.toLowerCase()).toSet();
 
       final found = <String, String>{};
@@ -109,7 +110,8 @@ void main() {
     test('roads are crisp white', () async {
       final s = await style();
       final roadLayers = layersOf(s)
-          .where((l) => l['id'].toString().startsWith('road-'))
+          .where((l) => l['type'] == 'line')
+          .where((l) => l['source-layer'] == 'transportation')
           .where((l) => l['id'] != 'road-casing')
           .toList();
       expect(roadLayers, isNotEmpty);
@@ -159,7 +161,12 @@ void main() {
 
     test('every road width is zoom-interpolated, not a flat line', () async {
       final s = await style();
-      for (final l in layersOf(s).where((l) => l['id'].toString().startsWith('road-'))) {
+      // Filtered to line layers, because `road-name` is also a "road" layer by
+      // name and has no `line-width` to interpolate -- it draws text along the
+      // line instead.
+      for (final l in layersOf(s)
+          .where((l) => l['type'] == 'line')
+          .where((l) => l['source-layer'] == 'transportation')) {
         final w = (l['paint'] as Map)['line-width'];
         expect(w, isA<List>(), reason: '${l['id']} has a fixed width');
         expect(jsonEncode(w), contains('zoom'), reason: '${l['id']}');
@@ -183,20 +190,22 @@ void main() {
   });
 
   group('3. extreme decluttering', () {
-    test('no POI, place, label or boundary layer exists at all', () async {
+    test('no POI, boundary or address-number layer exists at all', () async {
       final s = await style();
       // Not "hidden" -- absent. `visibility: none` still costs a style diff to
       // carry, still shows up in every layer list anyone reads, and is one
       // careless edit away from being turned back on.
+      //
+      // `place` and `transportation_name` are deliberately NOT in this list.
+      // They were, and the result was a map with no street names on it, which
+      // is not decluttering -- it is an unnavigable picture of a city.
       final banned = {
         'poi',
-        'place',
-        'transportation_name',
-        'water_name',
         'boundary',
         'aerodrome_label',
         'housenumber',
         'mountain_peak',
+        'water_name',
       };
       for (final l in layersOf(s)) {
         expect(banned, isNot(contains(l['source-layer'])),
@@ -204,26 +213,97 @@ void main() {
       }
     });
 
-    test('no layer draws any text', () async {
+    test('no layer draws a business or commercial name', () async {
       final s = await style();
-      // The whole of "hide all commercial labels" reduces to: there is no
-      // text-field anywhere. A business name cannot be decluttered if it was
-      // never asked for.
+      // The real constraint, as opposed to the one I first wrote. "Hide all
+      // POIs, local businesses, stores and commercial labels" reduces to: no
+      // layer reads a name off the `poi` source-layer, which is where every
+      // shop, restaurant and landmark name lives. A business name cannot be
+      // decluttered if it is never asked for.
       for (final l in layersOf(s)) {
-        final layout = l['layout'];
-        if (layout is! Map) continue;
-        expect(layout.containsKey('text-field'), isFalse,
-            reason: '${l['id']} draws a label');
-        expect(layout.containsKey('symbol-placement'), isFalse,
-            reason: '${l['id']} places a symbol');
+        expect(l['source-layer'], isNot('poi'),
+            reason: '${l['id']} reads the POI layer');
       }
     });
 
-    test('the only symbol layer is the car', () async {
+    test('road names are drawn, because an unnamed road cannot be navigated',
+        () async {
       final s = await style();
-      final symbols =
-          layersOf(s).where((l) => l['type'] == 'symbol').map((l) => l['id']);
-      expect(symbols, ['moving-car-icon']);
+      // This test is here because it was missing, and its absence shipped a map
+      // with no street names on it. A driver told to meet at a junction, and a
+      // rider trying to find a shop, both need to read a road name off the
+      // screen; an unnamed road network is scenery, not a map.
+      final road = layerNamed(s, 'road-name');
+      expect(road['type'], 'symbol');
+      expect(road['source-layer'], 'transportation_name');
+      final layout = road['layout'] as Map<String, dynamic>;
+      expect(layout['text-field'], isNotNull);
+      // Along the line, not floating over its middle: a street name is
+      // "Oxford Street", not a label parked on top of it.
+      expect(layout['symbol-placement'], 'line');
+    });
+
+    test('place names are drawn, and only for places a person would name',
+        () async {
+      final s = await style();
+      final place = layerNamed(s, 'place-label');
+      expect(place['source-layer'], 'place');
+      final layout = place['layout'] as Map<String, dynamic>;
+      expect(layout['text-field'], isNotNull);
+      // Towns, cities, districts. Not every hamlet and not every islet: a
+      // screen with the name of a two-house village on it is as useless as one
+      // with no names on it.
+      final classes = _classesIn(place);
+      expect(classes, containsAll(<String>['city', 'town', 'suburb']));
+      expect(classes, isNot(contains('hamlet')));
+    });
+
+    test('every text layer has a font, or it draws nothing', () async {
+      // A `text-field` with no `text-font` is a silent no-op: MapLibre has no
+      // default font, the glyphs request is never made, and the layer renders
+      // as nothing at all with no error anywhere. The symptom would be exactly
+      // the bug this was written to prevent, arriving again by another route.
+      final s = await style();
+      var checked = 0;
+      for (final l in layersOf(s)) {
+        final layout = l['layout'];
+        if (layout is! Map || layout['text-field'] == null) continue;
+        checked++;
+        expect(layout['text-font'], isNotNull,
+            reason: '${l['id']} has text but no font, so it draws nothing');
+        // Every font has to be one the style's `glyphs` URL can actually serve.
+        final fonts = (layout['text-font'] as List).cast<String>();
+        expect(fonts, isNotEmpty);
+        for (final f in fonts) {
+          expect(f, isNotEmpty);
+        }
+      }
+      expect(checked, 2, reason: 'the two label layers, and no others');
+    });
+
+    test('labels carry a halo, because grey text on pale land is unreadable',
+        () async {
+      // The land is #F4F4F6 and the text is #8A8A8E, a difference of about 40
+      // levels of luminance. Without a halo the names sit on the map as a grey
+      // suggestion of text.
+      final s = await style();
+      for (final id in ['place-label', 'road-name']) {
+        final paint = layerNamed(s, id)['paint'] as Map;
+        expect(paint['text-halo-width'], isNotNull, reason: id);
+        expect((paint['text-halo-width'] as num), greaterThan(0), reason: id);
+      }
+    });
+
+    test('the car is still the only thing drawn as an image', () async {
+      final s = await style();
+      // `icon-image` is what makes a symbol an icon rather than a label. One
+      // icon, and it is the car: a style that grows business icons has stopped
+      // being a map for finding a pickup and become a directory.
+      final icons = layersOf(s)
+          .where((l) => (l['layout'] as Map?)?['icon-image'] != null)
+          .map((l) => l['id'])
+          .toList();
+      expect(icons, [kMovingCarLayerId]);
     });
 
     test('keeps only the geometry a driver needs, and drops aeroways', () async {
@@ -238,6 +318,8 @@ void main() {
         'waterway',
         'building',
         'transportation',
+        'place',
+        'transportation_name',
       });
     });
   });
@@ -397,16 +479,34 @@ void main() {
   });
 }
 
-/// The class values a transportation layer selects.
+/// The class values a layer's filter selects.
+///
+/// Handles both shapes a `class` filter takes: the filter *is* the `in`
+/// expression, as the label layers and the road groups use, or it is a list
+/// *containing* one, as an `all` of several conditions does. A helper that
+/// only understood the second would have reported "no classes" for a layer that
+/// filters on three, which is a test that passes by finding nothing.
 Set<String> _classesIn(Map<String, dynamic> layer) {
-  final f = layer['filter'] as List;
-  for (final op in f) {
-    if (op is List && op.isNotEmpty && op.first == 'in') {
-      final literal = op[2];
-      if (literal is List && literal.isNotEmpty && literal.first == 'literal') {
-        return (literal[1] as List).cast<String>().toSet();
+  List<dynamic>? literalOf(Object? filter) {
+    if (filter is! List || filter.isEmpty) return null;
+    if (filter.first == 'in' && filter.length >= 3 && filter[2] is List) {
+      final literal = filter[2] as List;
+      if (literal.isNotEmpty && literal.first == 'literal') {
+        return literal[1] as List;
       }
     }
+    return null;
+  }
+
+  final direct = literalOf(layer['filter']);
+  if (direct != null) return direct.cast<String>().toSet();
+
+  final f = layer['filter'];
+  if (f is! List) return const {};
+  for (final op in f) {
+    if (op is! List) continue;
+    final found = literalOf(op);
+    if (found != null) return found.cast<String>().toSet();
   }
   return const {};
 }

@@ -92,4 +92,13 @@ abstract final class PremiumMapPalette {
 
   /// The extruded buildings.
   static const String building = '#E5E7EB';
+
+  /// Every place and road name.
+  ///
+  /// The theme's own sub-text grey rather than a grey invented for the map, so
+  /// a street name on the map and a subtitle in the app are visibly the same
+  /// voice. Darker than the land by about 40 levels of luminance, which is why
+  /// both label layers carry a halo: on their own these names are a grey
+  /// suggestion of text rather than text.
+  static const String label = '#8A8A8E';
 }
