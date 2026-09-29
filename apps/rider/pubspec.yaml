@@ -59,8 +59,16 @@ dependencies:
   # package source, so this is the only way to turn a coordinate into a place.
   http: ^1.6.0
   provider: ^6.1.2
-  flutter_map: ^7.0.2
-  latlong2: ^0.9.1
+  # 3D map. MapLibre GL plus OpenFreeMap's free vector tiles: real building
+  # extrusions, pitch and bearing, with no API key, no account and no card.
+  # Google Maps would give the same 3D and needs an API key on a
+  # billing-enabled project, which is the one thing this repo avoids.
+  #
+  # `flutter_map` and `latlong2` were dependencies until the 3D swap and are now
+  # gone: `flutter_map` has no pitch and no building extrusions, so it cannot
+  # draw 3D at all, and nothing imports either any more. `LatLng` now comes from
+  # `maplibre_gl`, which re-exports the same `latlong2` type.
+  maplibre_gl: ^0.27.1
 
 dev_dependencies:
   flutter_test:

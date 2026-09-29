@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
-import 'package:flutter_map/flutter_map.dart';
 import 'package:mng_core/mng_core.dart';
 import '../data/location_service.dart';
 import '../map/ride_map.dart';
@@ -11,7 +10,6 @@ class FindingDriverScreen extends StatelessWidget {
     required this.trip,
     required this.onCancelSearch,
     this.location,
-    this.tileProvider,
   });
 
   final Trip trip;
@@ -24,8 +22,9 @@ class FindingDriverScreen extends StatelessWidget {
   /// about the pickup and honest about the rider's own position.
   final DeviceLocation? location;
 
-  /// Null in the app, a silent provider under test. See [RideMap.tileProvider].
-  final TileProvider? tileProvider;
+  // The `tileProvider` parameter that used to be here went with the 2D map; see
+  // the note on `TrackingScreen`. Tests switch the engine off through
+  // `RideMap.disabledForTest` instead of through a caller-supplied provider.
 
   @override
   Widget build(BuildContext context) {
@@ -48,7 +47,6 @@ class FindingDriverScreen extends StatelessWidget {
                 pickup: trip.pickup.point,
                 location: location,
                 height: 300,
-                tileProvider: tileProvider,
               ),
             ),
             SizedBox(height: 24.h),

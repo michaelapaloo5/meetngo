@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mng_core/mng_core.dart';
@@ -19,18 +18,23 @@ import 'package:meetngo_driver/src/map/driver_map_panel.dart';
 ///
 /// 1170x2532 at 3.0 is 390x844 logical, the design size in `main.dart`.
 ///
-/// Also points the map at [StubTileProvider]. The home tab and the live trip both
-/// render a `DriverMapPanel`, and without this every test that reaches either
-/// one fails for a reason that has nothing to do with what it is testing:
-/// `flutter_test` answers every HTTP request with an empty 400, `NetworkImage`
-/// turns that into a load exception, and an `Image` with no `errorBuilder`
-/// reports it to `FlutterError.onError`.
+/// Also switches off the live map engine. The home tab and the live trip both
+/// render a `DriverMapPanel`, and that widget now draws through MapLibre's
+/// native view: under `flutter test` there is no platform view to create, so
+/// the panel cannot be built at all without this.
+///
+/// This is a weaker seam than the `flutter_map` one it replaces, and the
+/// difference is worth stating rather than hiding. The old engine drew with
+/// Flutter widgets, so a test could render the real map with only its tile
+/// source swapped and the drawing itself stayed covered. Nothing under
+/// `flutter test` can assert on what MapLibre draws. The map is verified by
+/// compiling and by looking at it on a phone.
 void useDesignSurface(WidgetTester tester) {
   tester.view.physicalSize = const Size(1170, 2532);
   tester.view.devicePixelRatio = 3.0;
-  DriverMapPanel.tileProviderOverride = () => StubTileProvider();
+  DriverMapPanel.disabledForTest = true;
   addTearDown(tester.view.reset);
-  addTearDown(() => DriverMapPanel.tileProviderOverride = null);
+  addTearDown(() => DriverMapPanel.disabledForTest = false);
 }
 
 /// [ScreenUtilInit] around [child] with the app's theme and no chrome.
@@ -180,22 +184,4 @@ Vehicle driverVehicle({
       photoUrl: '',
       rideCategory: RideCategory.standard,
     );
-
-/// Tiles that never touch the network.
-///
-/// `TileLayer` otherwise builds a `NetworkTileProvider`, and a widget test has
-/// no network: the build host has ~40 MB free and the test binding's HTTP
-/// override answers 400 for everything, so every tile would be a failed request
-/// logged during a test whose subject is something else. A transparent 1x1 PNG
-/// is a real `ImageProvider`, so `TileLayer` takes its normal code path.
-class StubTileProvider extends TileProvider {
-  StubTileProvider();
-
-  @override
-  ImageProvider<Object> getImage(
-    TileCoordinates coordinates,
-    TileLayer options,
-  ) =>
-      MemoryImage(TileProvider.transparentImage);
-}
 

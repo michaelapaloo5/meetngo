@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
-import 'package:flutter_map/flutter_map.dart';
 import 'package:mng_core/mng_core.dart';
 import 'package:provider/provider.dart';
 import '../map/ride_map.dart';
@@ -9,10 +8,12 @@ import 'widgets/driver_summary.dart';
 import 'widgets/eta_badge.dart';
 
 class TrackingScreen extends StatelessWidget {
-  const TrackingScreen({super.key, this.tileProvider});
+  const TrackingScreen({super.key});
 
-  /// Null in the app and a silent provider in the tests. See [RideMap.tileProvider].
-  final TileProvider? tileProvider;
+  // The `tileProvider` parameter that used to be here is gone with the 2D map.
+  // It existed only to hand `flutter_map` a silent tile source under test; the
+  // map engine now draws through a native view and is switched off for tests by
+  // `RideMap.disabledForTest` instead, which no caller has to plumb through.
 
   static const _headlines = <TripState, String>{
     TripState.requested: 'Finding your driver',
@@ -65,12 +66,13 @@ class TrackingScreen extends StatelessWidget {
             // The real map. This box used to be a flat `MngColors.muted`
             // rectangle with a map icon in it and a comment saying the widget
             // would be "dropped in" later; `RideMap` is that widget, drawing
-            // OpenStreetMap raster tiles with the pickup and dropoff pinned and
-            // a line between them, fitted to both.
+            // OpenStreetMap vector tiles in 3D with the pickup and dropoff
+            // pinned and a line between them.
             //
-            // `tileProvider` is null here, so the real network provider is
-            // used. The seam exists for the tests, which would otherwise make
-            // one doomed HTTP request per visible tile per pump.
+            // The camera is tilted and rotated rather than pointing straight
+            // down, which is what makes the city read as three-dimensional. The
+            // gestures are off so a vertical drag here scrolls the screen
+            // behind it instead of moving the map out from under the rider.
                     Padding(
                       padding: EdgeInsets.symmetric(horizontal: 20.w),
                       child: RideMap(
@@ -79,7 +81,6 @@ class TrackingScreen extends StatelessWidget {
                         dropoff: trip.dropoff.point,
                         location: c.location,
                         height: 280,
-                        tileProvider: tileProvider,
                       ),
                     ),
 

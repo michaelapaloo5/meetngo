@@ -11,21 +11,23 @@ import 'package:meetngo_rider/src/tracking/tracking_screen.dart';
 import 'package:mng_core/mng_core.dart';
 import 'package:provider/provider.dart';
 
-import '../support/silent_tile_provider.dart';
-
 void useDesignSurface(WidgetTester tester) {
   tester.view.physicalSize = const Size(1170, 2532);
   tester.view.devicePixelRatio = 3.0;
-  // The tracking screen draws a real `RideMap`, and its `TileLayer` otherwise
-  // builds a `NetworkTileProvider`. `flutter_test` answers every HTTP request
-  // with an empty 400, `NetworkImage` turns that into a load exception, and an
-  // `Image` with no `errorBuilder` reports it to `FlutterError.onError` -- so
-  // without this every test below fails for a reason that has nothing to do
-  // with what it is testing. This is the rider's side of the same seam the
-  // driver harness sets in `apps/driver/test/support/harness.dart`.
-  RideMap.tileProviderOverride = () => SilentTileProvider();
+  // The tracking screen draws a real 3D map, and the engine behind it is a
+  // native view: under `flutter test` there is no platform view to create, so
+  // the widget cannot be built at all. `RideMap.disabledForTest` swaps in an
+  // inert stand-in that keeps the framing and the layout around it real, which
+  // is what the tests in this file are about.
+  //
+  // This is a weaker seam than the one it replaces and the difference is worth
+  // stating: the old `flutter_map` version could be rendered in a test with only
+  // its tile source swapped, so the map's own drawing was covered. Nothing
+  // under `flutter test` can assert on what MapLibre draws. The map is now
+  // verified by compiling and by looking at it on a phone, not by this suite.
+  RideMap.disabledForTest = true;
   addTearDown(tester.view.reset);
-  addTearDown(() => RideMap.tileProviderOverride = null);
+  addTearDown(() => RideMap.disabledForTest = false);
 }
 
 /// `etaMinutes` is a parameter and not a fixed 4 because a fixture that pins
