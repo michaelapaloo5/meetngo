@@ -8,7 +8,7 @@ import 'face_reading.dart';
 /// a photo has no head pose, no eyelids and no expression, so every challenge
 /// here fails on a held-up picture. What they do *not* all defeat is a
 /// pre-recorded video of a willing person, or a deepfake; that limit is real,
-/// it is stated in `LivenessOutcome`'s docs, and it is why the captured frame
+/// it is stated in [LivenessVerifier]'s docs, and it is why the captured frame
 /// still goes to a human for comparison against the licence.
 enum LivenessChallenge {
   turnLeft('Turn your head to the left', 'Keep your face in the circle'),
@@ -31,6 +31,29 @@ enum LivenessChallenge {
   /// the detector loses the face and the check times out for no visible reason.
   final String hint;
 }
+
+/// The challenges the app actually asks for.
+///
+/// [LivenessChallenge.blink] is deliberately absent, and that is a decision
+/// about this app's sample rate rather than about liveness.
+///
+/// The check samples the camera at about 3Hz, because a frame has to be read
+/// through `InputImage.fromFilePath` -- see `LivenessSession` for why the live
+/// byte-array path is unusable in this ML Kit version. A blink lasts a few
+/// hundred milliseconds, and a 3Hz sampler misses most of them. The verifier
+/// can judge a blink correctly, and the tests prove it, but *asking* for one at
+/// 3Hz would produce intermittent failures with no visible cause: the driver
+/// blinked, the app did not see it, and the app told them they had not.
+///
+/// The verifier still supports the challenge, so a faster frame source is a
+/// one-line change here rather than a rewrite.
+const List<LivenessChallenge> liveCapableChallenges = [
+  LivenessChallenge.turnLeft,
+  LivenessChallenge.turnRight,
+  LivenessChallenge.tiltUp,
+  LivenessChallenge.tiltDown,
+  LivenessChallenge.smile,
+];
 
 /// Where the check has got to, and what it is waiting for.
 ///
@@ -68,16 +91,16 @@ enum LivenessOutcome { notYet, passed, tooManyFaces, noFace, timedOut, gaveUp }
 /// ## What this does and does not establish
 ///
 /// It establishes that a single live face responded to randomised challenges
-/// with head pose, blinks and an expression. A printed photograph cannot do
-/// any of those, and a driver holding up a picture of themselves is caught by
-/// the face count, because the detector reports their real face as well.
+/// with head pose and an expression. A printed photograph cannot do any of
+/// those, and a driver holding up a picture of themselves is caught by the face
+/// count, because the detector reports their real face as well.
 ///
 /// It does not establish that the face belongs to the person on the Ghana Card
 /// and the licence. That is a face *match*, it needs a face-embedding model,
 /// and the honest position is that a bundled model on a budget Android phone in
 /// a vehicle at night produces false rejects -- which block a real driver from
-/// earning. So the frame goes to the admin page next to the licence photo and
-/// a person makes that call, and this class is only ever the "is somebody real
+/// earning. So the frame goes to the admin page next to the licence photo and a
+/// person makes that call, and this class is only ever the "is somebody real
 /// here" half.
 class LivenessVerifier {
   /// Builds a verifier over [challenges], or a random selection of them.
@@ -85,13 +108,14 @@ class LivenessVerifier {
   /// The order and the selection are randomised, which is not decoration. A
   /// fixed order is a script: a video recorded once of somebody turning left,
   /// then right, then up would satisfy every run forever. Drawing three from
-  /// six means no single recording covers it.
+  /// [pool] means no single recording covers it.
   factory LivenessVerifier.random({
     required int count,
     required Random random,
+    List<LivenessChallenge> pool = liveCapableChallenges,
   }) {
-    final pool = LivenessChallenge.values.toList()..shuffle(random);
-    return LivenessVerifier(pool.take(count).toList());
+    final shuffled = pool.toList()..shuffle(random);
+    return LivenessVerifier(shuffled.take(count).toList());
   }
 
   LivenessVerifier(this.challenges)
@@ -113,6 +137,10 @@ class LivenessVerifier {
   DateTime? _lastSeenAt;
   LivenessOutcome _outcome = LivenessOutcome.notYet;
 
+  double? _lastYaw;
+  double? _lastPitch;
+  double? _lastSmile;
+
   /// The challenge being asked for, or null once the check is over.
   LivenessChallenge? get current =>
       (_index < challenges.length) ? challenges[_index] : null;
@@ -131,7 +159,7 @@ class LivenessVerifier {
   /// [LivenessOutcome] names the specific reasons -- too many faces, no face,
   /// timed out -- and those are all over too. Testing for two of the five would
   /// have let a rejected check keep evaluating, and the screen would sit on a
-  /// failure while the camera kept sending it frames.
+  /// failure while the camera kept sending it samples.
   bool get isOver => _outcome != LivenessOutcome.notYet;
 
   /// Fraction of this challenge that is satisfied, 0 to 1.
@@ -163,14 +191,10 @@ class LivenessVerifier {
     }
   }
 
-  double? _lastYaw;
-  double? _lastPitch;
-  double? _lastSmile;
-
   /// Feeds one frame in and returns where the check now stands.
   ///
   /// Ordering inside this method is the whole of the check, and it is
-  /// deliberately: face count, then mesh, then timing, then the challenge.
+  /// deliberate: face count, then mesh, then timing, then the challenge.
   /// A frame with two faces never advances a challenge however much of the
   /// challenge it happens to satisfy.
   LivenessPhase observe(FaceReading reading) {
@@ -253,9 +277,9 @@ class LivenessVerifier {
         LivenessChallenge.tiltDown => _pitchPast(reading, -kTiltDegrees),
         // Both halves required, and in that order within the same challenge.
         LivenessChallenge.blink => () {
-            if (reading.eyesOpen) _sawEyesOpen = true;
-            return _sawEyesOpen && reading.eyesShut;
-          }(),
+          if (reading.eyesOpen) _sawEyesOpen = true;
+          return _sawEyesOpen && reading.eyesShut;
+        }(),
         LivenessChallenge.smile => (reading.smile ?? 0) > kSmileThreshold,
       };
 
@@ -299,7 +323,7 @@ class LivenessVerifier {
 
   LivenessPhase get _phase {
     if (_outcome == LivenessOutcome.passed) return LivenessPhase.passed;
-    if (_outcome == LivenessOutcome.gaveUp) return LivenessPhase.failed;
+    if (_outcome != LivenessOutcome.notYet) return LivenessPhase.failed;
     if (_lastSeenAt == null) return LivenessPhase.waitingForFace;
     return LivenessPhase.performing;
   }
@@ -322,6 +346,11 @@ const double kCentreDegrees = 8.0;
 const double kSmileThreshold = 0.6;
 
 /// How long one challenge may take before the attempt is over.
+///
+/// Twelve seconds at a 3Hz sample rate is about 36 looks at the face, which
+/// is ample for a head turn and generous for a slow one. It is measured from
+/// the moment the challenge was armed, not from the last frame, so a driver who
+/// puts the phone down mid-check is told rather than left hanging.
 const Duration kChallengeTimeout = Duration(seconds: 12);
 
 /// The fewest mesh points a usable detection has.

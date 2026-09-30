@@ -420,3 +420,14 @@ enabled = true
 # formatted with uppercase keywords, indent 2, max width 180, trailing commas,
 # and column/key alignment. Set to "null" to emit raw, unformatted SQL.
 # format_options = "{\"keywordCase\":\"upper\",\"indent\":2,\"maxWidth\":180,\"commaStyle\":\"trailing\"}"
+
+[functions.admin-drivers]
+# The page is served without a token, on purpose: it holds no credential and no
+# data, only a sign-in form, and everything it displays comes from authenticated
+# calls this function re-checks against profiles.role = 'admin' on every one.
+#
+# With the gateway's JWT check left on -- the default for a function with no
+# entry here -- the gateway rejects the request before the function runs at all,
+# so the page returns 401 and can never be opened. Verified on the deployed
+# function: the refusals below still come from this code, the page did not.
+verify_jwt = false

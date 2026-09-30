@@ -2,6 +2,7 @@ import 'dart:math';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:meetngo_driver/src/onboarding/liveness/face_reading.dart';
+import 'package:meetngo_driver/src/onboarding/liveness/liveness_session.dart';
 import 'package:meetngo_driver/src/onboarding/liveness/liveness_verifier.dart';
 
 /// The liveness check, with no camera and no ML Kit.
@@ -404,9 +405,57 @@ void main() {
       }
     });
 
+    test('it never asks for a blink, because the app samples at 3Hz', () {
+      // The app reads frames through InputImage.fromFilePath at about 3Hz,
+      // and a blink lasts a few hundred milliseconds. Asking for one at that
+      // rate would fail drivers who blinked perfectly, intermittently, with no
+      // visible cause -- the worst kind of verification bug there is.
+      for (var seed = 0; seed < 50; seed++) {
+        final v = LivenessVerifier.random(count: 3, random: Random(seed));
+        expect(v.challenges, isNot(contains(LivenessChallenge.blink)),
+            reason: 'seed $seed asked for a blink at 3Hz');
+      }
+    });
+
+    test('the pool it draws from is five live challenges, not six', () {
+      expect(liveCapableChallenges, hasLength(5));
+      expect(liveCapableChallenges, isNot(contains(LivenessChallenge.blink)));
+      // The verifier still supports a blink -- the tests above prove it judges
+      // one correctly -- so raising the frame rate is a change to this list and
+      // nothing else.
+      expect(LivenessChallenge.values, hasLength(6),
+          reason: 'blink stays supported, it is just not asked for');
+    });
+
     test('a verifier with no challenges is refused', () {
       // Rather than passing instantly, which is what an empty loop would do.
       expect(() => LivenessVerifier(const []), throwsA(isA<AssertionError>()));
+    });
+  });
+
+  group('the camera has to actually be analysed', () {
+    // Found on the device. The screen opened, the preview was live and
+    // correct, the challenges were drawn at random, and the detector never
+    // received a single frame -- because the readiness guard tested
+    // `isStreamingImages`, which is only true *after* the call that starts the
+    // stream. So a driver sat being asked to tilt their head by a check that
+    // was not running, next to a message blaming the camera.
+    //
+    // A real `CameraController` cannot be built in a test, which is exactly
+    // why the guard is a predicate rather than an inline condition. Every other
+    // test in this file passed while this bug was live.
+    test('readiness is initialised, not streaming', () {
+      expect(LivenessSession.canStart(true), isTrue);
+      expect(LivenessSession.canStart(false), isFalse);
+    });
+
+    test('a camera that is initialised is ready, streaming or not', () {
+      // The bug, stated as the thing that must be true. If this ever goes back
+      // to asking about streaming, it is false again and the check stops
+      // running.
+      expect(LivenessSession.canStart(true), isTrue,
+          reason: 'this is the state the controller is in immediately after '
+              'initialize() and immediately before startImageStream()');
     });
   });
 

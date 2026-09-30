@@ -17,3 +17,10 @@ supabase/.env.local
 # SDD scratch: ledger, briefs, reports, review packages.
 .superpowers/
 node_modules/
+
+# Supabase personal access token and the service role key. Tracked nowhere.
+# toolchain/apk-build.env is deliberately NOT the place for either: it is
+# tracked, and the anon key it holds is only harmless because it already ships
+# inside both apps. A PAT committed here would be a live credential on a public
+# branch, and it can deploy functions and run SQL as the project owner.
+toolchain/supabase-admin.env

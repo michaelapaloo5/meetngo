@@ -106,7 +106,8 @@ class FaceReading {
       FaceReading(at: at, faceCount: 0, contourPoints: 0);
 
   @override
-  String toString() => 'FaceReading($faceCount faces, yaw=$yaw, pitch=$pitch, '
+  String toString() =>
+      'FaceReading($faceCount faces, yaw=$yaw, pitch=$pitch, '
       'eyes=$leftEyeOpen/$rightEyeOpen, smile=$smile, points=$contourPoints)';
 }
 

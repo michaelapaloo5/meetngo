@@ -38,25 +38,25 @@ enum DriverDocumentKind {
   /// up or too dark to read. So the instruction says what the photo has to show
   /// rather than repeating the label.
   String get hint => switch (this) {
-        DriverDocumentKind.profilePhoto =>
-          'Your face, looking at the phone. Well lit.',
-        DriverDocumentKind.vehiclePhoto =>
-          'The whole vehicle, from the side. The plate must be readable.',
-        DriverDocumentKind.ghanaCardPhoto =>
-          'The front of the card. All four corners inside the photo.',
-        DriverDocumentKind.driversLicence =>
-          'Both sides, or two photos if it is a fold-out licence.',
-        DriverDocumentKind.roadWorthy =>
-          'The certificate, with the expiry date readable.',
-        DriverDocumentKind.insuranceSticker =>
-          'The sticker on the windscreen, with the number readable.',
-        // Not a photograph and not a selfie. A liveness check is the driver
-        // doing small things to their face while the phone watches, and the
-        // only still that comes out of it is the evidence.
-        DriverDocumentKind.livenessFrame =>
-          'A short check that your face is a real one, done here in the app. '
-          'It asks you to turn your head and blink.',
-      };
+    DriverDocumentKind.profilePhoto =>
+      'Your face, looking at the phone. Well lit.',
+    DriverDocumentKind.vehiclePhoto =>
+      'The whole vehicle, from the side. The plate must be readable.',
+    DriverDocumentKind.ghanaCardPhoto =>
+      'The front of the card. All four corners inside the photo.',
+    DriverDocumentKind.driversLicence =>
+      'Both sides, or two photos if it is a fold-out licence.',
+    DriverDocumentKind.roadWorthy =>
+      'The certificate, with the expiry date readable.',
+    DriverDocumentKind.insuranceSticker =>
+      'The sticker on the windscreen, with the number readable.',
+    // Not a photograph and not a selfie. A liveness check is the driver
+    // doing small things to their face while the phone watches, and the
+    // only still that comes out of it is the evidence.
+    DriverDocumentKind.livenessFrame =>
+      'A short check that your face is a real one, done here in the app. '
+          'It asks you to turn your head and smile.',
+  };
 
   static DriverDocumentKind? byWire(String wire) {
     for (final kind in DriverDocumentKind.values) {
@@ -126,7 +126,8 @@ class DriverDocument {
     return DriverDocument(
       kind: kind,
       path: path,
-      createdAt: DateTime.tryParse(json['created_at'] as String? ?? '') ??
+      createdAt:
+          DateTime.tryParse(json['created_at'] as String? ?? '') ??
           DateTime.fromMillisecondsSinceEpoch(0),
     );
   }

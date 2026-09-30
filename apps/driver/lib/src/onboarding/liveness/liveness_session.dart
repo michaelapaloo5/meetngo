@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:io';
-import 'dart:ui' show Size;
 
 import 'package:camera/camera.dart';
 import 'package:flutter/foundation.dart';
@@ -12,20 +11,34 @@ import 'liveness_verifier.dart';
 /// Turns the camera into [FaceReading]s and drives a [LivenessVerifier].
 ///
 /// Everything platform-shaped lives here, so that nothing platform-shaped is in
-/// the decision-making. Two things this gets right that are easy to get wrong,
-/// and each of which silently destroys a liveness check:
+/// the decision-making.
 ///
-///  * **Rotation.** ML Kit reports head yaw relative to the *image*, so a
-///    portrait frame fed in with the wrong rotation reads a left turn as a
-///    right turn. Every turn challenge then passes or fails for a reason that
-///    has nothing to do with the driver.
-///  * **The row stride.** `bytesPerRow` is not `width`. Handing the detector a
-///    `width` where a stride belongs shears every row of a 4:3 sensor into a
-///    16:9 frame, and the head-pose model reports a head tilted at an angle it
-///    never was.
+/// ## How frames reach the detector, and why it is this way
 ///
-/// The luminance plane is used, not a colour buffer: the pose and eye models
-/// are trained on luminance, and giving them colour yields confident nonsense.
+/// The obvious route -- a CameraX image stream into `InputImage.fromBytes` --
+/// does not work, and the reason is worth writing down because it cost several
+/// build cycles to find.
+///
+/// `InputImage.fromBytes` is the only way a live frame reaches ML Kit, and in
+/// `vision-common` 17.3.0 it is broken. Decompiling the AAR shows
+/// `fromByteArray` delegating to `InputImage(ByteBuffer, int, int, int, int)`,
+/// and that constructor's format check accepts **only** NV21 (17) and YV12
+/// (842094169); `YUV_420_888` (35), which is what the camera actually
+/// delivers, falls through to `Preconditions.checkArgument(false)` -- a bare
+/// `IllegalArgumentException` with no message. Two earlier theories, the
+/// rotation and the row stride, were both wrong.
+///
+/// Asking the camera for NV21 does get a correct frame through that first
+/// check -- one plane, raw 17, 541,392 bytes for a 720x480 stream. It then
+/// fails one layer deeper, in the native validator, with a
+/// `NullPointerException` on every frame. That is where this stopped being a
+/// formatting problem and became a broken dependency.
+///
+/// So frames come from `takePicture` and `InputImage.fromFilePath`, which is a
+/// documented, supported, first-class entry point. It costs a hardware JPEG per
+/// sample rather than a buffer copy, and every consequence of that is
+/// accounted for in the interval and in the challenges that get asked. See
+/// [LivenessSession.start] and [LivenessChallenge].
 class LivenessSession {
   LivenessSession({required this.verifier});
 
@@ -34,13 +47,11 @@ class LivenessSession {
   CameraController? _controller;
   FaceDetector? _detector;
   Timer? _timer;
-  CameraImage? _pending;
 
-  /// True while a frame is being analysed, so the next one is dropped rather
-  /// than queued. A backlog of frames judged long after they were captured is a
-  /// liveness check assessing the past, and the queue grows without bound when
-  /// the detector is slower than the camera -- which accurate mode, on a budget
-  /// phone, is.
+  /// True while a still is being captured and analysed, so the next tick is
+  /// skipped rather than queued. A backlog of stills judged long after they
+  /// were taken is a liveness check assessing the past, and the queue grows
+  /// without bound when capture is slower than the tick -- which it is.
   bool _busy = false;
   bool _disposed = false;
 
@@ -50,27 +61,48 @@ class LivenessSession {
   /// never advances has no way to tell a broken check from a broken phone.
   String? error;
 
-  /// The still taken the instant the check passed, for the admin to compare
+  /// The still taken on the frame that passed, for the admin to compare
   /// against the licence photo.
   ///
-  /// Taken with `takePicture` rather than kept from the analysis stream,
-  /// because the analysis buffer is a raw luma plane and not an image any
-  /// viewer can open. The bucket's mime allow-list is `image/jpeg` and an
-  /// admin opening a corrupt file learns nothing about the driver.
+  /// It is the picture the check was actually judged on, not a second capture
+  /// afterwards. Taken separately it would be a different instant, a different
+  /// expression, and one more thing that can fail on a driver who has just
+  /// passed.
   File? proofFrame;
 
-  /// Whether the proof still needs taking, so a passing check takes exactly one.
-  bool _tookProof = false;
-
-  /// Starts analysing. The camera must already be initialised and ready.
+  /// Whether a camera is ready to be analysed.
   ///
-  /// [intervalMs] throttles the analysis rather than taking every frame: ML
-  /// Kit's accurate mode cannot keep up with 30fps, and 120ms is about 8Hz,
-  /// which is far more than a 12-second challenge needs to see a 20-degree turn
-  /// happen.
-  Future<void> start({int intervalMs = 120}) async {
+  /// Readiness is `isInitialized` and nothing else. In particular it is **not**
+  /// `isStreamingImages`: `startImageStream` is what makes a controller
+  /// streaming, so a guard that tests for streaming is testing for the thing
+  /// this method is about to do, is therefore always false, and silently stops
+  /// the check from ever running.
+  ///
+  /// That is not hypothetical. It is what the first version did, found on the
+  /// device: the screen opened, the preview was live and correct, and the
+  /// detector never received a single frame, so a driver sat being asked to
+  /// tilt their head by a check that was not running. Nothing in the widget
+  /// tests could see it, because a real `CameraController` cannot be built in
+  /// a test, which is the whole reason this is a one-line predicate.
+  @visibleForTesting
+  static bool canStart(bool isInitialized) => isInitialized;
+
+  void attach(CameraController controller) => _controller = controller;
+
+  /// Starts sampling. The camera must already be initialised and ready.
+  ///
+  /// [intervalMs] is the gap between samples: 350ms is about 3Hz, which is
+  /// what a hardware still costs on a budget phone and still fast enough to
+  /// watch a 20-degree head turn happen.
+  ///
+  /// 3Hz is also the reason a blink is not one of the challenges. A blink lasts
+  /// a few hundred milliseconds; a 3Hz sampler misses most of them. Asking for
+  /// one would be a check that fails drivers who did it perfectly, and the
+  /// failures would be intermittent and inexplicable, which is the worst kind
+  /// of verification bug there is.
+  Future<void> start({int intervalMs = 350}) async {
     final controller = _controller;
-    if (controller == null || !controller.value.isStreamingImages) {
+    if (controller == null || !canStart(controller.value.isInitialized)) {
       error = 'The camera is not ready yet.';
       return;
     }
@@ -83,10 +115,10 @@ class LivenessSession {
         // with nothing on screen to say why.
         performanceMode: FaceDetectorMode.accurate,
         // For the mesh the verifier insists on seeing, and for the eye
-        // openness the blink challenge is built from.
+        // openness the smile challenge is cross-checked against.
         enableContours: true,
         enableClassification: true,
-        // Off. The verifier judges each frame on its own merits, and a tracked
+        // Off. The verifier judges each still on its own merits, and a tracked
         // id would invite trusting a face seen a moment ago -- which is exactly
         // what a printed photograph is: still, and confidently the same face.
         enableTracking: false,
@@ -97,57 +129,58 @@ class LivenessSession {
       ),
     );
 
-    unawaited(controller.startImageStream(_onFrame));
     _timer?.cancel();
     _timer = Timer.periodic(
       Duration(milliseconds: intervalMs),
-      (_) => unawaited(_drainPending()),
+      (_) => unawaited(_sample()),
     );
   }
 
-  void attach(CameraController controller) => _controller = controller;
-
-  void _onFrame(CameraImage image) {
-    if (_disposed || _busy) return;
-    _pending = image;
-  }
-
-  Future<void> _drainPending() async {
-    final image = _pending;
-    _pending = null;
+  /// Captures one still, judges it, and throws the file away.
+  Future<void> _sample() async {
+    final controller = _controller;
     final detector = _detector;
-    if (image == null || detector == null || _busy || _disposed) return;
+    if (controller == null || detector == null || _busy || _disposed) return;
+    if (!canStart(controller.value.isInitialized)) return;
 
     _busy = true;
+    File? shot;
     try {
-      final faces = await detector.processImage(_toInputImage(image));
+      final xFile = await controller.takePicture();
+      shot = File(xFile.path);
+      final faces = await detector.processImage(
+        InputImage.fromFilePath(shot.path),
+      );
       if (_disposed) return;
+      // Cleared on the first still that reads. Left set, one dropped frame
+      // during a check would show a red message for the rest of it, and a
+      // driver who reads that has stopped trying.
+      error = null;
       verifier.observe(_toReading(faces));
-      if (verifier.outcome == LivenessOutcome.passed && !_tookProof) {
-        _tookProof = true;
-        proofFrame = await _takeProof();
+      if (verifier.outcome == LivenessOutcome.passed && proofFrame == null) {
+        // Kept rather than deleted: the upload needs it, and the verifier's
+        // verdict is about this instant and no other.
+        proofFrame = shot;
+        shot = null;
       }
-    } on Object catch (e) {
+    } on Object catch (e, st) {
       error = 'The camera could not be read. Try again.';
-      if (kDebugMode) debugPrint('liveness frame failed: $e');
+      // Logged, not gated on `kDebugMode`.
+      //
+      // The driver gets the plain sentence above; the reason goes to the
+      // platform log unconditionally. Gating this on `kDebugMode` looked tidy
+      // and was exactly wrong: it made the one failure nobody can reproduce on
+      // a desk invisible on every real build.
+      debugPrint('liveness: still could not be read: $e\n  $st');
     } finally {
       _busy = false;
-    }
-  }
-
-  Future<File?> _takeProof() async {
-    try {
-      final xFile = await _controller?.takePicture();
-      if (xFile == null) return null;
-      return File(xFile.path);
-    } on Object {
-      // A still that fails to save does not undo a passed check: the liveness
-      // result stands, and the driver is asked for the face check again only
-      // if there is no frame for an admin to look at. Reported rather than
-      // hidden, because a check that passes with nothing to review is a check
-      // that cannot be audited.
-      error = 'The check passed but the photo could not be saved.';
-      return null;
+      // Every still is deleted except the one kept as proof. They land in the
+      // app's own cache, and a check sampled at 3Hz for a minute is a couple
+      // of hundred files of somebody's face that nobody asked to keep.
+      final leftover = shot;
+      if (leftover != null) {
+        unawaited(leftover.delete().catchError((Object _) => leftover));
+      }
     }
   }
 
@@ -156,11 +189,9 @@ class LivenessSession {
   /// `sensorOrientation` is the sensor's angle and the device rotation is how
   /// far the phone has been turned since; they compose. The front camera's
   /// image is mirrored relative to the sensor and the back camera's is not,
-  /// which is why they differ by a quarter turn from each other. Using the
-  /// wrong one of these is the most common way an ML Kit liveness check ends
-  /// up judging left as right.
+  /// which is why they differ by a quarter turn from each other.
   ///
-  /// A named constructor and not a bare `~/ 90`, because the result indexes
+  /// A named lookup and not a bare `~/ 90`, because the result indexes
   /// [InputImageRotation.values] and an out-of-range integer there is a range
   /// error on a driver's phone rather than a wrong-but-working answer.
   static InputImageRotation rotationFor(CameraDescription d) {
@@ -185,31 +216,18 @@ class LivenessSession {
     return (wrapped ~/ 90 * 90).toDouble();
   }
 
-  InputImage _toInputImage(CameraImage image) {
-    final d = _controller?.description;
-    return InputImage.fromBytes(
-      bytes: image.planes.first.bytes,
-      metadata: InputImageMetadata(
-        size: Size(image.width.toDouble(), image.height.toDouble()),
-        rotation: d == null
-            ? InputImageRotation.rotation0deg
-            : rotationFor(d),
-        format: InputImageFormat.yuv_420_888,
-        // The stride, not the width. See the class comment.
-        bytesPerRow: image.planes.first.bytesPerRow,
-      ),
-    );
-  }
-
   /// Reduces ML Kit's faces to one reading, or to a no-face reading.
   FaceReading _toReading(List<Face> faces) {
     if (faces.isEmpty) return FaceReading.noFace(DateTime.now());
     // Largest face, not the first. With more than one face the verifier fails
-    // the check outright, so this only decides what the few frames before the
-    // count trips report -- and the nearest face is the least surprising
-    // thing to report for those.
-    faces.sort((a, b) => (b.boundingBox.width * b.boundingBox.height)
-        .compareTo(a.boundingBox.width * a.boundingBox.height));
+    // the check outright, so this only decides what the few samples before the
+    // count trips report -- and the nearest face is the least surprising thing
+    // to report for those.
+    faces.sort(
+      (a, b) => (b.boundingBox.width * b.boundingBox.height).compareTo(
+        a.boundingBox.width * a.boundingBox.height,
+      ),
+    );
     final face = faces.first;
     return FaceReading(
       at: DateTime.now(),

@@ -30,11 +30,7 @@ import 'liveness_verifier.dart';
 ///    went wrong" on a screen someone is being asked to put their face in front
 ///    of is the worst possible thing to show.
 class LivenessScreen extends StatefulWidget {
-  const LivenessScreen({
-    super.key,
-    required this.onPassed,
-    this.onCancelled,
-  });
+  const LivenessScreen({super.key, required this.onPassed, this.onCancelled});
 
   /// Called with the frame to be uploaded, once the check passes.
   final Future<void> Function(File proof) onPassed;
@@ -93,7 +89,7 @@ class _LivenessScreenState extends State<LivenessScreen> {
         // out for reasons that have nothing to do with the driver.
         ResolutionPreset.medium,
         enableAudio: false,
-        imageFormatGroup: ImageFormatGroup.yuv420,
+        imageFormatGroup: ImageFormatGroup.nv21,
       );
       await controller.initialize();
       if (!mounted) {
@@ -126,7 +122,7 @@ class _LivenessScreenState extends State<LivenessScreen> {
         _starting = false;
         _error = e.code == 'CameraAccessDenied'
             ? 'Meet \'N Go needs the camera to do this check. Turn it on in '
-                'Settings, then try again.'
+                  'Settings, then try again.'
             : 'The camera could not be started. Try again.';
       });
     } on Object {
@@ -221,16 +217,16 @@ class _LivenessScreenState extends State<LivenessScreen> {
   /// Each of these is a different instruction, and the difference is the whole
   /// reason this is a function rather than a single error string.
   String? _sentenceFor(LivenessOutcome outcome) => switch (outcome) {
-        LivenessOutcome.notYet => null,
-        LivenessOutcome.passed => null,
-        LivenessOutcome.tooManyFaces =>
-          'Only one face, please. Put any photograph you are holding away.',
-        LivenessOutcome.noFace =>
-          'We cannot see your face. Hold the phone in front of you, in the light.',
-        LivenessOutcome.timedOut =>
-          'That took too long. Tap to try that one again.',
-        LivenessOutcome.gaveUp => 'Something went wrong. Tap to try again.',
-      };
+    LivenessOutcome.notYet => null,
+    LivenessOutcome.passed => null,
+    LivenessOutcome.tooManyFaces =>
+      'Only one face, please. Put any photograph you are holding away.',
+    LivenessOutcome.noFace =>
+      'We cannot see your face. Hold the phone in front of you, in the light.',
+    LivenessOutcome.timedOut =>
+      'That took too long. Tap to try that one again.',
+    LivenessOutcome.gaveUp => 'Something went wrong. Tap to try again.',
+  };
 
   @override
   Widget build(BuildContext context) {
@@ -252,9 +248,7 @@ class _LivenessScreenState extends State<LivenessScreen> {
         title: const Text('Face check'),
       ),
       body: _starting
-          ? const Center(
-              child: CircularProgressIndicator(color: Colors.white),
-            )
+          ? const Center(child: CircularProgressIndicator(color: Colors.white))
           : _camera == null
           ? _message(null, onRetry: _retry)
           : Stack(
@@ -276,9 +270,7 @@ class _LivenessScreenState extends State<LivenessScreen> {
                   child: Container(
                     width: double.infinity,
                     color: Colors.black.withValues(alpha: 0.55),
-                    padding: EdgeInsets.fromLTRB(
-                      20.w, 20.h, 20.w, 32.h,
-                    ),
+                    padding: EdgeInsets.fromLTRB(20.w, 20.h, 20.w, 32.h),
                     child: Column(
                       mainAxisSize: MainAxisSize.min,
                       children: [
@@ -287,7 +279,8 @@ class _LivenessScreenState extends State<LivenessScreen> {
                             done: verifier.completed,
                             total: verifier.total,
                             progress: verifier.progress,
-                            failed: outcome != LivenessOutcome.notYet &&
+                            failed:
+                                outcome != LivenessOutcome.notYet &&
                                 outcome != LivenessOutcome.passed,
                           ),
                         SizedBox(height: 16.h),
@@ -365,8 +358,11 @@ class _LivenessScreenState extends State<LivenessScreen> {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          const Icon(Icons.face_retouching_natural,
-              size: 48, color: Colors.white54),
+          const Icon(
+            Icons.face_retouching_natural,
+            size: 48,
+            color: Colors.white54,
+          ),
           SizedBox(height: 16.h),
           Text(
             error ?? 'The face check is not available right now.',
