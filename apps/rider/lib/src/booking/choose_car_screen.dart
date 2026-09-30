@@ -33,7 +33,7 @@ const List<_Tier> _tiers = [
     blurb: 'Newer, nicer car. Up to 4 seats.',
   ),
   _Tier(
-    category: RideCategory.van,
+    category: RideCategory.lite,
     seats: 7,
     blurb: 'Room for a group. Up to 7 seats.',
   ),
@@ -272,6 +272,6 @@ class _TierCard extends StatelessWidget {
   static IconData _iconFor(RideCategory c) => switch (c) {
         RideCategory.standard => Icons.directions_car,
         RideCategory.premium => Icons.auto_awesome,
-        RideCategory.van => Icons.airport_shuttle,
+        RideCategory.lite => Icons.airport_shuttle,
       };
 }

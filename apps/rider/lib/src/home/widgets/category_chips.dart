@@ -7,12 +7,15 @@ import 'package:mng_core/mng_core.dart';
 /// `MngColors.premium` is `0xFF1A1A1A`, byte-identical to `MngColors.onPrimary`
 /// and `MngColors.textPrimary`, so a selected Premium chip rendered with
 /// `onPrimary` is dark-on-dark and reads as an empty box. Measured luminance on
-/// this host: `standard` 0.5165, `van` 0.3560, `premium` 0.0103, `onPrimary`
-/// 0.0103, `page` 1.0. A `0.5` threshold clears `standard` alone, so it sent
-/// `van` to `page` at 2.59:1. The `0.2` threshold keeps `standard` and `van`
-/// on `onPrimary` and sends only `premium` to `page`.
+/// this host: `standard` 0.5165, `lite` 0.3560 (it is the same green the `van`
+/// token was, so the number is unchanged), `premium` 0.0103, `onPrimary` 0.0103,
+/// `page` 1.0. A `0.5` threshold clears `standard` alone, so it sent `lite` to
+/// `page` at 2.59:1. The `0.2` threshold keeps `standard` and `lite` on
+/// `onPrimary` and sends only `premium` to `page`.
 Color onCategoryColor(RideCategory category) =>
-    category.color.computeLuminance() > 0.2 ? MngColors.onPrimary : MngColors.page;
+    category.color.computeLuminance() > 0.2
+    ? MngColors.onPrimary
+    : MngColors.page;
 
 class CategoryChips extends StatelessWidget {
   const CategoryChips({
@@ -27,7 +30,7 @@ class CategoryChips extends StatelessWidget {
   static const _icons = <RideCategory, IconData>{
     RideCategory.standard: Icons.directions_car,
     RideCategory.premium: Icons.auto_awesome,
-    RideCategory.van: Icons.airport_shuttle,
+    RideCategory.lite: Icons.airport_shuttle,
   };
 
   @override

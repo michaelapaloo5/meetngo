@@ -21,20 +21,19 @@ import 'package:meetngo_rider/src/trip/trip_controller.dart';
 class _StubProfiles implements ProfileRepository {
   @override
   Future<RiderProfile?> me() async => const RiderProfile(
-        id: 'r1',
-        fullName: 'Alex',
-        phone: '',
-        rating: 5.0,
-        tripCount: 5,
-        kyc: KycStatus.approved,
-      );
+    id: 'r1',
+    fullName: 'Alex',
+    phone: '',
+    rating: 5.0,
+    tripCount: 5,
+    kyc: KycStatus.approved,
+  );
 
   @override
   Future<RiderProfile?> save({
     required String fullName,
     required String phone,
-  }) async =>
-      me();
+  }) async => me();
 }
 
 class _StubTrips implements TripRepository {
@@ -75,8 +74,7 @@ class _StubTrips implements TripRepository {
     required TripStop dropoff,
     required RideCategory category,
     String? promoCode,
-  }) async =>
-      throw UnimplementedError();
+  }) async => throw UnimplementedError();
 
   @override
   Future<void> raiseSos(String tripId, String note) async {}
@@ -90,8 +88,7 @@ class _StubFunctions implements TripFunctions {
   Future<Map<String, dynamic>> invoke(
     String name,
     Map<String, dynamic> body,
-  ) async =>
-      throw UnimplementedError();
+  ) async => throw UnimplementedError();
 }
 
 void main() {
@@ -106,15 +103,15 @@ void main() {
     await tester.pumpWidget(const RideNGoApp());
     await tester.pump();
 
-    expect(find.textContaining('No Supabase project is connected'), findsOneWidget);
+    expect(
+      find.textContaining('No Supabase project is connected'),
+      findsOneWidget,
+    );
     expect(find.textContaining('SUPABASE_URL'), findsOneWidget);
   });
 
   testWidgets('the flow calculator carries the shared fares', (tester) async {
-    final flow = RiderFlow(
-      trips: _StubTrips(),
-      functions: _StubFunctions(),
-    );
+    final flow = RiderFlow(trips: _StubTrips(), functions: _StubFunctions());
     addTearDown(flow.dispose);
 
     final quote = flow.calc.quote(
@@ -126,7 +123,11 @@ void main() {
     // Asserted here because this is the first code path that is not a test
     // reaching the calculator, so a wiring mistake in the injected instance
     // would otherwise only show up on a phone.
-    expect(quote.fareGhs, 22.00);
+    //
+    // (0.35 * 5) * 1.5 = 2.625, so 2.63. The old value here was 22.00, from
+    // (5.00 + 1.80 * 5) * 1.5 + 1.00 -- the model with a GHS 5 base fare and a
+    // GHS 1 booking fee, both now zero.
+    expect(quote.fareGhs, 2.63);
     expect(flow.controller, isA<TripController>());
     expect(flow.requesting, isFalse);
     expect(flow.requestError, isNull);
@@ -138,16 +139,35 @@ void main() {
   // rider was choosing between them as if they were real. It is gone, and the
   // guarantee now worth pinning is the one the server actually matches on: the
   // three launch categories, which is what `request-ride` filters drivers by.
-  test('the chips offer exactly the launch categories the server matches on', () {
-    expect(RideCategory.values.map((c) => c.label), [
-      'Standard',
-      'Premium',
-      'Van',
-    ]);
-    for (final c in RideCategory.values) {
-      expect(c.perKmGhs, greaterThan(0), reason: c.name);
-    }
-  });
+  test(
+    'the chips offer exactly the launch categories the server matches on',
+    () {
+      // The order is the enum's declaration order, which is the order the chips
+      // render in, so it is asserted rather than sorted. `lite` is the cheapest
+      // tier (28c/km against standard's 35c) and a rider's first tap lands on
+      // whatever is first, so a reorder changes what a rider is quoted by
+      // default. Cheapest first is the intent.
+      expect(RideCategory.values.map((c) => c.label), [
+        'Lite',
+        'Standard',
+        'Premium',
+      ]);
+      // Ascending by price, stated rather than implied by the labels above: a
+      // dearer tier listed above a cheaper one is a pricing bug nothing else in
+      // this file would notice.
+      final rates = RideCategory.values.map((c) => c.perKmGhs).toList();
+      for (var i = 1; i < rates.length; i++) {
+        expect(
+          rates[i],
+          greaterThan(rates[i - 1]),
+          reason: 'the categories are listed cheapest-first',
+        );
+      }
+      for (final c in RideCategory.values) {
+        expect(c.perKmGhs, greaterThan(0), reason: c.name);
+      }
+    },
+  );
 
   testWidgets('the home screen shows history on a cold start, not only after '
       'a booking', (tester) async {
@@ -156,26 +176,28 @@ void main() {
     // read only happened on the way past from a booking, so the section the
     // home screen is built around was empty for the first thing every
     // returning rider does.
-    final trips = _StubTrips(pastTrips: [
-      BookedTrip(
-        trip: const Trip(
-          id: 't1',
-          riderId: 'r1',
-          driverId: 'd1',
-          category: RideCategory.standard,
-          state: TripState.completed,
-          pickup: TripStop('Pickup', GeoPoint(5.6037, -0.1870), 'Osu, Accra'),
-          dropoff: TripStop(
-            'Dropoff',
-            GeoPoint(5.6052, -0.1660),
-            'Airport Residential, Accra',
+    final trips = _StubTrips(
+      pastTrips: [
+        BookedTrip(
+          trip: const Trip(
+            id: 't1',
+            riderId: 'r1',
+            driverId: 'd1',
+            category: RideCategory.standard,
+            state: TripState.completed,
+            pickup: TripStop('Pickup', GeoPoint(5.6037, -0.1870), 'Osu, Accra'),
+            dropoff: TripStop(
+              'Dropoff',
+              GeoPoint(5.6052, -0.1660),
+              'Airport Residential, Accra',
+            ),
+            distanceKm: 2.0,
+            fareGhs: 12.5,
           ),
-          distanceKm: 2.0,
-          fareGhs: 12.5,
+          createdAt: DateTime(2026, 9, 27),
         ),
-        createdAt: DateTime(2026, 9, 27),
-      ),
-    ]);
+      ],
+    );
     final flow = RiderFlow(trips: trips, functions: _StubFunctions());
     addTearDown(flow.dispose);
     final profile = RiderProfileController(_StubProfiles());
@@ -206,12 +228,11 @@ void main() {
           providers: [
             Provider<TripRepository>.value(value: trips),
             ChangeNotifierProvider<RiderFlow>.value(value: flow),
-            ChangeNotifierProvider<RiderProfileController>.value(value: profile),
+            ChangeNotifierProvider<RiderProfileController>.value(
+              value: profile,
+            ),
           ],
-          child: MaterialApp(
-            theme: MngTheme.light,
-            home: const RiderShell(),
-          ),
+          child: MaterialApp(theme: MngTheme.light, home: const RiderShell()),
         ),
       ),
     );
@@ -222,29 +243,35 @@ void main() {
       await tester.pump(const Duration(milliseconds: 20));
     }
 
-    expect(trips.historyCalls, greaterThan(0),
-        reason: 'the history has to be read on arrival, not only after booking');
+    expect(
+      trips.historyCalls,
+      greaterThan(0),
+      reason: 'the history has to be read on arrival, not only after booking',
+    );
     expect(find.byKey(const Key('recentRides')), findsOneWidget);
   });
 
-  test('a request that throws reports the reason instead of throwing', () async {
-    final flow = RiderFlow(trips: _StubTrips(), functions: _StubFunctions());
-    addTearDown(flow.dispose);
+  test(
+    'a request that throws reports the reason instead of throwing',
+    () async {
+      final flow = RiderFlow(trips: _StubTrips(), functions: _StubFunctions());
+      addTearDown(flow.dispose);
 
-    final trip = await flow.requestRide(
-      const RouteDraft(
-        pickup: TripStop('Pickup', GeoPoint(5.6037, -0.1870), 'Osu, Accra'),
-        dropoff: TripStop(
-          'Dropoff',
-          GeoPoint(5.6052, -0.1660),
-          'Airport Residential, Accra',
+      final trip = await flow.requestRide(
+        const RouteDraft(
+          pickup: TripStop('Pickup', GeoPoint(5.6037, -0.1870), 'Osu, Accra'),
+          dropoff: TripStop(
+            'Dropoff',
+            GeoPoint(5.6052, -0.1660),
+            'Airport Residential, Accra',
+          ),
+          category: RideCategory.standard,
         ),
-        category: RideCategory.standard,
-      ),
-    );
+      );
 
-    expect(trip, isNull);
-    expect(flow.requesting, isFalse);
-    expect(flow.requestError, isNotNull);
-  });
+      expect(trip, isNull);
+      expect(flow.requesting, isFalse);
+      expect(flow.requestError, isNotNull);
+    },
+  );
 }

@@ -1,0 +1,15 @@
+name: mng_supabase_tests
+description: >-
+  Plain-Dart checks that belong to the Supabase side of the repository and to
+  neither Flutter app. This package exists so `package:test` resolves in
+  supabase/tests/, which it did not: the directory had no pubspec, nothing ran
+  the file, and `flutter analyze` at the root reported fourteen errors from an
+  import that could never be satisfied.
+publish_to: none
+version: 0.0.1
+
+environment:
+  sdk: ">=3.4.0 <4.0.0"
+
+dev_dependencies:
+  test: ^1.25.0

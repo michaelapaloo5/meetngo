@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
 import 'package:mng_core/mng_core.dart';
+
 import '../data/booked_trip.dart';
 import '../data/location_service.dart';
 import '../data/place_service.dart';
@@ -150,7 +151,9 @@ class _HomeScreenState extends State<HomeScreen> {
                 child: Container(
                   constraints: BoxConstraints(minHeight: 52.h),
                   padding: EdgeInsets.symmetric(
-                      horizontal: 16.w, vertical: 14.h),
+                    horizontal: 16.w,
+                    vertical: 14.h,
+                  ),
                   decoration: BoxDecoration(
                     color: MngColors.muted,
                     borderRadius: BorderRadius.circular(26),
@@ -163,8 +166,9 @@ class _HomeScreenState extends State<HomeScreen> {
                         child: Text(
                           'Where would you go?',
                           overflow: TextOverflow.ellipsis,
-                          style: MngTheme.light.textTheme.bodyMedium
-                              ?.copyWith(color: MngColors.textSub),
+                          style: MngTheme.light.textTheme.bodyMedium?.copyWith(
+                            color: MngColors.textSub,
+                          ),
                         ),
                       ),
                     ],
@@ -183,7 +187,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 onPressed: () => widget.onSearchTap?.call(context, promo: true),
               ),
               SizedBox(height: 12.h),
-              // No category chips. Choosing Standard, Premium or Van here was
+              // No category chips. Choosing Lite, Standard or Premium here was
               // choosing a tier before there was a trip, and then choosing it
               // again on the next screen -- two controls for one decision, with
               // the first one easy to forget. The tier is picked once, on the

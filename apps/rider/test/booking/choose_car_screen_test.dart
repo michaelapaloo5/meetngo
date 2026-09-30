@@ -9,22 +9,21 @@ Widget wrap({
   void Function(RideCategory c)? onCategory,
   void Function(RideCategory c)? onConfirm,
   double distanceKm = 8.0,
-}) =>
-    ScreenUtilInit(
-      designSize: const Size(390, 844),
-      minTextAdapt: true,
-      splitScreenMode: true,
-      builder: (_, _) => MaterialApp(
-        theme: MngTheme.light,
-        home: ChooseCarScreen(
-          calc: FareCalculator(),
-          selected: selected,
-          onCategory: onCategory ?? (_) {},
-          onConfirm: onConfirm ?? (_) {},
-          distanceKm: distanceKm,
-        ),
-      ),
-    );
+}) => ScreenUtilInit(
+  designSize: const Size(390, 844),
+  minTextAdapt: true,
+  splitScreenMode: true,
+  builder: (_, _) => MaterialApp(
+    theme: MngTheme.light,
+    home: ChooseCarScreen(
+      calc: FareCalculator(),
+      selected: selected,
+      onCategory: onCategory ?? (_) {},
+      onConfirm: onConfirm ?? (_) {},
+      distanceKm: distanceKm,
+    ),
+  ),
+);
 
 void useDesignSurface(WidgetTester tester) {
   tester.view.physicalSize = const Size(1170, 2532);
@@ -93,19 +92,23 @@ void main() {
   testWidgets('each category shows its own computed fare', (tester) async {
     useDesignSurface(tester);
     await tester.pumpWidget(wrap());
-    // 8 km standard: (5.00 + 1.80 * 8) + 1.00 = 20.40
-    expect(find.text('GHS 20.40'), findsWidgets);
-    // 8 km premium: (5.00 + 2.80 * 8) + 1.00 = 28.40
-    expect(find.text('GHS 28.40'), findsOneWidget);
-    // 8 km van: (5.00 + 2.20 * 8) + 1.00 = 23.60
-    expect(find.text('GHS 23.60'), findsOneWidget);
+    // 8 km: there is no base fare and no booking fee, so a fare is the per-km
+    // rate times the distance. 0.28 * 8 = 2.24, 0.35 * 8 = 2.80, 0.46 * 8 =
+    // 3.68. The old figures here were 20.40 / 23.60 / 28.40, from the model with
+    // a GHS 5.00 base and a GHS 1.00 booking fee.
+    expect(
+      find.text('GHS 2.80'),
+      findsWidgets,
+    ); // standard, the default selection
+    expect(find.text('GHS 3.68'), findsOneWidget); // premium
+    expect(find.text('GHS 2.24'), findsOneWidget); // lite
   });
 
   testWidgets('seat counts are a property of the category', (tester) async {
     useDesignSurface(tester);
     await tester.pumpWidget(wrap());
     expect(find.text('4 seats'), findsNWidgets(2)); // standard and premium
-    expect(find.text('7 seats'), findsOneWidget); // van
+    expect(find.text('7 seats'), findsOneWidget); // lite, the bigger tier
   });
 
   testWidgets('tapping a category selects it and reports the change', (
@@ -115,24 +118,22 @@ void main() {
     RideCategory? reported;
     await tester.pumpWidget(wrap(onCategory: (c) => reported = c));
 
-    await tester.tap(find.byKey(const Key('rideCard-van')));
+    await tester.tap(find.byKey(const Key('rideCard-lite')));
     await tester.pump();
 
-    expect(reported, RideCategory.van);
+    expect(reported, RideCategory.lite);
   });
 
   testWidgets('the button quotes the selected category', (tester) async {
     useDesignSurface(tester);
     await tester.pumpWidget(wrap());
-    expect(
-      find.text('Find driver  GHS 20.40'),
-      findsOneWidget,
-    );
+    expect(find.text('Find driver  GHS 2.80'), findsOneWidget);
 
-    await tester.tap(find.byKey(const Key('rideCard-van')));
+    await tester.tap(find.byKey(const Key('rideCard-lite')));
     await tester.pump();
 
-    expect(find.text('Find driver  GHS 23.60'), findsOneWidget);
+    // 0.28 * 8 = 2.24, so selecting lite lowers the quote rather than raising it.
+    expect(find.text('Find driver  GHS 2.24'), findsOneWidget);
   });
 
   testWidgets('the fare is over the real distance, not a constant', (
@@ -140,9 +141,11 @@ void main() {
   ) async {
     useDesignSurface(tester);
     await tester.pumpWidget(wrap(distanceKm: 2.4));
-    // (5.00 + 1.80 * 2.4) + 1.00 = 10.32
-    expect(find.text('GHS 10.32'), findsWidgets);
-    expect(find.text('GHS 20.40'), findsNothing);
+    // 0.35 * 2.4 = 0.84
+    expect(find.text('GHS 0.84'), findsWidgets);
+    // The 8 km figure must be gone. This is the test that a distance is read at
+    // all, rather than a fare pinned by a constant somewhere in the widget.
+    expect(find.text('GHS 2.80'), findsNothing);
   });
 
   testWidgets('confirm passes the selected category, not a vehicle', (
@@ -152,18 +155,21 @@ void main() {
     RideCategory? confirmed;
     await tester.pumpWidget(wrap(onConfirm: (c) => confirmed = c));
 
-    await tester.tap(find.byKey(const Key('rideCard-van')));
+    await tester.tap(find.byKey(const Key('rideCard-lite')));
     await tester.pump();
     await tester.tap(find.byKey(const Key('findDriverButton')));
     await tester.pump();
 
-    expect(confirmed, RideCategory.van);
+    expect(confirmed, RideCategory.lite);
   });
 
   testWidgets('a selection made upstream is honoured', (tester) async {
     useDesignSurface(tester);
     await tester.pumpWidget(wrap(selected: RideCategory.premium));
-    expect(find.text('Find driver  GHS 28.40'), findsOneWidget);
+    // 0.46 * 8 = 3.68, and premium must be the dearer of the two for the
+    // "upstream selection is honoured" claim to be distinguishable from the
+    // default being shown.
+    expect(find.text('Find driver  GHS 3.68'), findsOneWidget);
   });
 
   testWidgets('the selected card is marked and the others are not', (
@@ -176,14 +182,12 @@ void main() {
       // The keyed panel, not "the last Container under the card": the icon is
       // a Container too, and picking by position is how a test ends up
       // asserting on the wrong decoration.
-      final box = tester.widget<Container>(
-        find.byKey(Key('tierPanel-$name')),
-      );
+      final box = tester.widget<Container>(find.byKey(Key('tierPanel-$name')));
       return (box.decoration! as BoxDecoration).border!.top;
     }
 
     expect(borderOf('standard').width, 2);
-    expect(borderOf('van').width, 1);
+    expect(borderOf('lite').width, 1);
   });
 
   testWidgets('the screen has no overflow at 200% text scale', (tester) async {

@@ -39,22 +39,24 @@ Trip tripInState(
   int? etaMinutes,
   RideCategory? category,
   String? pickupOtp,
-}) =>
-    Trip(
-      id: 't1',
-      riderId: 'r1',
-      driverId: 'd1',
-      category: category ?? RideCategory.standard,
-      state: state,
-      pickup: const TripStop('P', GeoPoint(5.6037, -0.1870), 'Osu, Accra'),
-      dropoff:
-          const TripStop('D', GeoPoint(5.6052, -0.1660), 'Airport Residential'),
-      distanceKm: 2.4,
-      fareGhs: 12.50,
-      isDemo: true,
-      etaMinutes: etaMinutes,
-      pickupOtp: pickupOtp,
-    );
+}) => Trip(
+  id: 't1',
+  riderId: 'r1',
+  driverId: 'd1',
+  category: category ?? RideCategory.standard,
+  state: state,
+  pickup: const TripStop('P', GeoPoint(5.6037, -0.1870), 'Osu, Accra'),
+  dropoff: const TripStop(
+    'D',
+    GeoPoint(5.6052, -0.1660),
+    'Airport Residential',
+  ),
+  distanceKm: 2.4,
+  fareGhs: 12.50,
+  isDemo: true,
+  etaMinutes: etaMinutes,
+  pickupOtp: pickupOtp,
+);
 
 /// Stands in for the raw `http.ClientException` a direct PostgREST call lets
 /// through, so the controller's `on Exception` clause is exercised by
@@ -67,7 +69,6 @@ class FakeTransportException implements Exception {
 }
 
 class FakeTripRepository implements TripRepository {
-
   @override
   Future<List<BookedTrip>> history({int limit = 50}) async => const [];
 
@@ -113,14 +114,14 @@ class FakeTripRepository implements TripRepository {
     required TripStop dropoff,
     required RideCategory category,
     String? promoCode,
-  }) async =>
-      tripInState(TripState.requested);
+  }) async => tripInState(TripState.requested);
 
   @override
   Future<GeoPoint?> currentLocation() async => null;
 
   @override
-  Future<VehicleFix?> assignedDriverLocation(String? driverId) async => driverPoint;
+  Future<VehicleFix?> assignedDriverLocation(String? driverId) async =>
+      driverPoint;
   @override
   Future<void> cancelTrip(String tripId) async {
     // Counted before the failure check, exactly as `sosCalls` is: the count is
@@ -157,10 +158,10 @@ class FakeTrackingController extends TrackingController {
   /// it, and a test that cannot hand the constructor a trip carrying a
   /// particular `eta_minutes` cannot pin the seeding at all.
   FakeTrackingController(this.state, [Trip? initialTrip])
-      : super(
-          trips: FakeTripRepository(),
-          initialTrip: initialTrip ?? tripInState(state),
-        ) {
+    : super(
+        trips: FakeTripRepository(),
+        initialTrip: initialTrip ?? tripInState(state),
+      ) {
     driver = const DriverProfile(
       id: 'd1',
       fullName: 'Jane Cooper',
@@ -183,12 +184,12 @@ class FakeTrackingController extends TrackingController {
 }
 
 Widget wrapTracking(TrackingController c) => ScreenUtilInit(
-      designSize: const Size(390, 844),
-      builder: (_, _) => ChangeNotifierProvider<TrackingController>.value(
-        value: c,
-        child: MaterialApp(theme: MngTheme.light, home: const TrackingScreen()),
-      ),
-    );
+  designSize: const Size(390, 844),
+  builder: (_, _) => ChangeNotifierProvider<TrackingController>.value(
+    value: c,
+    child: MaterialApp(theme: MngTheme.light, home: const TrackingScreen()),
+  ),
+);
 
 /// Presses the SOS button and settles the frame the press started.
 ///
@@ -206,48 +207,62 @@ Future<void> tapSos(WidgetTester tester) async {
 }
 
 void main() {
-  testWidgets('matched state shows the ride-confirmed headline', (tester) async {
+  testWidgets('matched state shows the ride-confirmed headline', (
+    tester,
+  ) async {
     useDesignSurface(tester);
-    await tester.pumpWidget(wrapTracking(FakeTrackingController(TripState.matched)));
+    await tester.pumpWidget(
+      wrapTracking(FakeTrackingController(TripState.matched)),
+    );
     expect(find.text('Ride confirmed'), findsOneWidget);
   });
 
-  testWidgets('arriving state shows the ride-confirmed headline with the ETA badge',
-      (tester) async {
-    useDesignSurface(tester);
-    // 7, not the 4 the previous implementation hardcoded and not the 4 this test
-    // used to set by hand, so both the constructor seeding and the refresh mirror
-    // are distinguishable from a literal. Driving the badge through the
-    // constructor is also the only way to reach the seeding at all: nothing in
-    // `apps/rider/lib/` constructs this controller yet, so there is no
-    // production path that would set the field for it.
-    final c = FakeTrackingController(
-      TripState.arriving,
-      tripInState(TripState.arriving, etaMinutes: 7),
-    );
-    expect(c.etaMinutes, 7);
-    await tester.pumpWidget(wrapTracking(c));
-    expect(find.text('Arriving soon'), findsOneWidget);
-    expect(find.byKey(const Key('etaBadge')), findsOneWidget);
-    expect(find.text('7 min'), findsOneWidget);
-  });
+  testWidgets(
+    'arriving state shows the ride-confirmed headline with the ETA badge',
+    (tester) async {
+      useDesignSurface(tester);
+      // 7, not the 4 the previous implementation hardcoded and not the 4 this test
+      // used to set by hand, so both the constructor seeding and the refresh mirror
+      // are distinguishable from a literal. Driving the badge through the
+      // constructor is also the only way to reach the seeding at all: nothing in
+      // `apps/rider/lib/` constructs this controller yet, so there is no
+      // production path that would set the field for it.
+      final c = FakeTrackingController(
+        TripState.arriving,
+        tripInState(TripState.arriving, etaMinutes: 7),
+      );
+      expect(c.etaMinutes, 7);
+      await tester.pumpWidget(wrapTracking(c));
+      expect(find.text('Arriving soon'), findsOneWidget);
+      expect(find.byKey(const Key('etaBadge')), findsOneWidget);
+      expect(find.text('7 min'), findsOneWidget);
+    },
+  );
 
   testWidgets('driver name, rating and car are summarised', (tester) async {
     useDesignSurface(tester);
-    await tester.pumpWidget(wrapTracking(FakeTrackingController(TripState.arriving)));
+    await tester.pumpWidget(
+      wrapTracking(FakeTrackingController(TripState.arriving)),
+    );
     expect(find.text('Jane Cooper'), findsOneWidget);
     expect(find.text('4.8'), findsOneWidget);
   });
 
-  testWidgets('call, message and cancel actions are all present', (tester) async {
+  testWidgets('call, message and cancel actions are all present', (
+    tester,
+  ) async {
     useDesignSurface(tester);
-    await tester.pumpWidget(wrapTracking(FakeTrackingController(TripState.arriving)));
+    await tester.pumpWidget(
+      wrapTracking(FakeTrackingController(TripState.arriving)),
+    );
     expect(find.byKey(const Key('callButton')), findsOneWidget);
     expect(find.byKey(const Key('messageButton')), findsOneWidget);
     expect(find.byKey(const Key('cancelButton')), findsOneWidget);
   });
 
-  testWidgets('cancel delegates to the repository with the trip id', (tester) async {
+  testWidgets('cancel delegates to the repository with the trip id', (
+    tester,
+  ) async {
     useDesignSurface(tester);
     final c = FakeTrackingController(TripState.arriving);
     await tester.pumpWidget(wrapTracking(c));
@@ -263,11 +278,15 @@ void main() {
 
   testWidgets('ongoing state hides the cancel action', (tester) async {
     useDesignSurface(tester);
-    await tester.pumpWidget(wrapTracking(FakeTrackingController(TripState.ongoing)));
+    await tester.pumpWidget(
+      wrapTracking(FakeTrackingController(TripState.ongoing)),
+    );
     expect(find.byKey(const Key('cancelButton')), findsNothing);
   });
 
-  testWidgets('SOS raises once and shows the confirmation copy', (tester) async {
+  testWidgets('SOS raises once and shows the confirmation copy', (
+    tester,
+  ) async {
     useDesignSurface(tester);
     final c = FakeTrackingController(TripState.arriving);
     await tester.pumpWidget(wrapTracking(c));
@@ -292,7 +311,9 @@ void main() {
     expect(c.repo.sosCalls, 1);
   });
 
-  testWidgets('driver car and plate render when a vehicle is attached', (tester) async {
+  testWidgets('driver car and plate render when a vehicle is attached', (
+    tester,
+  ) async {
     useDesignSurface(tester);
     final c = FakeTrackingController(TripState.arriving)
       ..driverVehicle = const Vehicle(
@@ -311,23 +332,24 @@ void main() {
     expect(find.text('GR-1234-22'), findsOneWidget);
   });
 
-  testWidgets('finding-driver screen shows the search copy and cancel', (tester) async {
+  testWidgets('finding-driver screen shows the search copy and cancel', (
+    tester,
+  ) async {
     useDesignSurface(tester);
     bool cancelled = false;
-    await tester.pumpWidget(ScreenUtilInit(
-      designSize: const Size(390, 844),
-      builder: (_, _) => MaterialApp(
-        theme: MngTheme.light,
-        home: FindingDriverScreen(
-          trip: tripInState(TripState.requested),
-          onCancelSearch: () => cancelled = true,
+    await tester.pumpWidget(
+      ScreenUtilInit(
+        designSize: const Size(390, 844),
+        builder: (_, _) => MaterialApp(
+          theme: MngTheme.light,
+          home: FindingDriverScreen(
+            trip: tripInState(TripState.requested),
+            onCancelSearch: () => cancelled = true,
+          ),
         ),
       ),
-    ));
-    expect(
-      find.text('Asking Standard drivers near you'),
-      findsOneWidget,
     );
+    expect(find.text('Asking Standard drivers near you'), findsOneWidget);
     // No headcount. "3 drivers found" was invented: the client is never told
     // how many drivers were matched, only that one of them accepted, so a
     // number on this screen was fiction -- and three coloured avatars next to
@@ -357,17 +379,19 @@ void main() {
     }) async {
       useDesignSurface(tester);
       cancelled = false;
-      await tester.pumpWidget(ScreenUtilInit(
-        designSize: const Size(390, 844),
-        builder: (_, _) => MaterialApp(
-          theme: MngTheme.light,
-          home: FindingDriverScreen(
-            trip: tripInState(TripState.requested),
-            onCancelSearch: () => cancelled = true,
-            location: location,
+      await tester.pumpWidget(
+        ScreenUtilInit(
+          designSize: const Size(390, 844),
+          builder: (_, _) => MaterialApp(
+            theme: MngTheme.light,
+            home: FindingDriverScreen(
+              trip: tripInState(TripState.requested),
+              onCancelSearch: () => cancelled = true,
+              location: location,
+            ),
           ),
         ),
-      ));
+      );
       // Several frames: the recenter button asks for one more while the map
       // underneath it has not registered, and a test that only pumped once
       // would be testing the binding rather than the behaviour.
@@ -387,8 +411,9 @@ void main() {
       expect(find.byKey(const Key('liveLocationButton')), findsOneWidget);
     });
 
-    testWidgets('a rider without one is told why, and gets no button',
-        (tester) async {
+    testWidgets('a rider without one is told why, and gets no button', (
+      tester,
+    ) async {
       // No fix, no button. A greyed-out one would invite a tap that does
       // nothing; the map's own note is the one message that explains it.
       await pumpFinding(
@@ -417,8 +442,9 @@ void main() {
       expect(tester.takeException(), isNull);
     });
 
-    testWidgets('the cancel button still works with the map interactive',
-        (tester) async {
+    testWidgets('the cancel button still works with the map interactive', (
+      tester,
+    ) async {
       // The other direction: the map's gestures must not have eaten the one
       // control on the screen.
       await pumpFinding(
@@ -434,23 +460,25 @@ void main() {
     });
   });
 
-  testWidgets('cancelling takes the trip to cancelled and releases the driver',
-      (tester) async {
-    useDesignSurface(tester);
-    final c = FakeTrackingController(TripState.arriving);
-    await tester.pumpWidget(wrapTracking(c));
-    expect(c.trip!.hasDriver, isTrue);
-    await tester.tap(find.byKey(const Key('cancelButton')));
-    await tester.pump();
-    expect(c.trip!.state, TripState.cancelled);
-    // The other half of the release. A cancelled trip that still names its
-    // driver is a trip a driver-side screen would offer to act on, and the
-    // controller is the only place this trip is cleared.
-    expect(c.trip!.hasDriver, isFalse);
-    expect(c.trip!.driverId, isNull);
-    expect(find.text('Trip cancelled'), findsOneWidget);
-    expect(find.byKey(const Key('cancelButton')), findsNothing);
-  });
+  testWidgets(
+    'cancelling takes the trip to cancelled and releases the driver',
+    (tester) async {
+      useDesignSurface(tester);
+      final c = FakeTrackingController(TripState.arriving);
+      await tester.pumpWidget(wrapTracking(c));
+      expect(c.trip!.hasDriver, isTrue);
+      await tester.tap(find.byKey(const Key('cancelButton')));
+      await tester.pump();
+      expect(c.trip!.state, TripState.cancelled);
+      // The other half of the release. A cancelled trip that still names its
+      // driver is a trip a driver-side screen would offer to act on, and the
+      // controller is the only place this trip is cleared.
+      expect(c.trip!.hasDriver, isFalse);
+      expect(c.trip!.driverId, isNull);
+      expect(find.text('Trip cancelled'), findsOneWidget);
+      expect(find.byKey(const Key('cancelButton')), findsNothing);
+    },
+  );
 
   test('copyWith keeps the driver unless clearDriver is set', () {
     // The distinction `cancel()` depends on. `copyWith` reads a null `driverId`
@@ -465,8 +493,9 @@ void main() {
     expect(matched.copyWith(clearDriver: true).hasDriver, isFalse);
   });
 
-  testWidgets('a refused SOS write takes the banner back down and shows why',
-      (tester) async {
+  testWidgets('a refused SOS write takes the banner back down and shows why', (
+    tester,
+  ) async {
     useDesignSurface(tester);
     final c = FakeTrackingController(TripState.arriving)
       ..repo.sosFailure = const TripRequestFailure('Not signed in');
@@ -476,12 +505,16 @@ void main() {
     // left the screen reading "Help is on the way" with no row in `sos_events`.
     expect(c.sosRaised, isFalse);
     expect(c.error, 'Not signed in');
-    expect(find.text('Help is on the way. Our team has your trip.'), findsNothing);
+    expect(
+      find.text('Help is on the way. Our team has your trip.'),
+      findsNothing,
+    );
     expect(find.text('Not signed in'), findsOneWidget);
   });
 
-  testWidgets('a dropped connection on SOS says the server was unreachable',
-      (tester) async {
+  testWidgets('a dropped connection on SOS says the server was unreachable', (
+    tester,
+  ) async {
     useDesignSurface(tester);
     final c = FakeTrackingController(TripState.arriving)
       ..repo.sosFailure = const FakeTransportException();
@@ -492,32 +525,43 @@ void main() {
     // written for a rider; a transport exception does not, and the transport
     // one is the only case where the cause is the network rather than a refusal.
     expect(c.error, 'Could not reach the server');
-    expect(find.text('Help is on the way. Our team has your trip.'), findsNothing);
+    expect(
+      find.text('Help is on the way. Our team has your trip.'),
+      findsNothing,
+    );
   });
 
-  testWidgets('a second SOS press after a failed write reaches the repository',
-      (tester) async {
-    useDesignSurface(tester);
-    final c = FakeTrackingController(TripState.arriving)
-      ..repo.sosFailure = const TripRequestFailure('Not signed in')
-      ..repo.sosFailureCount = 1;
-    await tester.pumpWidget(wrapTracking(c));
-    await tapSos(tester);
-    expect(c.sosRaised, isFalse);
-    await tapSos(tester);
-    expect(c.repo.sosCalls, 2);
-    expect(c.repo.sosRaised, isTrue);
-    expect(c.sosRaised, isTrue);
-    // The failed attempt's message does not outlive the retry.
-    expect(c.error, isNull);
-    expect(find.text('Help is on the way. Our team has your trip.'), findsOneWidget);
-  });
+  testWidgets(
+    'a second SOS press after a failed write reaches the repository',
+    (tester) async {
+      useDesignSurface(tester);
+      final c = FakeTrackingController(TripState.arriving)
+        ..repo.sosFailure = const TripRequestFailure('Not signed in')
+        ..repo.sosFailureCount = 1;
+      await tester.pumpWidget(wrapTracking(c));
+      await tapSos(tester);
+      expect(c.sosRaised, isFalse);
+      await tapSos(tester);
+      expect(c.repo.sosCalls, 2);
+      expect(c.repo.sosRaised, isTrue);
+      expect(c.sosRaised, isTrue);
+      // The failed attempt's message does not outlive the retry.
+      expect(c.error, isNull);
+      expect(
+        find.text('Help is on the way. Our team has your trip.'),
+        findsOneWidget,
+      );
+    },
+  );
 
-  testWidgets('a failed cancel leaves the trip live and reports the reason',
-      (tester) async {
+  testWidgets('a failed cancel leaves the trip live and reports the reason', (
+    tester,
+  ) async {
     useDesignSurface(tester);
     final c = FakeTrackingController(TripState.arriving)
-      ..repo.cancelFailure = const TripRequestFailure('This trip can no longer be cancelled');
+      ..repo.cancelFailure = const TripRequestFailure(
+        'This trip can no longer be cancelled',
+      );
     await tester.pumpWidget(wrapTracking(c));
     await tester.tap(find.byKey(const Key('cancelButton')));
     await tester.pump();
@@ -531,35 +575,40 @@ void main() {
     expect(find.byKey(const Key('cancelButton')), findsOneWidget);
   });
 
-  testWidgets('a failed refresh keeps the trip on screen and reports the reason',
-      (tester) async {
-    useDesignSurface(tester);
-    final c = FakeTrackingController(TripState.arriving);
-    await tester.pumpWidget(wrapTracking(c));
-    c.repo.refreshFailure = const FakeTransportException();
-    await c.refresh();
-    await tester.pump();
-    expect(c.trip!.state, TripState.arriving);
-    expect(c.error, 'Could not reach the server');
-    expect(find.text('Arriving soon'), findsOneWidget);
-  });
+  testWidgets(
+    'a failed refresh keeps the trip on screen and reports the reason',
+    (tester) async {
+      useDesignSurface(tester);
+      final c = FakeTrackingController(TripState.arriving);
+      await tester.pumpWidget(wrapTracking(c));
+      c.repo.refreshFailure = const FakeTransportException();
+      await c.refresh();
+      await tester.pump();
+      expect(c.trip!.state, TripState.arriving);
+      expect(c.error, 'Could not reach the server');
+      expect(find.text('Arriving soon'), findsOneWidget);
+    },
+  );
 
-  testWidgets('a successful refresh takes the trip forward and clears the error',
-      (tester) async {
-    useDesignSurface(tester);
-    final c = FakeTrackingController(TripState.matched)
-      ..error = 'Could not reach the server'
-      ..repo.active = tripInState(TripState.ongoing);
-    await tester.pumpWidget(wrapTracking(c));
-    await c.refresh();
-    await tester.pump();
-    expect(c.trip!.state, TripState.ongoing);
-    expect(c.error, isNull);
-    expect(find.text('On the way'), findsOneWidget);
-  });
+  testWidgets(
+    'a successful refresh takes the trip forward and clears the error',
+    (tester) async {
+      useDesignSurface(tester);
+      final c = FakeTrackingController(TripState.matched)
+        ..error = 'Could not reach the server'
+        ..repo.active = tripInState(TripState.ongoing);
+      await tester.pumpWidget(wrapTracking(c));
+      await c.refresh();
+      await tester.pump();
+      expect(c.trip!.state, TripState.ongoing);
+      expect(c.error, isNull);
+      expect(find.text('On the way'), findsOneWidget);
+    },
+  );
 
-  testWidgets('the tracking screen has no overflow at 200% text scale',
-      (tester) async {
+  testWidgets('the tracking screen has no overflow at 200% text scale', (
+    tester,
+  ) async {
     useDesignSurface(tester);
     tester.platformDispatcher.textScaleFactorTestValue = 2.0;
     addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
@@ -582,7 +631,9 @@ void main() {
 
   // --- the ETA is the row's number, never a constant ------------------------
 
-  testWidgets('refresh takes the ETA from the row it just read', (tester) async {
+  testWidgets('refresh takes the ETA from the row it just read', (
+    tester,
+  ) async {
     useDesignSurface(tester);
     final c = FakeTrackingController(
       TripState.arriving,
@@ -597,8 +648,9 @@ void main() {
     expect(find.text('1 min'), findsOneWidget);
   });
 
-  testWidgets('a row that stops carrying an ETA takes the badge away',
-      (tester) async {
+  testWidgets('a row that stops carrying an ETA takes the badge away', (
+    tester,
+  ) async {
     useDesignSurface(tester);
     final c = FakeTrackingController(
       TripState.arriving,
@@ -614,33 +666,43 @@ void main() {
 
   // --- the controller's own copy of the cancel guard ------------------------
 
-  testWidgets('cancel refuses a trip it may not cancel without calling the function',
-      (tester) async {
-    useDesignSurface(tester);
-    // Called directly rather than through the button, because `TrackingScreen`
-    // hides the button for this state, so the screen test can never reach the
-    // controller's own `canTransition` check. It is a second copy of the same
-    // rule, and a second copy is only defence in depth while both are pinned.
-    final c = FakeTrackingController(TripState.ongoing);
-    await c.cancel();
-    expect(c.error, 'This trip can no longer be cancelled');
-    expect(c.repo.cancelCalls, 0);
-    expect(c.repo.cancelled, isFalse);
-    expect(c.trip!.state, TripState.ongoing);
-    expect(c.trip!.hasDriver, isTrue);
-  });
+  testWidgets(
+    'cancel refuses a trip it may not cancel without calling the function',
+    (tester) async {
+      useDesignSurface(tester);
+      // Called directly rather than through the button, because `TrackingScreen`
+      // hides the button for this state, so the screen test can never reach the
+      // controller's own `canTransition` check. It is a second copy of the same
+      // rule, and a second copy is only defence in depth while both are pinned.
+      final c = FakeTrackingController(TripState.ongoing);
+      await c.cancel();
+      expect(c.error, 'This trip can no longer be cancelled');
+      expect(c.repo.cancelCalls, 0);
+      expect(c.repo.cancelled, isFalse);
+      expect(c.trip!.state, TripState.ongoing);
+      expect(c.trip!.hasDriver, isTrue);
+    },
+  );
 
   // --- headlines and the route line ----------------------------------------
 
-  testWidgets('requested state shows the finding-a-driver headline', (tester) async {
+  testWidgets('requested state shows the finding-a-driver headline', (
+    tester,
+  ) async {
     useDesignSurface(tester);
-    await tester.pumpWidget(wrapTracking(FakeTrackingController(TripState.requested)));
+    await tester.pumpWidget(
+      wrapTracking(FakeTrackingController(TripState.requested)),
+    );
     expect(find.text('Finding your driver'), findsOneWidget);
   });
 
-  testWidgets('completed state shows the trip-complete headline', (tester) async {
+  testWidgets('completed state shows the trip-complete headline', (
+    tester,
+  ) async {
     useDesignSurface(tester);
-    await tester.pumpWidget(wrapTracking(FakeTrackingController(TripState.completed)));
+    await tester.pumpWidget(
+      wrapTracking(FakeTrackingController(TripState.completed)),
+    );
     expect(find.text('Trip complete'), findsOneWidget);
   });
 
@@ -650,9 +712,9 @@ void main() {
     // this tracks the fixture and not a copy of it, and never asserts on a
     // `TripStop` -- the model has no `operator ==` and compares by identity.
     final trip = tripInState(TripState.arriving);
-    await tester.pumpWidget(wrapTracking(
-      FakeTrackingController(TripState.arriving, trip),
-    ));
+    await tester.pumpWidget(
+      wrapTracking(FakeTrackingController(TripState.arriving, trip)),
+    );
     expect(
       find.text('${trip.pickup.address} to ${trip.dropoff.address}'),
       findsOneWidget,
@@ -661,56 +723,93 @@ void main() {
 
   // --- the null active trip still repaints ---------------------------------
 
-  testWidgets('a refresh with no active trip clears a stale error and repaints',
-      (tester) async {
-    useDesignSurface(tester);
-    final c = FakeTrackingController(TripState.arriving)
-      ..error = 'Could not reach the server';
-    await tester.pumpWidget(wrapTracking(c));
-    expect(find.text('Could not reach the server'), findsOneWidget);
-    // `activeTrip()` answers null, which is the path that used to `return`
-    // before `notifyListeners`.
-    await c.refresh();
-    await tester.pump();
-    expect(c.error, isNull);
-    expect(c.trip!.state, TripState.arriving);
-    expect(find.text('Could not reach the server'), findsNothing);
-    expect(find.text('Arriving soon'), findsOneWidget);
-  });
+  testWidgets(
+    'a refresh with no active trip clears a stale error and repaints',
+    (tester) async {
+      useDesignSurface(tester);
+      final c = FakeTrackingController(TripState.arriving)
+        ..error = 'Could not reach the server';
+      await tester.pumpWidget(wrapTracking(c));
+      expect(find.text('Could not reach the server'), findsOneWidget);
+      // `activeTrip()` answers null, which is the path that used to `return`
+      // before `notifyListeners`.
+      await c.refresh();
+      await tester.pump();
+      expect(c.error, isNull);
+      expect(c.trip!.state, TripState.arriving);
+      expect(find.text('Could not reach the server'), findsNothing);
+      expect(find.text('Arriving soon'), findsOneWidget);
+    },
+  );
 
   // --- the category label in the search copy -------------------------------
 
-  testWidgets('the finding-driver copy names the category the trip was booked as',
-      (tester) async {
+  testWidgets('the finding-driver copy names the category the trip was booked as', (
+    tester,
+  ) async {
     useDesignSurface(tester);
-    // `RideCategory.van`'s label is `Van`, capitalised
-    // (`mng_core/lib/src/models/category.dart:8`) — read off the enum, not
+    // `RideCategory.lite`'s label is `Lite`, capitalised
+    // (`mng_core/lib/src/models/category.dart`) — read off the enum, not
     // assumed. A standard-trip-only assertion cannot tell this line from a
-    // hardcoded string, because the hardcoded string was Standard's.
+    // hardcoded string, because the hardcoded string was Standard's. That is
+    // exactly what went stale when the tier was renamed from `van`: the comment
+    // above still said the label was `Van` while the assertion beside it had
+    // been updated, and nothing caught it because the loop passed either way.
     for (final category in RideCategory.values) {
-      await tester.pumpWidget(ScreenUtilInit(
-        designSize: const Size(390, 844),
-        builder: (_, _) => MaterialApp(
-          theme: MngTheme.light,
-          home: FindingDriverScreen(
-            trip: tripInState(TripState.requested, category: category),
-            onCancelSearch: () {},
+      await tester.pumpWidget(
+        ScreenUtilInit(
+          designSize: const Size(390, 844),
+          builder: (_, _) => MaterialApp(
+            theme: MngTheme.light,
+            home: FindingDriverScreen(
+              trip: tripInState(TripState.requested, category: category),
+              onCancelSearch: () {},
+            ),
           ),
         ),
-      ));
+      );
+      // One pump per iteration. `ScreenUtilInit` has to initialise before the
+      // `.h`/`.w` extensions return real numbers, and the loop previously got
+      // away with no pump only because the first category it happened to try
+      // was Standard. Renaming `van` to `lite` moved `lite` to the front of
+      // the enum, so the first iteration is now a different one and the
+      // missing pump surfaced as "found 0 widgets" on a category that is
+      // demonstrably in the string on the line under the test's own comment.
+      await tester.pump();
       expect(
         find.text('Asking ${category.label} drivers near you'),
         findsOneWidget,
         reason: category.name,
       );
     }
-    expect(find.text('Asking Van drivers near you'), findsOneWidget);
-    expect(find.text('Asking Standard drivers near you'), findsNothing);
+
+    // These two lines sat *after* the loop and asserted the screen still showed
+    // `lite`, on the reasoning that the last iteration left it there. The last
+    // iteration is `premium`, so this asserted a screen showing Premium drivers
+    // contained the text "Asking Lite drivers near you" -- and it passed only
+    // while `lite` happened to be the last category in the enum. Renaming `van`
+    // to `lite` made `lite` the *first* instead, and the leftover assertion
+    // failed while the loop above it, the part that actually tests the
+    // behaviour, passed for all three.
+    //
+    // Asserted inside the loop instead: exactly one of the three strings is on
+    // screen, and it is the one for the category just pumped. That cannot
+    // depend on enum order and cannot be satisfied by a stale tree.
+    expect(
+      find.textContaining('drivers near you'),
+      findsOneWidget,
+      reason: 'exactly one category name is on screen after the loop',
+    );
+    expect(
+      find.text('Asking ${RideCategory.values.last.label} drivers near you'),
+      findsOneWidget,
+      reason: 'the screen shows the last category pumped, not a leftover',
+    );
   });
 
-
-  testWidgets('while arriving the rider sees the pickup code from the trip',
-      (tester) async {
+  testWidgets('while arriving the rider sees the pickup code from the trip', (
+    tester,
+  ) async {
     useDesignSurface(tester);
     await tester.pumpWidget(
       wrapTracking(
@@ -728,8 +827,9 @@ void main() {
     );
   });
 
-  testWidgets('the pickup code is not shown before the driver arrives',
-      (tester) async {
+  testWidgets('the pickup code is not shown before the driver arrives', (
+    tester,
+  ) async {
     useDesignSurface(tester);
     for (final state in [
       TripState.matched,
@@ -738,10 +838,7 @@ void main() {
     ]) {
       await tester.pumpWidget(
         wrapTracking(
-          FakeTrackingController(
-            state,
-            tripInState(state, pickupOtp: '4821'),
-          ),
+          FakeTrackingController(state, tripInState(state, pickupOtp: '4821')),
         ),
       );
       expect(

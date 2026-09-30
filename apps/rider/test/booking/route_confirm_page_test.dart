@@ -33,76 +33,73 @@ PlaceSuggestion _hit(String label, double lat, double lng) =>
 
 /// With a destination already chosen, as the search page always supplies.
 TripStop _dest() => const TripStop(
-      'Dropoff',
-      GeoPoint(5.6052, -0.1660),
-      'Airport Residential, Accra',
-    );
+  'Dropoff',
+  GeoPoint(5.6052, -0.1660),
+  'Airport Residential, Accra',
+);
 
 Widget wrapWithDestination({
   void Function(RouteDraft draft)? onSubmit,
   PlaceService? places,
   bool promoApplied = false,
-}) =>
-    wrap(
-      onSubmit: onSubmit,
-      places: places,
-      dropoff: _dest(),
-      promoApplied: promoApplied,
-    );
+}) => wrap(
+  onSubmit: onSubmit,
+  places: places,
+  dropoff: _dest(),
+  promoApplied: promoApplied,
+);
 
 Widget wrap({
   void Function(RouteDraft draft)? onSubmit,
   PlaceService? places,
   TripStop? dropoff,
   bool promoApplied = false,
-}) =>
-    ScreenUtilInit(
-      designSize: const Size(390, 844),
-      minTextAdapt: true,
-      splitScreenMode: true,
-      builder: (_, _) => MaterialApp(
-        theme: MngTheme.light,
-        home: Scaffold(
-          body: RouteConfirmPage(
-            calc: FareCalculator(),
-            onSubmit: onSubmit ?? (_) {},
-            places: places ?? _StubPlaces(),
-            dropoff: dropoff,
-            promoApplied: promoApplied,
-          ),
-        ),
+}) => ScreenUtilInit(
+  designSize: const Size(390, 844),
+  minTextAdapt: true,
+  splitScreenMode: true,
+  builder: (_, _) => MaterialApp(
+    theme: MngTheme.light,
+    home: Scaffold(
+      body: RouteConfirmPage(
+        calc: FareCalculator(),
+        onSubmit: onSubmit ?? (_) {},
+        places: places ?? _StubPlaces(),
+        dropoff: dropoff,
+        promoApplied: promoApplied,
       ),
-    );
+    ),
+  ),
+);
 
 Widget openHarness({
   void Function(RouteDraft draft)? onSubmit,
   PlaceService? places,
   TripStop? dropoff,
-}) =>
-    ScreenUtilInit(
-      designSize: const Size(390, 844),
-      minTextAdapt: true,
-      splitScreenMode: true,
-      builder: (_, _) => MaterialApp(
-        theme: MngTheme.light,
-        home: Scaffold(
-          body: Builder(
-            builder: (context) => Center(
-              child: ElevatedButton(
-                onPressed: () => pushRouteConfirmPage(
-                  context,
-                  calc: FareCalculator(),
-                  onSubmit: onSubmit ?? (_) {},
-                  places: places ?? _StubPlaces(),
-                  dropoff: dropoff,
-                ),
-                child: const Text('open'),
-              ),
+}) => ScreenUtilInit(
+  designSize: const Size(390, 844),
+  minTextAdapt: true,
+  splitScreenMode: true,
+  builder: (_, _) => MaterialApp(
+    theme: MngTheme.light,
+    home: Scaffold(
+      body: Builder(
+        builder: (context) => Center(
+          child: ElevatedButton(
+            onPressed: () => pushRouteConfirmPage(
+              context,
+              calc: FareCalculator(),
+              onSubmit: onSubmit ?? (_) {},
+              places: places ?? _StubPlaces(),
+              dropoff: dropoff,
             ),
+            child: const Text('open'),
           ),
         ),
       ),
-    );
+    ),
+  ),
+);
 
 void useDesignSurface(WidgetTester tester) {
   tester.view.physicalSize = const Size(1170, 2532);
@@ -111,38 +108,47 @@ void useDesignSurface(WidgetTester tester) {
 }
 
 void main() {
-  testWidgets('shows the pickup and the dropoff, not the distance twice',
-      (tester) async {
+  testWidgets('shows the pickup and the dropoff, not the distance twice', (
+    tester,
+  ) async {
     useDesignSurface(tester);
     await tester.pumpWidget(wrapWithDestination());
     expect(find.text('Osu, Accra'), findsOneWidget);
     expect(find.text('Airport Residential, Accra'), findsOneWidget);
   });
 
-  testWidgets('summarises the measured distance, drive time and fare',
-      (tester) async {
+  testWidgets('summarises the measured distance, drive time and fare', (
+    tester,
+  ) async {
     useDesignSurface(tester);
     await tester.pumpWidget(wrapWithDestination());
     // Haversine over the two Accra constants, R = 6371.0088: 2.3299 km.
-    // (5.00 + 1.80 * 2.3299) * 1.0 + 1.00 = 10.1938 -> GHS 10.19.
+    // 0.35 * 2.3299 = 0.815465 -> GHS 0.82. The old figure was 10.19, from
+    // (5.00 + 1.80 * 2.3299) + 1.00, before the base fare and booking fee went.
     expect(find.text('2.3 km  ·  ~6 min drive'), findsOneWidget);
-    expect(find.text('GHS 10.19'), findsOneWidget);
+    expect(find.text('GHS 0.82'), findsOneWidget);
   });
 
   testWidgets('changing the category requotes the fare', (tester) async {
     useDesignSurface(tester);
     await tester.pumpWidget(wrapWithDestination());
-    await tester.tap(find.byKey(const Key('chip-van')));
+    await tester.tap(find.byKey(const Key('chip-lite')));
     await tester.pump();
-    // (5.00 + 2.20 * 2.3299) * 1.0 + 1.00 = 11.1258 -> GHS 11.13.
-    expect(find.text('GHS 11.13'), findsOneWidget);
+    // 0.28 * 2.3299 = 0.652372 -> GHS 0.65. `lite` is the *cheaper* tier, so
+    // tapping it has to lower the quote -- the assertion below is only
+    // meaningful because of that, and the old expectation of 11.13 was higher
+    // than the standard fare because `lite` used to be `van` at 2.20/km.
+    expect(find.text('GHS 0.65'), findsOneWidget);
+    expect(find.text('GHS 0.82'), findsNothing);
   });
 
-  testWidgets('confirm submits the draft with the chosen stops', (tester) async {
+  testWidgets('confirm submits the draft with the chosen stops', (
+    tester,
+  ) async {
     useDesignSurface(tester);
     RouteDraft? draft;
     await tester.pumpWidget(wrapWithDestination(onSubmit: (d) => draft = d));
-    await tester.tap(find.byKey(const Key('chip-van')));
+    await tester.tap(find.byKey(const Key('chip-lite')));
     await tester.pump();
     await tester.tap(find.byKey(const Key('confirmRouteButton')));
     await tester.pump();
@@ -150,7 +156,7 @@ void main() {
     expect(draft!.pickup.address, kDefaultPickup.address);
     expect(draft!.pickup.point, kDefaultPickup.point);
     expect(draft!.dropoff.address, _dest().address);
-    expect(draft!.category, RideCategory.van);
+    expect(draft!.category, RideCategory.lite);
   });
 
   group('with no destination chosen', () {
@@ -178,22 +184,23 @@ void main() {
       useDesignSurface(tester);
       await tester.pumpWidget(wrap());
       expect(find.byKey(const Key('noDestinationYet')), findsOneWidget);
-      expect(
-        find.textContaining('Choose where you are going'),
-        findsOneWidget,
-      );
+      expect(find.textContaining('Choose where you are going'), findsOneWidget);
     });
 
-    testWidgets('confirm is disabled, and pressing it submits nothing',
-        (tester) async {
+    testWidgets('confirm is disabled, and pressing it submits nothing', (
+      tester,
+    ) async {
       useDesignSurface(tester);
       var submits = 0;
       await tester.pumpWidget(wrap(onSubmit: (_) => submits++));
       final button = tester.widget<FilledButton>(
         find.byKey(const Key('confirmRouteButton')),
       );
-      expect(button.onPressed, isNull,
-          reason: 'there is no route to book, so there is nothing to press');
+      expect(
+        button.onPressed,
+        isNull,
+        reason: 'there is no route to book, so there is nothing to press',
+      );
 
       await tester.tap(
         find.byKey(const Key('confirmRouteButton')),
@@ -234,26 +241,28 @@ void main() {
     });
   });
 
-  testWidgets('the sheet keeps its button clear of the bottom inset',
-      (tester) async {
+  testWidgets('the sheet keeps its button clear of the bottom inset', (
+    tester,
+  ) async {
     useDesignSurface(tester);
     tester.view.padding = const FakeViewPadding(bottom: 102);
     await tester.pumpWidget(openHarness());
     await tester.tap(find.text('open'));
     await tester.pumpAndSettle();
-    final button =
-        tester.getBottomRight(find.byKey(const Key('confirmRouteButton')));
+    final button = tester.getBottomRight(
+      find.byKey(const Key('confirmRouteButton')),
+    );
     expect(button.dy, lessThanOrEqualTo(844 - 34));
   });
 
-  testWidgets('pushRouteConfirmPage opens the page and submits its draft',
-      (tester) async {
+  testWidgets('pushRouteConfirmPage opens the page and submits its draft', (
+    tester,
+  ) async {
     useDesignSurface(tester);
     RouteDraft? draft;
-    await tester.pumpWidget(openHarness(
-      onSubmit: (d) => draft = d,
-      dropoff: _dest(),
-    ));
+    await tester.pumpWidget(
+      openHarness(onSubmit: (d) => draft = d, dropoff: _dest()),
+    );
     await tester.tap(find.text('open'));
     await tester.pumpAndSettle();
     // A pushed page, not a scrim over a map: there is a title bar and a back
@@ -268,8 +277,9 @@ void main() {
     expect(draft!.dropoff.address, _dest().address);
   });
 
-  testWidgets('the route sheet has no overflow at 200% text scale',
-      (tester) async {
+  testWidgets('the route sheet has no overflow at 200% text scale', (
+    tester,
+  ) async {
     useDesignSurface(tester);
     tester.platformDispatcher.textScaleFactorTestValue = 2.0;
     addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
@@ -296,9 +306,9 @@ void main() {
     tester,
   ) async {
     useDesignSurface(tester);
-    final places = _StubPlaces(matches: [
-      _hit('Kumasi, Ghana', 6.6885, -1.6244),
-    ]);
+    final places = _StubPlaces(
+      matches: [_hit('Kumasi, Ghana', 6.6885, -1.6244)],
+    );
     RouteDraft? draft;
     await tester.pumpWidget(wrap(places: places, onSubmit: (d) => draft = d));
 
@@ -329,9 +339,9 @@ void main() {
     // Accra to Kumasi is about 200 km, so the fare cannot still be the 10.19
     // of the 2.3 km demo route. A quote that did not move would mean the
     // distance came from the default rather than from the choice.
-    final places = _StubPlaces(matches: [
-      _hit('Kumasi, Ghana', 6.6885, -1.6244),
-    ]);
+    final places = _StubPlaces(
+      matches: [_hit('Kumasi, Ghana', 6.6885, -1.6244)],
+    );
     await tester.pumpWidget(wrap(places: places));
     await tester.enterText(find.byKey(const Key('dropoffField')), 'Kumasi');
     await tester.pump(const Duration(milliseconds: 600));
@@ -339,7 +349,9 @@ void main() {
     await tester.tap(find.byKey(const Key('placeHit-Kumasi, Ghana')));
     await tester.pumpAndSettle();
 
-    expect(find.text('GHS 10.19'), findsNothing);
+    // GHS 0.82 is the fare for the 2.3 km demo route. Accra to Kumasi is about
+    // 200 km, so this must not be it.
+    expect(find.text('GHS 0.82'), findsNothing);
     expect(find.textContaining('km'), findsOneWidget);
   });
 
@@ -397,9 +409,9 @@ void main() {
     tester,
   ) async {
     useDesignSurface(tester);
-    final places = _StubPlaces(matches: [
-      _hit('Kumasi, Ghana', 6.6885, -1.6244),
-    ]);
+    final places = _StubPlaces(
+      matches: [_hit('Kumasi, Ghana', 6.6885, -1.6244)],
+    );
     await tester.pumpWidget(wrap(places: places, dropoff: kDefaultDropoff));
     await tester.enterText(find.byKey(const Key('dropoffField')), 'Kumasi');
     await tester.pump(const Duration(milliseconds: 600));
