@@ -1,9 +1,9 @@
-/// The six documents a driver has to send.
+/// One thing a driver has to send.
 ///
 /// Named for what the document *is*, not for the screen it appears on, and
 /// stored as the plain text these values are rather than as a Dart-only enum,
-/// because the `driver_documents` table's check constraint is the definition and
-/// a second list here could drift from it. [driverDocumentKinds] is the one that
+/// because the `driver_documents` check constraint is the definition and a
+/// second list here could drift from it. [driverDocumentKinds] is the one that
 /// has to agree with the SQL, and it is tested against the migration.
 enum DriverDocumentKind {
   profilePhoto('profilePhoto', 'Profile picture'),
@@ -21,6 +21,23 @@ enum DriverDocumentKind {
 
   /// What the rider-side checklist calls it.
   final String label;
+
+  /// Whether a driver cannot leave the checklist without this one.
+  ///
+  /// False only for [livenessFrame], and that is a temporary state rather than a
+  /// view about whether liveness matters. It is the one item on the list whose
+  /// detector cannot currently read a frame on this build.
+  ///
+  /// Making it required while it is broken does not make drivers safer, it
+  /// makes them stuck: every driver is blocked at the last step of onboarding
+  /// by something they cannot do anything about, and the usual result is that
+  /// they stop trying. Six photographs, plus a person comparing the face to the
+  /// licence, is a real check that works today.
+  ///
+  /// When the detector runs this becomes true and the checklist stops being
+  /// skippable again. It is one line, and both the checklist and the KYC
+  /// controller read it, so there is nowhere for the two to disagree.
+  bool get isRequired => this != DriverDocumentKind.livenessFrame;
 
   /// Whether this is the face check rather than a photograph.
   ///
@@ -50,12 +67,12 @@ enum DriverDocumentKind {
       'The certificate, with the expiry date readable.',
     DriverDocumentKind.insuranceSticker =>
       'The sticker on the windscreen, with the number readable.',
-    // Not a photograph and not a selfie. A liveness check is the driver
-    // doing small things to their face while the phone watches, and the
-    // only still that comes out of it is the evidence.
+    // Not a photograph and not a selfie. A liveness check is the driver doing
+    // small things to their face while the phone watches, and the only still
+    // that comes out of it is the evidence.
     DriverDocumentKind.livenessFrame =>
       'A short check that your face is a real one, done here in the app. '
-          'It asks you to turn your head and smile.',
+          'It asks you to turn your head and smile. You can do this later.',
   };
 
   static DriverDocumentKind? byWire(String wire) {
@@ -71,8 +88,8 @@ enum DriverDocumentKind {
 /// The order is the order a driver has to fetch or do them, which is not
 /// alphabetical and not the order the table happens to use: the two easy ones
 /// (a face, a vehicle) first so the list does not open with paperwork, and the
-/// face check last because it is the only one that needs good light and a
-/// steady hand, so it is done once the driver has got everything else ready.
+/// face check last because it is the only one that needs good light and a steady
+/// hand, so it is done once the driver has got everything else ready.
 const List<DriverDocumentKind> driverDocumentKinds = [
   DriverDocumentKind.profilePhoto,
   DriverDocumentKind.vehiclePhoto,
@@ -85,12 +102,23 @@ const List<DriverDocumentKind> driverDocumentKinds = [
 
 /// The six kinds that are photographs.
 ///
-/// [driverDocumentKinds] has seven. The count in the app's own tests and in the
-/// admin page has to be about the photographs, and a list that was six until
-/// the face check was added and is seven now is a number that has to be
-/// updated in three places every time it changes. Naming the split once here
-/// is the cheaper shape.
+/// [driverDocumentKinds] has seven. A count that was six until the face check
+/// was added and is seven now is a number somebody has to remember to update in
+/// three places every time it changes, so the split is named once here instead.
 const List<DriverDocumentKind> driverPhotoKinds = [
+  DriverDocumentKind.profilePhoto,
+  DriverDocumentKind.vehiclePhoto,
+  DriverDocumentKind.ghanaCardPhoto,
+  DriverDocumentKind.driversLicence,
+  DriverDocumentKind.roadWorthy,
+  DriverDocumentKind.insuranceSticker,
+];
+
+/// The kinds a driver cannot leave the checklist without.
+///
+/// Read by the checklist, by the KYC controller and by the admin gate, so
+/// "can this driver go on" has one answer rather than one per screen.
+const List<DriverDocumentKind> driverRequiredKinds = [
   DriverDocumentKind.profilePhoto,
   DriverDocumentKind.vehiclePhoto,
   DriverDocumentKind.ghanaCardPhoto,

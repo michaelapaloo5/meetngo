@@ -12,10 +12,12 @@
 // a driver who shows as ready and is never offered a ride.
 import { assert, assertEquals } from 'https://deno.land/std@0.224.0/testing/asserts.ts';
 import {
+  ALL_DOCUMENTS,
   handleDecide,
   handleList,
   isAdmin,
   missingDocuments,
+  optionalMissing,
   REQUIRED_DOCUMENTS,
   type AdminDeps,
   type DriverDocumentRow,
@@ -316,14 +318,38 @@ Deno.test('a driver who has sent nothing is refused with all six named', async (
   assertEquals(body.missing, [...REQUIRED_DOCUMENTS]);
 });
 
-Deno.test('a driver who sent all six photographs but no face check is refused', async () => {
-  // The specific hole the face check was added to close. Anything that counts
-  // only photographs sees a complete application here: profile, vehicle,
-  // Ghana Card, licence, road worthy, insurance. The one item an admin can
-  // actually compare against the licence photograph is the missing one.
+Deno.test('the face check does NOT block an approval while its detector is broken', async () => {
+  // A driver who sent all six photographs and no face check can be approved.
+  //
+  // This is the reverse of what the check used to be, and the reversal is
+  // deliberate: the in-app detector throws a NullPointerException out of ML
+  // Kit's own runtime on every frame, so requiring the frame would block every
+  // driver at the last step of onboarding over something nobody can act on.
+  //
+  // The six photographs are still required, and the admin page still shows the
+  // face check row -- so when a driver does send one, the reviewer sees it and
+  // can compare it with the licence.
   const deps = fake();
   deps.state.documents = REQUIRED_DOCUMENTS
-    .filter((k) => k !== 'livenessFrame')
+    .map((kind) => ({ kind, path: `u1/${kind}/1.jpg` }));
+
+  const result = await handleDecide(deps, 'admin-1', {
+    driverId: 'd1',
+    action: 'approve',
+  });
+
+  assertEquals(result.status, 200);
+  assertEquals(deps.decided.length, 1);
+  assertEquals(deps.decided[0].status, 'approved');
+});
+
+Deno.test('a missing required document still refuses, and names it', async () => {
+  // The other half of the relaxation above: optional must not have quietly
+  // become permissive. A driver with five of the six photographs is still
+  // refused, and still told exactly which one is absent.
+  const deps = fake();
+  deps.state.documents = REQUIRED_DOCUMENTS
+    .filter((k) => k !== 'roadWorthy')
     .map((kind) => ({ kind, path: `u1/${kind}/1.jpg` }));
 
   const result = await handleDecide(deps, 'admin-1', {
@@ -333,8 +359,30 @@ Deno.test('a driver who sent all six photographs but no face check is refused', 
 
   assertEquals(result.status, 409);
   assertEquals(deps.decided.length, 0);
-  const body = result.body as { missing?: string[] };
-  assertEquals(body.missing, ['livenessFrame']);
+  const body = result.body as { missing?: string[]; error?: string };
+  assertEquals(body.missing, ['roadWorthy']);
+  // The sentence quotes the list rather than a hardcoded six, so it cannot
+  // disagree with the gate when the list changes.
+  assertEquals(
+    (body.error ?? '').includes(String(REQUIRED_DOCUMENTS.length)),
+    true,
+  );
+});
+
+Deno.test('the face check is visible to the reviewer even when optional', async () => {
+  // Optional for approval is not hidden. The frame is the only item an admin
+  // can compare against the licence photograph, so omitting its row would hide
+  // it from the one person able to judge it.
+  assertEquals(ALL_DOCUMENTS.length, 7);
+  assertEquals(ALL_DOCUMENTS.includes('livenessFrame'), true);
+  assertEquals(REQUIRED_DOCUMENTS.includes('livenessFrame'), false);
+  // But it is not in the required list, and a driver who has not sent it is
+  // still approvable.
+  assertEquals(optionalMissing(ALL_DOCUMENTS.map((k) => ({ kind: k }))), []);
+  assertEquals(
+    optionalMissing(REQUIRED_DOCUMENTS.map((k) => ({ kind: k }))),
+    ['livenessFrame'],
+  );
 });
 
 Deno.test('a rejection is always allowed, documents or not', async () => {

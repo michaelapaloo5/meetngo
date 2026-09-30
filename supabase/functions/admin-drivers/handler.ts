@@ -72,22 +72,45 @@ export interface DriverDocumentRow {
 }
 
 /**
- * What a driver has to send before they can be approved: the six photographs
- * and the face check's frame.
+ * The six photographs, without which a driver cannot be approved.
  *
- * The same seven, in the same wire values, as the `driver_documents` check
- * constraint in `20260929000003_liveness_frame.sql` and the
- * `DriverDocumentKind` enum in the app. Written out here because this function
- * has no access to the Dart enum, and a list that silently drifts from the
- * constraint would let an admin approve a driver who sent a document the
- * database would not even accept.
+ * The same wire values as the `driver_documents` check constraint in
+ * `20260929000002_driver_documents.sql` and `DriverDocumentKind` in the app.
+ * Written out here because this function has no access to the Dart enum, and a
+ * list that silently drifts from the constraint would let an admin approve a
+ * driver who sent a document the database would not even accept.
  *
- * `livenessFrame` is in this list, and that is the point of it. A driver with
- * all six photographs and no face check looks, to anything that counts only
- * photographs, like a complete application -- and the frame is the only item
- * here an admin can compare against the licence photograph.
+ * `livenessFrame` is deliberately NOT here, and that is a temporary decision
+ * rather than a view about whether liveness matters. The face check's detector
+ * cannot currently read a frame on this build -- ML Kit throws a
+ * NullPointerException out of its own runtime on every frame -- and the frame is
+ * the one item an admin could compare against the licence photograph. Requiring
+ * it would block every driver at the last step of onboarding over something
+ * nobody can act on.
+ *
+ * It is still in [ALL_DOCUMENTS], so the page still shows a row for it, still
+ * says when it is missing, and still displays the frame when there is one.
+ * Optional for approval, visible to the reviewer -- hiding it would hide the
+ * one photograph from the only person who could judge it. When the detector
+ * works, this becomes `[...REQUIRED_DOCUMENTS, 'livenessFrame']`.
  */
 export const REQUIRED_DOCUMENTS: readonly string[] = [
+  'profilePhoto',
+  'vehiclePhoto',
+  'ghanaCardPhoto',
+  'driversLicence',
+  'roadWorthy',
+  'insuranceSticker',
+] as const;
+
+/**
+ * Everything a driver can send, required or not.
+ *
+ * The seven wire values, in the order the app asks for them. The page renders a
+ * row per entry, so a document that exists but is not required is shown rather
+ * than omitted.
+ */
+export const ALL_DOCUMENTS: readonly string[] = [
   'profilePhoto',
   'vehiclePhoto',
   'ghanaCardPhoto',
@@ -97,10 +120,36 @@ export const REQUIRED_DOCUMENTS: readonly string[] = [
   'livenessFrame',
 ] as const;
 
-/** What a driver is missing, in the order the app asks for them. */
+/** Display names, keyed by the same wire values as [ALL_DOCUMENTS]. */
+export const DOCUMENT_LABELS: Readonly<Record<string, string>> = {
+  profilePhoto: 'Profile picture',
+  vehiclePhoto: 'Vehicle photo',
+  ghanaCardPhoto: 'Ghana card photo',
+  driversLicence: "Driver's licence photo",
+  roadWorthy: 'Road worthy certificate',
+  insuranceSticker: 'Insurance sticker',
+  livenessFrame: 'Face check photo',
+};
+
+/**
+ * What a driver is missing, in the order the app asks for them.
+ *
+ * Only the required ones, because this is the list that decides whether an
+ * approval is allowed. Optional documents are reported by
+ * [optionalMissing] instead, so the page can say "3 of 6 sent" and
+ * "no face check photo" without either number being confused for the other.
+ */
 export function missingDocuments(sent: readonly { kind: string }[]): string[] {
   const have = new Set(sent.map((d) => d.kind));
   return REQUIRED_DOCUMENTS.filter((kind) => !have.has(kind));
+}
+
+/** The optional documents a driver has not sent, in display order. */
+export function optionalMissing(sent: readonly { kind: string }[]): string[] {
+  const have = new Set(sent.map((d) => d.kind));
+  return ALL_DOCUMENTS.filter(
+    (kind) => !REQUIRED_DOCUMENTS.includes(kind) && !have.has(kind),
+  );
 }
 
 /** One driver, as the admin page shows them. */
@@ -231,12 +280,18 @@ export async function handleDecide(
   // A rejection is always allowed. Refusing to let an admin turn a driver away
   // is a different kind of wrong, and there is no case for it.
   if (input.action === 'approve') {
-    const missing = missingDocuments(await deps.documentsFor(input.driverId));
+    const sent = await deps.documentsFor(input.driverId);
+    const missing = missingDocuments(sent);
     if (missing.length > 0) {
+      // A count, not the word "all six", because [REQUIRED_DOCUMENTS] is the
+      // list the number comes from and a hardcoded six in a sentence beside a
+      // list that can change is a sentence that will be wrong.
       return {
         status: 409,
         body: {
-          error: 'This driver has not sent all six documents yet.',
+          error:
+            `This driver is still missing ${missing.length} of the ` +
+            `${REQUIRED_DOCUMENTS.length} required documents.`,
           missing,
         },
       };

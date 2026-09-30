@@ -33,28 +33,27 @@ Widget wrap(
   Future<void> Function(DriverDocumentKind, String)? onUpload,
   VoidCallback? onStartLiveness,
   VoidCallback? onContinue,
-}) =>
-    ScreenUtilInit(
-      designSize: const Size(390, 844),
-      builder: (_, _) => MaterialApp(
-        theme: MngTheme.light,
-        home: Scaffold(
-          body: DocumentChecklist(
-            documents: sent,
-            capture: capture ?? _StubCapture(),
-            onUpload: onUpload ?? (_, _) async {},
-            onStartLiveness: onStartLiveness,
-            onContinue: onContinue,
-          ),
-        ),
+}) => ScreenUtilInit(
+  designSize: const Size(390, 844),
+  builder: (_, _) => MaterialApp(
+    theme: MngTheme.light,
+    home: Scaffold(
+      body: DocumentChecklist(
+        documents: sent,
+        capture: capture ?? _StubCapture(),
+        onUpload: onUpload ?? (_, _) async {},
+        onStartLiveness: onStartLiveness,
+        onContinue: onContinue,
       ),
-    );
+    ),
+  ),
+);
 
 DriverDocument sent(DriverDocumentKind kind) => DriverDocument(
-      kind: kind,
-      path: 'u1/${kind.wire}/1.jpg',
-      createdAt: DateTime.utc(2026, 9, 28),
-    );
+  kind: kind,
+  path: 'u1/${kind.wire}/1.jpg',
+  createdAt: DateTime.utc(2026, 9, 28),
+);
 
 /// Scrolls the checklist until [target] is on screen.
 ///
@@ -99,8 +98,11 @@ void main() {
         );
       }
       expect(driverDocumentKinds, hasLength(7));
-      expect(driverPhotoKinds, hasLength(6),
-          reason: 'six photographs, plus the face check');
+      expect(
+        driverPhotoKinds,
+        hasLength(6),
+        reason: 'six photographs, plus the face check',
+      );
     });
 
     testWidgets('each row says what the photo has to show', (tester) async {
@@ -119,7 +121,9 @@ void main() {
       }
     });
 
-    testWidgets('the kinds agree with the database check constraint', (tester) async {
+    testWidgets('the kinds agree with the database check constraint', (
+      tester,
+    ) async {
       // The wire values are what the `driver_documents` check constraint
       // accepts, and a seventh document added to this enum but not to the SQL
       // would fail on upload with a message about a constraint.
@@ -142,12 +146,14 @@ void main() {
   });
 
   group('progress', () {
-    testWidgets('with nothing sent it says how many are needed', (tester) async {
+    testWidgets('with nothing sent it says how many are needed', (
+      tester,
+    ) async {
       useDesignSurface(tester);
       await tester.pumpWidget(wrap(const []));
       await reveal(tester, footer);
 
-      expect(find.text('7 still needed'), findsOneWidget);
+      expect(find.text('6 still needed'), findsOneWidget);
     });
 
     testWidgets('the count goes down as documents arrive', (tester) async {
@@ -155,7 +161,9 @@ void main() {
       await tester.pumpWidget(wrap([sent(DriverDocumentKind.roadWorthy)]));
       await reveal(tester, footer);
 
-      expect(find.text('6 still needed'), findsOneWidget);
+      // One of the six required photographs in, so five are still needed.
+      // The face check is on the list but is not one of them.
+      expect(find.text('5 still needed'), findsOneWidget);
     });
 
     testWidgets('Continue is dead until all six are in', (tester) async {
@@ -171,10 +179,9 @@ void main() {
       useDesignSurface(tester);
       var continued = 0;
       await tester.pumpWidget(
-        wrap(
-          [for (final kind in driverDocumentKinds) sent(kind)],
-          onContinue: () => continued++,
-        ),
+        wrap([
+          for (final kind in driverDocumentKinds) sent(kind),
+        ], onContinue: () => continued++),
       );
       await reveal(tester, footer);
 
@@ -186,8 +193,9 @@ void main() {
   });
 
   group('taking a photo', () {
-    testWidgets('a captured photo is uploaded for that document',
-        (tester) async {
+    testWidgets('a captured photo is uploaded for that document', (
+      tester,
+    ) async {
       useDesignSurface(tester);
       final sent_ = <DriverDocumentKind>[];
       await tester.pumpWidget(
@@ -220,8 +228,9 @@ void main() {
       expect(find.byKey(const Key('documentError')), findsNothing);
     });
 
-    testWidgets('a refused upload leaves the row unticked and says why',
-        (tester) async {
+    testWidgets('a refused upload leaves the row unticked and says why', (
+      tester,
+    ) async {
       useDesignSurface(tester);
       await tester.pumpWidget(
         wrap(
@@ -240,7 +249,7 @@ void main() {
       // driver who believes they have sent a licence they have not.
       expect(find.byKey(const Key('documentError')), findsOneWidget);
       expect(find.text('That photo could not be saved'), findsOneWidget);
-      expect(find.text('7 still needed'), findsOneWidget);
+      expect(find.text('6 still needed'), findsOneWidget);
     });
 
     testWidgets('a sent row can be replaced, and says so', (tester) async {
@@ -251,7 +260,8 @@ void main() {
       // A driver who photographed their licence at an angle has to be able to
       // fix it without wondering whether tapping duplicates it.
       expect(find.text('Tap to replace this photo'), findsOneWidget);
-      expect(find.text('6 still needed'), findsOneWidget);
+      // One required photograph in, so five of the six are still needed.
+      expect(find.text('5 still needed'), findsOneWidget);
     });
   });
 
@@ -269,8 +279,9 @@ void main() {
       expect(find.text('Face check'), findsOneWidget);
     });
 
-    testWidgets('tapping it opens the check rather than the camera',
-        (tester) async {
+    testWidgets('tapping it opens the check rather than the camera', (
+      tester,
+    ) async {
       useDesignSurface(tester);
       var started = 0;
       final capture = _StubCapture();
@@ -290,36 +301,74 @@ void main() {
       expect(capture.calls, 0);
     });
 
-    testWidgets('it counts towards what is still needed', (tester) async {
+    testWidgets('it does NOT count towards what is still needed', (
+      tester,
+    ) async {
       useDesignSurface(tester);
-      // All six photographs sent and the face check not done, which is the
-      // state a driver reaches at the end. The remaining gap is the check, so
-      // the footer must read one -- and this is the assertion that would fail
-      // if the check went back to being informational, since then it would
-      // read seven.
+      // All six photographs sent, the face check not done. Continue must be
+      // live: a driver is not held at the last step of onboarding by a check
+      // whose detector is broken on this build. When `isRequired` goes back to
+      // true for the face check, this test fails, and that is the moment it
+      // should be updated.
+      //
+      // `onContinue` is passed because the button is only *wired* to something
+      // when the caller supplies it -- a dead Continue on a complete checklist
+      // is a different bug and the KYC screen is what supplies the callback in
+      // the app.
+      var continued = 0;
       await tester.pumpWidget(
-        wrap([for (final kind in driverPhotoKinds) sent(kind)]),
+        wrap(
+          [for (final kind in driverPhotoKinds) sent(kind)],
+          onContinue: () => continued++,
+        ),
       );
       await reveal(tester, footer);
 
-      expect(find.text('1 still needed'), findsOneWidget);
+      expect(find.text('Continue'), findsOneWidget);
+      final button = tester.widget<FilledButton>(
+        find.byKey(const Key('documentsContinue')),
+      );
+      expect(button.onPressed, isNotNull);
+      await tester.tap(find.byKey(const Key('documentsContinue')));
+      expect(continued, 1, reason: 'and it actually goes somewhere');
     });
 
-    testWidgets('the note says the photo goes to whoever reviews the documents',
-        (tester) async {
+    testWidgets('but it is still listed, and still tappable', (tester) async {
       useDesignSurface(tester);
-      await tester.pumpWidget(wrap(const []));
-      await reveal(tester, find.byKey(const Key('livenessNote')));
+      var started = 0;
+      await tester.pumpWidget(
+        wrap([
+          for (final kind in driverPhotoKinds) sent(kind),
+        ], onStartLiveness: () => started++),
+      );
+      await reveal(tester, find.byKey(const Key('document-livenessFrame')));
 
-      // The check now exists and runs on the device, so the note is no longer
-      // apologising for an absence. It is here for the half the check cannot
-      // do: it proves somebody live was in front of the camera, and it does
-      // not prove the face is the one on the licence.
-      expect(find.textContaining('reviewing your documents'), findsOneWidget);
+      // Optional, not removed. A driver who wants to do it now must be able to,
+      // and the photo still goes to whoever reviews the documents.
+      await tester.tap(find.byKey(const Key('document-livenessFrame')));
+      await tester.pumpAndSettle();
+      expect(started, 1);
+      expect(find.byKey(const Key('document-livenessFrame')), findsOneWidget);
     });
 
-    testWidgets('nothing on the screen claims the face is verified',
-        (tester) async {
+    testWidgets(
+      'the note says the photo goes to whoever reviews the documents',
+      (tester) async {
+        useDesignSurface(tester);
+        await tester.pumpWidget(wrap(const []));
+        await reveal(tester, find.byKey(const Key('livenessNote')));
+
+        // The check now exists and runs on the device, so the note is no longer
+        // apologising for an absence. It is here for the half the check cannot
+        // do: it proves somebody live was in front of the camera, and it does
+        // not prove the face is the one on the licence.
+        expect(find.textContaining('reviewing your documents'), findsOneWidget);
+      },
+    );
+
+    testWidgets('nothing on the screen claims the face is verified', (
+      tester,
+    ) async {
       useDesignSurface(tester);
       await tester.pumpWidget(
         wrap([for (final kind in driverDocumentKinds) sent(kind)]),

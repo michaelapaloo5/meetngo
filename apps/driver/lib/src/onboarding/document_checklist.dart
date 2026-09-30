@@ -51,7 +51,8 @@ class DocumentChecklist extends StatefulWidget {
 
   /// Uploads one document. Throws [DriverAuthFailure] on a refusal, and the row
   /// it came from goes back to unticked.
-  final Future<void> Function(DriverDocumentKind kind, String filePath) onUpload;
+  final Future<void> Function(DriverDocumentKind kind, String filePath)
+  onUpload;
 
   final DocumentCapture capture;
 
@@ -73,7 +74,18 @@ class DocumentChecklist extends StatefulWidget {
       .where((kind) => documents.any((d) => d.kind == kind))
       .toList();
 
-  bool get isComplete => _have.length == driverDocumentKinds.length;
+  /// The required kinds still missing, which is what Continue is gated on.
+  ///
+  /// Counted from [driverRequiredKinds] rather than from [driverDocumentKinds]
+  /// so an optional item -- the face check, while its detector is broken -- does
+  /// not hold a driver at the last step of onboarding. The face check is still
+  /// listed, still offered and still stored when it is done; it just is not
+  /// something a driver can be stuck behind.
+  List<DriverDocumentKind> get _missing => driverRequiredKinds
+      .where((kind) => !documents.any((d) => d.kind == kind))
+      .toList();
+
+  bool get isComplete => _missing.isEmpty;
 
   @override
   State<DocumentChecklist> createState() => _DocumentChecklistState();
@@ -142,8 +154,8 @@ class _DocumentChecklistState extends State<DocumentChecklist> {
         ),
         SizedBox(height: 6.h),
         Text(
-          'Six photos and one face check. Take them now if you can, or come '
-          'back to this list later -- nothing you have already sent is lost.',
+          'Six photos, and a face check you can do later. Take them now if '
+          'you can -- nothing you have already sent is lost.',
           style: MngTheme.light.textTheme.bodySmall,
         ),
         SizedBox(height: 16.h),
@@ -173,8 +185,11 @@ class _DocumentChecklistState extends State<DocumentChecklist> {
             ),
             child: Row(
               children: [
-                const Icon(Icons.error_outline,
-                    size: 18, color: MngColors.error),
+                const Icon(
+                  Icons.error_outline,
+                  size: 18,
+                  color: MngColors.error,
+                ),
                 SizedBox(width: 8.w),
                 Expanded(
                   child: Text(
@@ -193,7 +208,11 @@ class _DocumentChecklistState extends State<DocumentChecklist> {
           child: Text(
             widget.isComplete
                 ? 'Continue'
-                : '${driverDocumentKinds.length - have.length} still needed',
+                // The count of what is still required, so it can never disagree
+                // with whether the button works. A footer reading "1 still
+                // needed" above a live Continue is a bug somebody would report,
+                // and rightly.
+                : '${widget._missing.length} still needed',
           ),
         ),
       ],
@@ -282,17 +301,15 @@ class _DocumentRow extends StatelessWidget {
   }
 
   static IconData _iconFor(DriverDocumentKind kind) => switch (kind) {
-        DriverDocumentKind.profilePhoto => Icons.person_outline,
-        DriverDocumentKind.vehiclePhoto => Icons.directions_car_outlined,
-        DriverDocumentKind.ghanaCardPhoto => Icons.credit_card,
-        DriverDocumentKind.driversLicence => Icons.badge_outlined,
-        DriverDocumentKind.roadWorthy => Icons.verified_outlined,
-        DriverDocumentKind.insuranceSticker => Icons.shield_outlined,
-        DriverDocumentKind.livenessFrame =>
-            Icons.face_retouching_natural,
-      };
+    DriverDocumentKind.profilePhoto => Icons.person_outline,
+    DriverDocumentKind.vehiclePhoto => Icons.directions_car_outlined,
+    DriverDocumentKind.ghanaCardPhoto => Icons.credit_card,
+    DriverDocumentKind.driversLicence => Icons.badge_outlined,
+    DriverDocumentKind.roadWorthy => Icons.verified_outlined,
+    DriverDocumentKind.insuranceSticker => Icons.shield_outlined,
+    DriverDocumentKind.livenessFrame => Icons.face_retouching_natural,
+  };
 }
-
 
 /// What the face check does, and what it does not.
 ///
@@ -330,8 +347,11 @@ class _LivenessNote extends StatelessWidget {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Icon(Icons.face_retouching_natural,
-              size: 22, color: MngColors.textSub),
+          const Icon(
+            Icons.face_retouching_natural,
+            size: 22,
+            color: MngColors.textSub,
+          ),
           SizedBox(width: 12.w),
           Expanded(
             child: Column(

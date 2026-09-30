@@ -87,9 +87,7 @@ class GhanaCardParser {
     }
     final expiry = _expiry.firstMatch(rawText);
     if (expiry == null) {
-      return const CardParseResult(
-        error: 'Could not read the expiry date',
-      );
+      return const CardParseResult(error: 'Could not read the expiry date');
     }
     final month = int.parse(expiry.group(1)!);
     if (month < 1 || month > 12) {
@@ -256,27 +254,35 @@ class KycController extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// How many of the required documents this driver has sent.
+  ///
+  /// Counted from the list rather than from [_documents].length, because the
+  /// two are not the same once anything optional exists: a driver who did the
+  /// face check and skipped a licence photo has six documents on file and is
+  /// missing one of the things an admin actually reviews. Counting the list
+  /// would let that driver submit, and the gate would look like it was working.
+  int get _requiredSent => driverRequiredKinds
+      .where((kind) => _documents.any((d) => d.kind == kind))
+      .length;
+
   bool get canAdvance => switch (step) {
-        // All six documents, because this is the step that exists to collect
-        // them. `continue` is disabled until every one is in, which is what
-        // stops a driver reaching the review step with three of six and
-        // finding out at the far end.
-        KycStep.documents => _documents.length >= driverDocumentKinds.length,
-        KycStep.identity => (_fullName ?? '').trim().length >= 3,
-        KycStep.ghanaCard =>
-          (_cardNumber ?? '').isNotEmpty && (_cardExpiry ?? '').isNotEmpty,
-        KycStep.selfie => (_selfiePath ?? '').isNotEmpty,
-        KycStep.vehicle =>
-          (_vehicleMake ?? '').isNotEmpty &&
-              (_vehicleModel ?? '').isNotEmpty &&
-              (_vehiclePlate ?? '').isNotEmpty &&
-              _vehicleSeats >= 1 &&
-              _vehicleSeats <= 8,
-        KycStep.review ||
-        KycStep.underReview ||
-        KycStep.approved =>
-          false,
-      };
+    // Every required document, because this is the step that exists to collect
+    // them. `continue` is disabled until each one is in, which is what stops a
+    // driver reaching the review step with three of six and finding out at the
+    // far end.
+    KycStep.documents => _requiredSent >= driverRequiredKinds.length,
+    KycStep.identity => (_fullName ?? '').trim().length >= 3,
+    KycStep.ghanaCard =>
+      (_cardNumber ?? '').isNotEmpty && (_cardExpiry ?? '').isNotEmpty,
+    KycStep.selfie => (_selfiePath ?? '').isNotEmpty,
+    KycStep.vehicle =>
+      (_vehicleMake ?? '').isNotEmpty &&
+          (_vehicleModel ?? '').isNotEmpty &&
+          (_vehiclePlate ?? '').isNotEmpty &&
+          _vehicleSeats >= 1 &&
+          _vehicleSeats <= 8,
+    KycStep.review || KycStep.underReview || KycStep.approved => false,
+  };
 
   /// Fills the card fields from scan text, or sets [error] and changes nothing.
   void applyScan(String rawText) {
@@ -376,7 +382,10 @@ class KycController extends ChangeNotifier {
     // rather than in `canAdvance`, because the button being live and then
     // doing nothing is worse than it being dead -- and the driver is walked
     // back to the list rather than left staring at a review of a car.
-    if (documents.length < driverDocumentKinds.length) {
+    final sentRequired = driverRequiredKinds
+        .where((kind) => documents.any((d) => d.kind == kind))
+        .length;
+    if (sentRequired < driverRequiredKinds.length) {
       step = KycStep.documents;
       error = 'Send your documents before submitting for review';
       return;
@@ -526,7 +535,10 @@ class KycController extends ChangeNotifier {
     // through the old flow they got, and a driver who has four of the six is
     // sent to the list to fetch the other two rather than to a review they
     // cannot complete.
-    if (documents.length < driverDocumentKinds.length) {
+    final sentRequired = driverRequiredKinds
+        .where((kind) => documents.any((d) => d.kind == kind))
+        .length;
+    if (sentRequired < driverRequiredKinds.length) {
       return KycStep.documents;
     }
 

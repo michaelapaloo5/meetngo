@@ -1,45 +1,24 @@
-// The admin page, as a string.
-//
-// Kept out of `index.ts` so the file that holds the service role key and the
-// markup that renders driver-supplied text are not the same file. That is not a
-// security boundary -- they ship in one bundle -- but the difference between
-// "text that gets built" and "text that gets interpolated" is where an XSS
-// lives, and `esc` below exists because `full_name`, `plate` and `email` are
-// strings a driver chose.
-//
-// No framework and no build step, and the page holds no credential of its own.
-// It does not even hold the anon key: sign-in is a call to the same function,
-// which verifies the password and hands back a short-lived user JWT. So the
-// only secret in this whole surface is the service role key, and it never
-// leaves `index.ts`.
-//
-// The page is served for an unauthenticated GET, which is deliberate and is the
-// one thing here worth being explicit about: it is markup and a sign-in form,
-// with no data in it. Every driver record it displays arrives from an
-// authenticated call that the function answers only to an admin.
-export function adminPage(supabaseUrl: string): string {
-  return `<!doctype html>
+import { ALL_DOCUMENTS, DOCUMENT_LABELS, REQUIRED_DOCUMENTS } from './handler.ts';
+
+export const adminPage = (supabaseUrl: string): string => `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Meet 'N Go &mdash; driver approvals</title>
+<title>Driver approvals</title>
 <style>
-  :root { --ink:#1A1A1A; --sub:#6E6E73; --line:#EDEDF0; --bg:#F5F5F7;
-          --brand:#F5B301; --ok:#1DB954; --bad:#E5484D; }
-  * { box-sizing: border-box; }
-  body { margin:0; background:var(--bg); color:var(--ink);
-         font:15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
-  header { background:#fff; border-bottom:1px solid var(--line); padding:16px 20px; }
-  h1 { font-size:18px; margin:0 0 2px; }
-  h2 { font-size:16px; margin:0 0 8px; }
-  .sub { color:var(--sub); font-size:13px; }
-  main { max-width:920px; margin:0 auto; padding:20px; }
-  .card { background:#fff; border:1px solid var(--line); border-radius:12px;
-          padding:16px; margin-bottom:12px; }
-  .row { display:flex; gap:16px; flex-wrap:wrap; }
-  .col { flex:1 1 210px; min-width:0; }
-  .label { font-size:11px; text-transform:uppercase; letter-spacing:.04em;
+  :root {
+    --brand:#F5B301; --ink:#111827; --sub:#6B7280; --line:#E5E7EB;
+    --bad:#E5484D; --good:#1DB954; --page:#F9FAFB;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+         background:var(--page); color:var(--ink); }
+  main { max-width:900px; margin:0 auto; padding:20px 16px 60px; }
+  h1 { font-size:20px; margin:0 0 4px; }
+  .note { background:#EEF3FF; border:1px solid #C7D7F7; border-radius:8px;
+          padding:10px 12px; margin-bottom:16px; font-size:13px; }
+  .label { font-size:11px; text-transform:uppercase; letter-spacing:.06em;
            color:var(--sub); margin-bottom:2px; }
   .value { font-weight:600; word-break:break-word; }
   .plain { font-weight:400; }
@@ -48,136 +27,136 @@ export function adminPage(supabaseUrl: string): string {
   button { font:inherit; font-weight:600; border:0; border-radius:8px;
            padding:10px 18px; cursor:pointer; }
   .approve { background:var(--brand); color:var(--ink); }
+  .approve[disabled] { opacity:.45; cursor:default; }
   .reject { background:#fff; color:var(--bad); border:1px solid var(--bad); }
   button:disabled { opacity:.45; cursor:default; }
-  /* The six documents. Sent and missing differ in colour as well as in label,
-     so a column of six rows is scannable at a glance rather than six lines of
-     reading. */
+  .warn { background:#FFF7E0; border:1px solid #F0D89B; border-radius:8px;
+          padding:10px 12px; margin-top:12px; font-size:13px; }
+  .empty { text-align:center; padding:48px 20px; color:var(--sub); }
+  .bar { display:flex; gap:10px; margin-top:14px; }
+  .card { background:#fff; border:1px solid var(--line); border-radius:12px;
+          padding:16px; margin-bottom:16px; }
+  .row { display:flex; gap:20px; flex-wrap:wrap; }
+  .col { flex:1 1 220px; min-width:200px; }
+  .sub { color:var(--sub); font-size:13px; }
+  input { font:inherit; padding:10px 12px; border:1px solid var(--line);
+          border-radius:8px; width:100%; margin-bottom:10px; }
+
+  /* The documents. Sent and missing differ in colour as well as in label, so a
+     column of rows is scannable at a glance rather than six lines of reading. */
   .docs { display:flex; flex-direction:column; gap:4px; margin-top:6px; }
   .doc { display:flex; align-items:center; gap:8px; font-size:13px; }
   .docname { flex:1; }
   .doc.absent .docname { color:var(--sub); }
+  .doc.sent .docname { color:var(--ink); }
   .docmissing { font-size:12px; color:var(--bad); }
+  .docoptional { font-size:11px; color:var(--sub); }
   .view { background:#fff; color:var(--ink); border:1px solid var(--line);
           padding:4px 10px; font-size:12px; }
-  input { font:inherit; padding:10px 12px; border:1px solid var(--line);
-          border-radius:8px; width:100%; margin-bottom:10px; }
-  .warn { background:#FFF7E0; border:1px solid #F0D89B; border-radius:8px;
-          padding:10px 12px; margin-top:12px; font-size:13px; }
-  .note { background:#EEF3FF; border:1px solid #C7D7F7; border-radius:8px;
-          padding:10px 12px; margin-bottom:16px; font-size:13px; }
-  .empty { text-align:center; padding:48px 20px; color:var(--sub); }
-  .bar { display:flex; gap:10px; margin-top:14px; }
 </style>
 </head>
 <body>
-<header>
-  <h1>Driver approvals</h1>
-  <div class="sub">Meet &apos;N Go pilot</div>
-</header>
 <main id="main"></main>
-
 <script>
-const URL = ${JSON.stringify(supabaseUrl)};
+'use strict';
+
 const main = document.getElementById('main');
+let token = sessionStorage.getItem('mng_admin_token') || '';
 
-/** Every value printed below is a string a driver typed or chose. */
-const esc = (v) => String(v === null || v === undefined ? '' : v)
-  .replace(/[&<>"']/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;',
-                                 '"':'&quot;',"'":'&#39;' }[c]));
+// The one thing on this page that comes from outside it.
+//
+// The project's own URL, so a driver photographed in the sign-in screen is sent
+// to the right place. It is not a credential and it is not a secret: it is in
+// every app this build ships, and it identifies nothing. The page holds no key
+// at all, which the tests check by name.
+const PROJECT_URL = '${supabaseUrl}';
 
-/** The short-lived user JWT, held in memory only. Never persisted. */
-let token = null;
+const esc = function (v) {
+  return String(v == null ? '' : v).replace(/[&<>"']/g, function (c) {
+    return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+  });
+};
 
 async function call(body) {
   const res = await fetch(location.pathname, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(token ? { Authorization: 'Bearer ' + token } : {}),
-    },
+    headers: Object.assign(
+      { 'Content-Type': 'application/json' },
+      token ? { Authorization: 'Bearer ' + token } : {},
+    ),
     body: JSON.stringify(body),
   });
   let data = {};
-  try { data = await res.json(); } catch (_) {}
-  return { status: res.status, data };
+  try { data = await res.json(); } catch (e) { /* not json */ }
+  return { status: res.status, data: data };
 }
 
 function signIn(message) {
   main.innerHTML =
-    '<div class="card" style="max-width:420px;margin:40px auto">' +
-    '<h2>Sign in</h2>' +
-    '<p class="sub">An account whose <code>profiles.role</code> is ' +
-    '<code>admin</code>. Everyone else is refused by the function, not by ' +
-    'this page.</p>' +
+    '<h1>Driver approvals</h1>' +
     (message ? '<div class="warn" style="margin:0 0 12px">' + esc(message) + '</div>' : '') +
-    '<input id="email" type="email" placeholder="admin@example.com" autocomplete="username">' +
-    '<input id="password" type="password" placeholder="Password" autocomplete="current-password">' +
+    '<div class="card"><div class="label">Email</div>' +
+    '<input id="email" type="email" autocomplete="username">' +
+    '<div class="label" style="margin-top:8px">Password</div>' +
+    '<input id="password" type="password" autocomplete="current-password">' +
     '<button class="approve" id="go">Sign in</button></div>';
   document.getElementById('go').onclick = async () => {
-    const { status, data } = await call({
+    const r = await call({
       action: 'signin',
       email: document.getElementById('email').value,
       password: document.getElementById('password').value,
     });
-    if (status !== 200) { signIn(data.error || 'Sign in failed.'); return; }
-    token = data.token;
+    if (r.status !== 200) { signIn(r.data.error || 'sign in failed'); return; }
+    token = r.data.token;
+    sessionStorage.setItem('mng_admin_token', token);
     load();
   };
 }
 
-// The seven things a driver sends, in the order the app asks for them.
-//
-// Written out here rather than taken from the server so the page can show what
-// is *missing* as well as what is sent, and so the list cannot silently change
-// shape if the server sends something unexpected. These are the same six wire
-// values as REQUIRED_DOCUMENTS in handler.ts and the check constraint in
-// 20260929000003_liveness_frame.sql.
-//
-// No backticks in this comment: this whole file is one template literal, so a
-// backtick here ends the string and the page becomes a syntax error rather
-// than a comment.
-const DOCS = [
-  ['profilePhoto', 'Profile picture'],
-  ['vehiclePhoto', 'Vehicle photo'],
-  ['ghanaCardPhoto', 'Ghana card photo'],
-  ['driversLicence', "Driver's licence photo"],
-  ['roadWorthy', 'Road worthy certificate'],
-  ['insuranceSticker', 'Insurance sticker'],
-  ['livenessFrame', 'Face check photo']
-];
+// Which documents exist, and which of the seven are required. Kept in the page
+// rather than fetched so a row can be drawn for something the server has not
+// heard of, and so the "required" marker cannot disagree with the gate.
+const ALL = ${JSON.stringify(ALL_DOCUMENTS)};
+const REQUIRED = ${JSON.stringify(REQUIRED_DOCUMENTS)};
+const LABELS = ${JSON.stringify(DOCUMENT_LABELS)};
 
-// The seven rows, sent or not.
+// The documents, sent or not.
 //
 // This block is the reason the page exists. A card, a phone number and four
 // digits off a Ghana Card are not a document anybody can check a licence
-// against; the licence, the road worthy and the insurance sticker are the
-// actual decision. An admin who cannot see them is not reviewing, and the
-// approve button would be a stamp on nothing.
+// against. The face check photo is the one item that can be compared with the
+// licence photograph, so it gets its own row and is labelled optional while its
+// detector is broken -- visible to the reviewer, not a bar to a driver's
+// approval.
 function documentsBlock(d) {
   const have = new Set(d.documents || []);
-  const missing = DOCS.filter(function (x) { return !have.has(x[0]); }).length;
-  const rows = DOCS.map(function (x) {
-    const sent = have.has(x[0]);
-    return '<div class="doc' + (sent ? ' sent' : ' absent') + '">' +
-      '<span class="docname">' + esc(x[1]) + '</span>' +
+  const required = ALL.filter(function (k) { return REQUIRED.indexOf(k) >= 0; });
+  const missingRequired = required.filter(function (k) { return !have.has(k); });
+  const rows = ALL.map(function (k) {
+    const sent = have.has(k);
+    const isRequired = REQUIRED.indexOf(k) >= 0;
+    return '<div class="doc ' + (sent ? 'sent' : 'absent') + '">' +
+      '<span class="docname">' + esc(LABELS[k] || k) + '</span>' +
       (sent
-        ? '<button class="view" data-kind="' + esc(x[0]) + '">View</button>'
-        : '<span class="docmissing">not sent</span>') +
+        ? '<button class="view" data-kind="' + esc(k) + '">View</button>'
+        : (isRequired
+            ? '<span class="docmissing">not sent</span>'
+            : '<span class="docoptional">not sent (optional)</span>')) +
       '</div>';
   }).join('');
   return '<div class="label" style="margin-top:10px">Documents</div>' +
-    (missing === 0
-      ? '<div class="sub">All seven sent.</div>'
-      : '<div class="warn" style="margin:6px 0 8px">' + missing +
-        ' of 7 still missing. This driver cannot be approved until they are sent.</div>') +
+    (missingRequired.length === 0
+      ? '<div class="sub">All ' + required.length + ' required documents sent.</div>'
+      : '<div class="warn" style="margin:6px 0 8px">' + missingRequired.length +
+        ' of ' + required.length +
+        ' still missing. This driver cannot be approved until they are sent.</div>') +
     '<div class="docs">' + rows + '</div>';
 }
 
 function card(d) {
   const v = d.vehicle;
   const have = new Set(d.documents || []);
-  const complete = DOCS.every(function (x) { return have.has(x[0]); });
+  const complete = REQUIRED.every(function (k) { return have.has(k); });
   return '<div class="card" data-id="' + esc(d.id) + '">' +
     '<div class="row">' +
       '<div class="col">' +
@@ -207,8 +186,9 @@ function card(d) {
       '</div>' +
     '</div>' +
     '<div class="bar">' +
-      // Approve is dead until all seven are sent. The server refuses it anyway --
-      // this is so the admin finds out before clicking, not instead of.
+      // Approve is dead until every REQUIRED document is there. The server
+      // refuses with a 409 even if the page is bypassed, so this is so the
+      // admin finds out before clicking rather than instead of.
       (complete
         ? '<button class="approve" data-decision="approve">Approve</button>'
         : '<button class="approve" disabled title="Send the missing documents first">Approve</button>') +
@@ -217,28 +197,37 @@ function card(d) {
 }
 
 async function load() {
-  const { status, data } = await call({ action: 'list' });
-  if (status === 401) { signIn(); return; }
-  if (status === 403) {
+  const r = await call({ action: 'list' });
+  if (r.status === 401) { signIn(); return; }
+  if (r.status === 403) {
     main.innerHTML = '<div class="empty">This account is not an admin.</div>';
     return;
   }
-  if (status !== 200) {
-    main.innerHTML = '<div class="empty">Could not load drivers: ' +
-      esc(data.error || String(status)) + '</div>';
+  if (r.status !== 200) {
+    main.innerHTML = '<div class="warn">' + esc(r.data.error || String(r.status)) + '</div>';
     return;
   }
-  const drivers = data.drivers || [];
-  if (drivers.length === 0) {
-    main.innerHTML = '<div class="empty">No drivers waiting on a decision.</div>';
-    return;
-  }
+  const drivers = r.data.drivers || [];
   main.innerHTML =
-    '<div class="note">The Ghana Card is stored as four digits and an expiry, ' +
-    'not as a picture &mdash; there is nothing here to check the card against. ' +
-    'The selfie is the only document here you can actually look at.</div>' +
-    drivers.map(card).join('');
+    '<h1>Driver approvals</h1>' +
+    '<div class="note">Approving flips the driver and their vehicle together. ' +
+    'The six photographs are required; the face check photo is shown when a ' +
+    'driver sent one but is not required yet, because the in-app check cannot ' +
+    'read a frame on this build. If a face check photo is there, compare it ' +
+    'with the licence.<br><br>Two things on this page cannot be verified here, ' +
+    'and the page says so rather than implying otherwise. The Ghana Card is ' +
+    'stored as four digits and an expiry, not as a picture, so there is ' +
+    'nothing to look at -- what is shown is a number. And the selfie is not ' +
+    'checked against the licence: that is a face match, and this page does not ' +
+    'do one. The face check photo is the closest thing to that comparison on ' +
+    'this screen, which is why it gets its own row.</div>' +
+    (drivers.length === 0
+      ? '<div class="empty">Nobody is waiting to be approved.</div>'
+      : drivers.map(card).join(''));
+  wire(drivers.length);
+}
 
+function wire(count) {
   main.querySelectorAll('button[data-decision]').forEach(function (btn) {
     btn.onclick = async function () {
       var el = btn.closest('.card');
@@ -290,4 +279,3 @@ signIn();
 </script>
 </body>
 </html>`;
-}
