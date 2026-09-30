@@ -97,6 +97,33 @@ if ($problems.Count -gt 0) {
 [System.IO.File]::WriteAllText($target, $html, (New-Object System.Text.UTF8Encoding($false)))
 $kb = [math]::Round((Get-Item $target).Length / 1KB, 1)
 Write-Output "wrote $target ($kb KB)"
+
+# Then the check that matters, on the file that was just written rather than on
+# the generator that produced it. `deno run --allow-net --allow-read --allow-env
+# toolchain\verify-admin-page.ts <path>` executes the page's own script against a
+# DOM stub and asks whether opening a driver produces an Approve button.
+#
+# A separate step on purpose. The page was once generated correctly, deployed
+# correctly, type-checked, passed every string assertion in the suite, and had no
+# Approve button on it -- because the function that builds the bar was only ever
+# called from the error path inside `send`, and nobody could reach a failed save
+# without a button to press first. Reading the HTML cannot find that. Running it
+# can.
+$verifier = Join-Path $root 'toolchain\verify-admin-page.ts'
+if (Test-Path $verifier) {
+  $deno = Get-Command deno -ErrorAction SilentlyContinue
+  if ($deno) {
+    Write-Output ''
+    Write-Output 'running the page, because reading it is not enough:'
+    & deno run --allow-net --allow-env --allow-read $verifier $target
+    if ($LASTEXITCODE -ne 0) {
+      throw 'the page does not work when it is run -- do not upload it'
+    }
+  } else {
+    Write-Output '  (deno not on PATH; skipped the run-the-page check)'
+  }
+}
+
 Write-Output ''
 Write-Output 'Upload that ONE file as index.html at the root of your web space.'
 Write-Output 'Nothing else is needed: no PHP, no build step, no database.'

@@ -235,6 +235,13 @@ function signedOut() {
 // ---------------------------------------------------------------- sign in
 
 function signIn(message) {
+  // Same reason as load: the bar is fixed to the bottom of the viewport and
+  // would otherwise sit over the sign-in form, offering to approve a driver to
+  // somebody who had just been signed out.
+  clearButtons();
+  current = null;
+  canApproveCurrent = false;
+
   wrap.innerHTML =
     '<div class="bar"><h1>Driver approvals</h1></div>' +
     '<div class="card">' +
@@ -283,6 +290,16 @@ function signIn(message) {
 let queue = [];
 
 function load() {
+  // Leaving the queue and the review screen, so the decision bar and the driver
+  // it belongs to both go. Without this the bar is position: fixed and simply
+  // outlives the screen: approve somebody, land back on the queue, and the
+  // Approve button for the driver you just approved is still under your thumb.
+  // Tapping it decided on a driver who was no longer open, which threw on a
+  // null and looked like a button that had stopped working.
+  clearButtons();
+  current = null;
+  canApproveCurrent = false;
+
   wrap.innerHTML =
     '<div class="bar"><h1>Driver approvals</h1>' +
     '<div class="who">' + esc(me) + '<br><button class="link" id="out">Sign out</button></div></div>';
@@ -358,10 +375,19 @@ function wireQueue() {
 
 let current = null;
 
+// Whether the open driver has every required document, so Approve is offered.
+// Set by review, read by decideButtons, cleared by load.
+//
+// Declared beside current rather than inside decideButtons because these two
+// are one fact: they are both about *the driver on screen right now*, and either
+// one being stale is the same bug. load clears both together.
+let canApproveCurrent = false;
+
 function review(d) {
   current = d;
   const have = new Set(d.documents || []);
   const missingRequired = REQUIRED.filter(function (k) { return !have.has(k); });
+  canApproveCurrent = missingRequired.length === 0;
 
   // The three photographs that answer "is this the same person". Anything else
   // is below, folded away, because an employee should be looking at faces.
@@ -429,6 +455,19 @@ function review(d) {
   document.getElementById('back').onclick = function () { current = null; load(); };
   loadPhotos();
   wireViews();
+
+  // The bar of buttons, without which this screen is read-only and the queue
+  // cannot be emptied by anybody.
+  //
+  // It was missing here, and that is why the page looked like it had no Approve
+  // button: decideButtons existed, and both of its only two callers were the
+  // error paths inside send, so the bar was built *only* when a save had
+  // already failed. Nobody could reach a failure without a button to press
+  // first, so it was never built at all.
+  //
+  // Approve is withheld while a required document is missing, which is what the
+  // red message above the photos already says. Decline is always offered.
+  decideButtons();
 }
 
 function loadPhotos() {
@@ -464,20 +503,55 @@ function wireViews() {
 
 let busy = false;
 
+// Builds the fixed Approve/Decline bar.
+//
+// Whether Approve is offered is read from canApproveCurrent rather than passed
+// in, because three places have to agree: review decides it, and send's two
+// error paths have to rebuild the bar with the same answer. A parameter would
+// have meant those two calls passing something, and one of them would have passed
+// nothing -- which is falsy, and so would have disabled Approve on the one screen
+// where the driver has every document and the save merely failed. That is a
+// mistake this shape actively invites, so the flag lives in one place instead.
 function decideButtons() {
+  // Remove any bar already on the page before making another. Called from
+  // review and again from both error paths in send, and without this a
+  // failed save left two bars stacked on top of each other, the older one
+  // covering the newer.
+  clearButtons();
+
   const bar = document.createElement('div');
   bar.className = 'decide';
   bar.innerHTML =
     '<button class="no" id="noBtn">Decline</button>' +
-    '<button class="yes" id="yesBtn">Approve</button>';
+    '<button class="yes" id="yesBtn"' +
+    (canApproveCurrent ? '' : ' disabled') + '>Approve</button>';
   document.body.appendChild(bar);
-  document.getElementById('noBtn').onclick = askReason;
-  document.getElementById('yesBtn').onclick = function () { send('approve', null); };
+
+  const no = document.getElementById('noBtn');
+  const yes = document.getElementById('yesBtn');
+  no.onclick = askReason;
+  yes.onclick = function () { send('approve', null); };
+
+  if (!canApproveCurrent) {
+    // Declining stays available. Somebody who sent four documents instead of six
+    // still has to be turned away, and a driver stuck in the queue forever
+    // because there was no Decline button is a worse outcome than a wrong
+    // rejection with a reason attached. Only Approve is withheld, because the
+    // server refuses it anyway and a button that always fails teaches an
+    // employee that this page is broken.
+    yes.setAttribute(
+      'title',
+      'Every required document has to be sent before you can approve.',
+    );
+  }
 }
 
 function clearButtons() {
-  const bar = document.querySelector('.decide');
-  if (bar) bar.remove();
+  // All of them, not the first. A leftover bar is worse than no bar: it is
+  // position: fixed at the bottom of the viewport, so it sits over the queue
+  // after a decision and over the sign-in form after signing out, and pressing
+  // it would decide on a driver who is no longer open.
+  document.querySelectorAll('.decide').forEach(function (bar) { bar.remove(); });
 }
 
 function askReason() {
@@ -510,6 +584,15 @@ function askReason() {
 
 async function send(decision, reason) {
   if (busy) return;
+
+  // Nothing is open. A leftover button from a driver who has already been
+  // decided, pressed on the queue, would otherwise reach d.id on a null and
+  // throw inside an async function, which surfaces as a button that silently
+  // does nothing -- the same symptom as the bug that made this bar unreachable
+  // in the first place, so it is worth closing explicitly rather than waiting
+  // to see whether it happens.
+  if (!current) { clearButtons(); return; }
+
   busy = true;
   clearButtons();
 
