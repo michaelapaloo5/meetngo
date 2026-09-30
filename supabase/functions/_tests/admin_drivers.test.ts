@@ -11,6 +11,7 @@
 // failures in production: the first is a privilege escalation and the second is
 // a driver who shows as ready and is never offered a ride.
 import { assert, assertEquals } from 'https://deno.land/std@0.224.0/testing/asserts.ts';
+import { type StaffIdentity } from '../admin-drivers/staff.ts';
 import {
   ALL_DOCUMENTS,
   handleDecide,
@@ -39,7 +40,9 @@ function fake(overrides: Partial<AdminDeps> = {}) {
   // `any`. Typed here for the same reason: the point of the cast is that these
   // are the shapes `AdminDeps` declares.
   const listed: { count: number } = { count: 0 };
-  const decided: { driverId: string; status: string; by: string }[] = [];
+  // `by` is nullable because a staff member's decision leaves `approved_by`
+  // null -- they have no auth user -- and their name goes to `kyc_decisions`.
+  const decided: { driverId: string; status: string; by: string | null }[] = [];
   const vehiclesApproved: string[] = [];
   const signed: { driverId: string; kind: string }[] = [];
   // Sent by default, so the tests that predate the document gate keep testing
@@ -58,7 +61,9 @@ function fake(overrides: Partial<AdminDeps> = {}) {
     decide: async (
       driverId: string,
       status: 'approved' | 'rejected',
-      decidedBy: string,
+      // Nullable: a staff member has no auth user, so `approved_by` is left null
+      // for their decisions and their name lands in `kyc_decisions` instead.
+      decidedBy: string | null,
     ): Promise<PendingDriver | null> => {
       decided.push({ driverId, status, by: decidedBy });
       return {
@@ -458,4 +463,111 @@ Deno.test('a document URL is minted only for a kind that was sent', async () => 
 
   assert(ok !== null);
   assertEquals(refused, null);
+});
+
+// A staff member, which is a different kind of caller from a Supabase admin.
+const AMMA: StaffIdentity = { id: 'staff-1', name: 'Ama' };
+
+Deno.test('a signed-in staff member can review', async () => {
+  // The whole point of the staff path. `callerId` is null because a staff token
+  // is not a Supabase JWT and never resolves through `authenticate`.
+  const deps = fake();
+
+  const result = await handleList(deps, null, AMMA);
+
+  assertEquals(result.status, 200);
+});
+
+Deno.test('a staff decision writes null into approved_by, not a staff id', async () => {
+  // `profiles.approved_by` is a foreign key to `auth.users`. A staff member has
+  // no auth user, so writing their id there fails the constraint and takes the
+  // whole approval down with it. Their attribution goes to `kyc_decisions`.
+  const deps = fake();
+
+  const result = await handleDecide(
+    deps,
+    null,
+    { driverId: 'd1', action: 'approve' },
+    AMMA,
+  );
+
+  assertEquals(result.status, 200);
+  assertEquals(deps.decided.length, 1);
+  assertEquals(
+    deps.decided[0].by,
+    null,
+    'a staff id in a column that references auth.users would be rejected',
+  );
+});
+
+Deno.test('a founder decision still records their auth id', async () => {
+  // The other half. The nullable column must not have quietly become "never
+  // recorded", or the original audit trail is gone and the founder's approvals
+  // are anonymous.
+  const deps = fake({ roleOf: async () => 'admin' });
+
+  const result = await handleDecide(deps, 'admin-1', {
+    driverId: 'd1',
+    action: 'approve',
+  });
+
+  assertEquals(result.status, 200);
+  assertEquals(deps.decided[0].by, 'admin-1');
+});
+
+Deno.test('a staff member can still not approve a driver with documents missing', async () => {
+  // The document gate is the substance of the decision, and it must not be
+  // something a cheaper kind of caller gets to skip.
+  const deps = fake();
+  deps.state.documents = [];
+
+  const result = await handleDecide(
+    deps,
+    null,
+    { driverId: 'd1', action: 'approve' },
+    AMMA,
+  );
+
+  assertEquals(result.status, 409);
+  assertEquals(deps.decided.length, 0);
+});
+
+Deno.test('a staff member can reject a driver with documents missing', async () => {
+  // A rejection is always allowed, for anybody. Refusing to let an employee turn
+  // a driver away is a different kind of wrong and there is no case for it.
+  const deps = fake();
+  deps.state.documents = [];
+
+  const result = await handleDecide(
+    deps,
+    null,
+    { driverId: 'd1', action: 'reject' },
+    AMMA,
+  );
+
+  assertEquals(result.status, 200);
+  assertEquals(deps.decided[0].status, 'rejected');
+});
+
+Deno.test('nobody at all is refused, with an instruction rather than a word', async () => {
+  // "admin only" means nothing to an employee. "sign in to review
+  // applications" tells them what to do.
+  const deps = fake();
+
+  const result = await handleList(deps, null, null);
+
+  assertEquals(result.status, 401);
+  const body = result.body as { error?: string };
+  assertEquals(body.error, 'sign in to review applications');
+});
+
+Deno.test('a Supabase user who is not an admin is still refused', async () => {
+  // A staff token must not become a way in for anybody holding a driver JWT, and
+  // a driver JWT must not become a way in either. The role is read from the
+  // profile, not from the fact that a token resolved.
+  const deps = fake({ roleOf: async () => 'driver' });
+
+  const result = await handleList(deps, 'driver-1', null);
+
+  assertEquals(result.status, 403);
 });

@@ -1,4 +1,6 @@
 // The admin KYC decision, with no supabase-js in it.
+
+import { type StaffIdentity } from './staff.ts';
 //
 // Split from `index.ts` for the reason every other function in this directory
 // is split the same way: the port builder imports
@@ -28,7 +30,14 @@ export interface AdminDeps {
   decide: (
     driverId: string,
     status: 'approved' | 'rejected',
-    decidedBy: string,
+    /**
+     * The Supabase user who decided, or null when a staff member did.
+     *
+     * Nullable because `profiles.approved_by` is a foreign key to `auth.users`
+     * and a staff member has no auth user. Their attribution goes to
+     * `kyc_decisions` instead, which is the table built for it.
+     */
+    decidedBy: string | null,
   ) => Promise<PendingDriver | null>;
 
   /**
@@ -220,8 +229,10 @@ export function isAdmin(role: string | null): boolean {
 export async function handleList(
   deps: AdminDeps,
   callerId: string | null,
+  /** Set when the caller is a staff member rather than a Supabase admin. */
+  staff?: StaffIdentity | null,
 ): Promise<ListResult> {
-  const gate = await requireAdmin(deps, callerId);
+  const gate = await requireAdmin(deps, callerId, staff);
   if ('error' in gate) return gate.error;
 
   const drivers = await deps.listPending();
@@ -263,8 +274,10 @@ export async function handleDecide(
   deps: AdminDeps,
   callerId: string | null,
   input: DecideInput,
+  /** Set when the caller is a staff member rather than a Supabase admin. */
+  staff?: StaffIdentity | null,
 ): Promise<DecideResult> {
-  const gate = await requireAdmin(deps, callerId);
+  const gate = await requireAdmin(deps, callerId, staff);
   if ('error' in gate) return gate.error;
 
   if (input.action !== 'approve' && input.action !== 'reject') {
@@ -309,7 +322,16 @@ export async function handleDecide(
     }
   }
 
-  const row = await deps.decide(input.driverId, status, gate.adminId);
+  // `approved_by` is null for a staff decision, and that is the honest value.
+  //
+  // The column is a foreign key to `auth.users` and a staff member has no auth
+  // user, so writing their id there would fail the constraint and take the whole
+  // decision down. The attribution for staff decisions lives in
+  // `kyc_decisions`, which carries both a staff id and a name; this column stays
+  // null and the founder's own approvals keep filling it.
+  const approvedBy = gate.staffName === null ? gate.adminId : null;
+
+  const row = await deps.decide(input.driverId, status, approvedBy);
   if (row === null) {
     // The driver is gone. A 404 rather than a 200 that quietly did nothing,
     // because the admin's next question would be "did that work".
@@ -345,12 +367,36 @@ export async function handleDecide(
 async function requireAdmin(
   deps: AdminDeps,
   callerId: string | null,
-): Promise<{ adminId: string } | { error: ListResult }> {
+  staff?: StaffIdentity | null,
+): Promise<
+  { adminId: string; staffName: string | null } | { error: ListResult }
+> {
+  // A staff member is already resolved by `staffFor`, which found a live
+  // `staff_sessions` row for this token. There is no role to check -- the row
+  // existing *is* the permission -- so this returns immediately and the Supabase
+  // path below is never reached for them.
+  //
+  // `adminId` is the staff id rather than a `profiles` row, because
+  // `profiles.approved_by` is a foreign key to `auth.users` and a staff member
+  // has no auth user. The id is still the right thing to record: it is stable,
+  // it is what the decision log joins on, and `profiles.approved_by` is nullable
+  // so a staff decision leaves it null rather than failing on the constraint.
+  if (staff != null) {
+    return { adminId: staff.id, staffName: staff.name };
+  }
   if (callerId === null) {
-    return { error: { status: 401, body: { error: 'sign in as an admin' } } };
+    return {
+      error: {
+        status: 401,
+        // Said as an instruction rather than as the platform's word. An
+        // employee who signs in with a PIN and then sees "admin only" has no
+        // idea what an admin is.
+        body: { error: 'sign in to review applications' },
+      },
+    };
   }
   if (!isAdmin(await deps.roleOf(callerId))) {
     return { error: { status: 403, body: { error: 'admin only' } } };
   }
-  return { adminId: callerId };
+  return { adminId: callerId, staffName: null };
 }

@@ -28,12 +28,324 @@ import {
   type PendingDriver,
 } from './handler.ts';
 import { adminPage } from './page.ts';
+import { staffPage } from './staff_page.ts';
+import {
+  findSession,
+  signIn,
+  signOut,
+  validateDecision,
+  type SessionGrant,
+  type StaffDeps,
+  type StaffIdentity,
+  type StaffRow,
+  type StaffSignInFailure,
+} from './staff.ts';
+
+/// The staff store, over a Supabase client.
+///
+/// A deliberately narrow description of the six queries this file makes against
+/// the three staff tables, rather than a cast at every call site. It reads like
+/// ceremony and saves a lot of it: without it every method below is an
+/// `as never as {...}` and a reader of any one query has to work out whether
+/// that particular cast is safe.
+///
+/// `postgrest` is not imported. The Deno test job does not resolve the module
+/// graph this function is deployed with, and [staff.ts] is where the rules live
+/// precisely so they can be tested without any of this.
+interface StaffStore {
+  from(table: string): {
+    select(columns: string): {
+      eq(column: string, value: unknown): {
+        gt(column: string, value: string): {
+          maybeSingle(): Promise<{ data: unknown }>;
+        };
+        maybeSingle(): Promise<{ data: unknown }>;
+      };
+    };
+    insert(values: Record<string, unknown>): Promise<unknown>;
+    delete(): {
+      eq(column: string, value: unknown): Promise<unknown>;
+    };
+  };
+  rpc(
+    name: string,
+    args: Record<string, unknown>,
+  ): Promise<{ data: unknown; error: unknown }>;
+}
+
+/// One service client for the whole function.
+///
+/// Built once at module scope. The alternative -- a client per request, which is
+/// what this file did first -- means a fresh TLS handshake to Supabase for every
+/// PIN tap, on a connection that is the thing most likely to be slow.
+let cachedService: StaffStore & { auth: unknown } | null = null;
+
+function serviceClient(): StaffStore & { auth: unknown } {
+  if (cachedService !== null) return cachedService;
+  const client = createClient(
+    Deno.env.get('SUPABASE_URL') ?? '',
+    Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '',
+  );
+  cachedService = client as unknown as StaffStore & { auth: unknown };
+  return cachedService;
+}
+
+/// The staff store over the service role.
+///
+/// Service-role-only because RLS is enabled on all three staff tables with no
+/// policies at all. A driver authenticated as themselves cannot read a staff
+/// name, a PIN hash or the decision log, and the anon key that ships in both
+/// apps gets nothing.
+function buildStaffDeps(service: StaffStore): StaffDeps {
+  const row = (data: unknown): Record<string, unknown> | null =>
+    data === null || data === undefined
+      ? null
+      : data as Record<string, unknown>;
+
+  return {
+    findByName: async (name) => {
+      const { data } = await service
+        .from('staff')
+        .select('id, name, pin_hash, active, failed_attempts, locked_until')
+        .eq('name', name)
+        .maybeSingle();
+      const r = row(data);
+      if (r === null) return null;
+      return {
+        id: String(r['id']),
+        name: String(r['name']),
+        pinHash: String(r['pin_hash']),
+        active: r['active'] === true,
+        failedAttempts: Number(r['failed_attempts'] ?? 0),
+        lockedUntil: r['locked_until'] == null
+          ? null
+          : new Date(String(r['locked_until'])),
+      } as StaffRow;
+    },
+
+    // The comparison happens in Postgres. This function has no bcrypt and is not
+    // going to grow one: reading the hash out to compare it here would put it in
+    // this function's memory and in any error message, for no gain over a round
+    // trip either way.
+    pinMatches: async (staffId, pin) => {
+      const { data, error } = await service.rpc('staff_pin_matches', {
+        p_staff_id: staffId,
+        p_pin: pin,
+      });
+      return error === null && data === true;
+    },
+
+    markUsed: async (staffId) => {
+      await service.rpc('staff_pin_used', { p_staff_id: staffId });
+    },
+
+    markFailed: async (staffId) => {
+      // Both the counter and the lock are advanced by a Postgres function, so
+      // the rule lives in one place and a caller cannot unlock itself by calling
+      // markUsed more often than markFailed.
+      await service.rpc('staff_pin_failed', { p_staff_id: staffId });
+    },
+
+    createSession: async (grant) => {
+      await service.from('staff_sessions').insert({
+        token_hash: grant.tokenHash,
+        staff_id: grant.staffId,
+        expires_at: grant.expiresAt.toISOString(),
+      });
+    },
+
+    findSession: async (tokenHash) => {
+      const { data } = await service
+        .from('staff_sessions')
+        .select('staff_id, staff(id, name)')
+        .eq('token_hash', tokenHash)
+        .gt('expires_at', new Date().toISOString())
+        .maybeSingle();
+      const r = row(data);
+      if (r === null) return null;
+      const person = r['staff'] as Record<string, unknown> | null;
+      if (person === null) return null;
+      return { id: String(r['staff_id']), name: String(person['name']) };
+    },
+
+    deleteSession: async (tokenHash) => {
+      await service.from('staff_sessions').delete().eq('token_hash', tokenHash);
+    },
+  };
+}
+
+/// Resolves a request token to a signed-in staff member, or null.
+///
+/// Null for every failure -- unknown, expired, revoked -- because the caller
+/// answers all of them identically and a different answer would leak which
+/// tokens ever existed.
+async function staffFor(token: string): Promise<StaffIdentity | null> {
+  return findSession(buildStaffDeps(serviceClient()), await sha256Hex(token));
+}
+
+/// Whether this request may see and decide on driver applications.
+///
+/// A founder, whose Supabase account carries `role = 'admin'`, or a signed-in
+/// staff member. Both are resolved through their own store and neither is
+/// accepted on the strength of resembling the other, so a staff token cannot
+/// reach anything a founder account can and a founder JWT cannot be replayed
+/// against a deleted staff row.
+async function allowed(
+  callerId: string | null,
+  staff: StaffIdentity | null,
+): Promise<boolean> {
+  if (callerId !== null && isAdmin(await roleOfCaller(callerId))) return true;
+  return staff !== null;
+}
+
+/// `profiles.role` for a Supabase caller.
+///
+/// Separate from [buildAdminDeps] because the deps object is built per request
+/// and this is only needed on the two actions that can write.
+async function roleOfCaller(callerId: string): Promise<string | null> {
+  const { data } = await (serviceClient() as unknown as {
+    from(t: string): {
+      select(c: string): { eq(c: string, v: unknown): { maybeSingle(): Promise<{ data: unknown }> } };
+    };
+  })
+    .from('profiles')
+    .select('role')
+    .eq('id', callerId)
+    .maybeSingle();
+  const row = data as Record<string, unknown> | null;
+  return row === null ? null : (row['role'] as string | null);
+}
+
+/// Writes one row into `kyc_decisions`.
+///
+/// Best-effort by design: a failure to log must not undo or block a decision
+/// that has already been made, because leaving a driver un-approved is worse
+/// than a gap in the log. The gap is reported in the log line so it is visible.
+async function recordDecision(input: {
+  driverId: string;
+  decision: 'approved' | 'rejected';
+  staff: StaffIdentity | null;
+  reason: string | null;
+}): Promise<void> {
+  try {
+    await (serviceClient() as unknown as {
+      from(t: string): {
+        insert(v: Record<string, unknown>): Promise<unknown>;
+      };
+    })
+      .from('kyc_decisions')
+      .insert({
+        driver_id: input.driverId,
+        decision: input.decision,
+        staff_id: input.staff?.id ?? null,
+        // Kept beside the id so the log still reads after the staff row is
+        // deleted. `on delete set null` on the id would otherwise erase the
+        // fact that somebody approved thirty drivers.
+        staff_name: input.staff?.name ?? null,
+        reason: input.reason,
+      });
+  } catch (e) {
+    console.error('admin-drivers: a decision was made but not logged', e);
+  }
+}
+
+/// This staff member's own decisions, newest first.
+async function myDecisions(staffId: string): Promise<Record<string, unknown>[]> {
+  const { data } = await (serviceClient() as unknown as {
+    from(t: string): {
+      select(c: string): {
+        order(c: string, o: { ascending: boolean }): {
+          limit(n: number): Promise<{ data: unknown }>;
+        };
+      };
+    };
+  })
+    .from('kyc_decisions')
+    .select('id, driver_id, decision, reason, created_at, profiles(full_name)')
+    .order('created_at', { ascending: false })
+    .limit(50);
+  const rows = (data ?? []) as Record<string, unknown>[];
+  return rows.map((r) => ({
+    id: String(r['id']),
+    driverId: String(r['driver_id']),
+    decision: String(r['decision']),
+    reason: r['reason'] == null ? null : String(r['reason']),
+    at: String(r['created_at']),
+    driverName:
+      (r['profiles'] as Record<string, unknown> | null)?.['full_name'] ?? null,
+  }));
+}
 
 const json = (status: number, payload: Record<string, unknown>) =>
   new Response(JSON.stringify(payload), {
     status,
     headers: { ...corsHeaders, 'Content-Type': 'application/json' },
   });
+
+/// A random session token, hex.
+///
+/// 32 bytes from `crypto.getRandomValues`, which is the platform CSPRNG rather
+/// than `Math.random`. A guessable session token would make the four-digit PIN
+/// the only thing standing between a stranger and the approval button, and
+/// "unguessable" has to mean unguessable.
+function randomToken(): string {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+/// sha256 of a token, hex. What is stored in `staff_sessions`.
+///
+/// The browser holds the raw token and the table holds this, so a table that is
+/// ever read by something it should not be does not hand over a set of live
+/// sessions.
+async function sha256Hex(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest(
+    'SHA-256',
+    new TextEncoder().encode(value),
+  );
+  return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+/// What the page shows for a refused sign-in.
+///
+/// The wording is a judgement and this records it, because the obvious version
+/// of this function says the same thing for every failure and the first version
+/// of this comment claimed that.
+///
+/// "That name and PIN did not match" and "That PIN is not right" are different
+/// sentences, so somebody can tell a wrong name from a wrong PIN. That does
+/// technically reveal whether a name is on the staff list, and it is
+/// deliberately not treated as a problem here:
+///   * The people who sign in are a handful of colleagues who know each other's
+///     names, so the list is not a secret from the people who use it.
+///   * The person probing has already got as far as typing a name and a PIN,
+///     which is most of the work of getting in.
+///   * And telling somebody their colleague's name is not recognised is more use
+///     than a uniform "no", because the commonest reason somebody is locked out
+///     is that they typed a colleague's name slightly wrong.
+///
+/// A uniform message would be the right call for anything facing the public. This
+/// is not that, and the difference is a decision rather than an oversight.
+function signInSentence(failure: StaffSignInFailure | undefined): string {
+  switch (failure) {
+    case 'noPin':
+      // A correction rather than a refusal, because four digits is a shape and
+      // anything else is a typo.
+      return 'A PIN is four numbers.';
+    case 'noSuchPerson':
+    case 'deactivated':
+      // The same sentence for both. Telling a former employee their account is
+      // switched off is more use than "wrong name", and saying "ask your
+      // supervisor" is the instruction that actually moves them forward.
+      return 'That name and PIN did not match. Check with your supervisor.';
+    case 'locked':
+      return 'Too many tries. Wait 15 minutes.';
+    default:
+      return 'That PIN is not right.';
+  }
+}
 
 export function buildAdminDeps(
   supabaseUrl: string,
@@ -394,13 +706,24 @@ serve(async (req) => {
     url,
     Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '',
   );
+  // The staff store, over the same service role. Built once at module scope by
+  // `serviceClient`, so this is a reference rather than a second TLS handshake
+  // on every PIN tap.
+  const staffStore = buildStaffDeps(serviceClient());
 
   // The page itself, and deliberately unauthenticated: it contains no data and
   // no credential, only a sign-in form. Everything it displays arrives from the
   // authenticated calls below, and a 401 renders as "sign in" rather than as
   // an empty page that looks like there are no drivers.
   if (req.method === 'GET' && !req.headers.get('Authorization')) {
-    return new Response(adminPage(url), {
+    // The staff page is what a driver approver sees.
+  //
+  // `?view=dense` still serves the old table for the founder, which is worth
+  // keeping for one reason: it is the faster view when there are forty
+  // applications in the queue and you know the drivers. It is not what an
+  // employee should be handed, which is why it is no longer the default.
+  const dense = new URL(req.url).searchParams.get('view') === 'dense';
+  return new Response(dense ? adminPage(url) : staffPage(url), {
       headers: { ...corsHeaders, 'Content-Type': 'text/html; charset=utf-8' },
     });
   }
@@ -412,9 +735,24 @@ serve(async (req) => {
   // rather than stripped leniently, because PostgREST resolves the role from
   // the scheme word -- a bare token authenticates nowhere.
   const match = /^Bearer\s+(\S+)\s*$/i.exec(req.headers.get('Authorization') ?? '');
-  const callerId = match === null
-    ? null
-    : await deps.authenticate(match[1]);
+  const rawToken = match === null ? null : match[1];
+
+  // Two kinds of caller, and the difference is who presses Approve.
+  //
+  // A founder token is a Supabase user JWT checked against `profiles.role =
+  // 'admin'`, and it can do everything including being the person who made a
+  // decision. A staff token is a row in `staff_sessions`, checked by hash, and
+  // it can do the reviewing and nothing else -- it cannot create staff, cannot
+  // see the founder's path, and cannot reach anything that is not a pending
+  // driver.
+  //
+  // The two are tried in that order so a staff token is never mistaken for a JWT
+  // and refused as a malformed bearer. Neither one is accepted on the strength
+  // of looking like the other: each is resolved through its own store.
+  const callerId = rawToken === null ? null : await deps.authenticate(rawToken);
+  const staff: StaffIdentity | null = callerId === null && rawToken !== null
+    ? await staffFor(rawToken)
+    : null;
 
   let body: unknown = {};
   if (req.method === 'POST') {
@@ -427,6 +765,42 @@ serve(async (req) => {
   const record = (typeof body === 'object' && body !== null && !Array.isArray(body))
     ? body as Record<string, unknown>
     : {};
+
+  // Sign-in, handled here rather than in the page, so the browser holds no
+  // credential at all -- not even the anon key, which is the same one that
+  // ships in both apps. Two of them, because there are two kinds of person.
+  if (record['action'] === 'staffsignin') {
+    // The one an employee uses: a name and a four-digit PIN, no account, no
+    // email, no password. The PIN is checked in Postgres with `crypt` so the
+    // hash never leaves the database, and what comes back is a random session
+    // token rather than a JWT -- a row in `staff_sessions`, deletable in one
+    // statement when somebody leaves.
+    const name = typeof record['name'] === 'string' ? record['name'] : '';
+    const pin = typeof record['pin'] === 'string' ? record['pin'] : '';
+    const token = randomToken();
+    const result = await signIn(staffStore, {
+      name,
+      pin,
+      now: new Date(),
+      token,
+      tokenHash: await sha256Hex(token),
+    });
+    if (!result.ok) return json(401, { error: signInSentence(result.failure) });
+    return json(200, {
+      token: result.token,
+      name: result.name,
+      expiresIn: result.expiresIn,
+    });
+  }
+
+  if (record['action'] === 'staffsignout') {
+    // Ends this session only. Deleting the staff row is the founder's move in
+    // the SQL editor and is not reachable from here on purpose.
+    if (rawToken !== null) {
+      await signOut(staffStore, await sha256Hex(rawToken));
+    }
+    return json(200, { ok: true });
+  }
 
   // Sign-in, handled here rather than in the page, so the browser holds no
   // credential at all -- not even the anon key, which is the same one that
@@ -463,9 +837,11 @@ serve(async (req) => {
     // list response -- would put a burst of expiring bearer credentials for
     // identity documents into a single JSON body, which is the kind of thing
     // that ends up in a log. Five minutes is long enough to read a licence.
-    if (callerId === null) return json(401, { error: 'sign in as an admin' });
-    if (!isAdmin(await deps.roleOf(callerId))) {
-      return json(403, { error: 'admin only' });
+    //
+    // Both kinds of caller are allowed, which is the point: an employee has to
+    // be able to open a licence to do the job.
+    if (!allowed(callerId, staff)) {
+      return json(401, { error: 'sign in to review applications' });
     }
     const driverId = typeof record['driverId'] === 'string' ? record['driverId'] : '';
     const kind = typeof record['kind'] === 'string' ? record['kind'] : '';
@@ -480,14 +856,51 @@ serve(async (req) => {
     return json(200, { url });
   }
 
+  // The decisions this person has made, newest first.
+  //
+  // Not a luxury. An employee pressing Approve all afternoon needs to be able to
+  // answer "did I already do that one?" without a supervisor, and the founder
+  // needs it for "which of my staff approved these". Scoped to the caller: one
+  // employee cannot see another's decisions, because in a small business that
+  // is how you get people auditing each other instead of working.
+  if (req.method === 'POST' && record['action'] === 'mydecisions') {
+    if (staff === null) return json(401, { error: 'sign in to review applications' });
+    const rows = await myDecisions(staff.id);
+    return json(200, { decisions: rows });
+  }
+
   if (req.method === 'POST' && record['action'] === 'decide') {
-    const result = await handleDecide(deps, callerId, {
-      driverId: typeof record['driverId'] === 'string' ? record['driverId'] : '',
-      action: record['decision'] === 'reject' ? 'reject' : 'approve',
+    const driverId = typeof record['driverId'] === 'string' ? record['driverId'] : '';
+    const action = record['decision'] === 'reject' ? 'reject' : 'approve';
+    const reason = typeof record['reason'] === 'string' ? record['reason'] : null;
+
+    // The reason is checked before anything is written, and a rejection without
+    // one is refused. A driver told "no" with no reason cannot do anything about
+    // it, which makes the rejection worse than useless to them and no better
+    // for the company than a delay.
+    const check = validateDecision({
+      driverId,
+      decision: action === 'reject' ? 'rejected' : 'approved',
+      staff,
+      reason,
     });
+    if (!check.ok) return json(400, { error: check.error });
+
+    const result = await handleDecide(deps, callerId, { driverId, action }, staff);
+    // Recorded only after the decision landed, so the log cannot claim an
+    // approval that was refused -- which is the failure an audit trail exists to
+    // make impossible.
+    if (result.status === 200) {
+      await recordDecision({
+        driverId,
+        decision: action === 'reject' ? 'rejected' : 'approved',
+        staff,
+        reason,
+      });
+    }
     return json(result.status, result.body);
   }
 
-  const result = await handleList(deps, callerId);
+  const result = await handleList(deps, callerId, staff);
   return json(result.status, result.body);
 });
