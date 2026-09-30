@@ -61,6 +61,10 @@ export const adminPage = (supabaseUrl: string): string => `<!doctype html>
 'use strict';
 
 const main = document.getElementById('main');
+
+// Absolute, because this page is served from Supabase Storage rather than
+// from the edge function. See the note in staff_page.ts.
+const API = '${supabaseUrl}/functions/v1/admin-drivers';
 let token = sessionStorage.getItem('mng_admin_token') || '';
 
 // The one thing on this page that comes from outside it.
@@ -78,7 +82,7 @@ const esc = function (v) {
 };
 
 async function call(body) {
-  const res = await fetch(location.pathname, {
+  const res = await fetch(API, {
     method: 'POST',
     headers: Object.assign(
       { 'Content-Type': 'application/json' },

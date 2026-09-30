@@ -169,6 +169,22 @@ let me = sessionStorage.getItem('mng_staff_name') || '';
 const wrap = document.getElementById('wrap');
 const modal = document.getElementById('modal');
 
+// Where the data calls go.
+//
+// Absolute, not \`location.pathname\`, because this page is served as a static
+// file from Supabase Storage rather than from the edge function. It used to be
+// served by the function, which meant the gateway was in charge of its
+// Content-Type -- and the gateway rewrites that to \`text/plain\` no matter how the
+// function sets it, so a browser displayed the markup as source instead of
+// rendering it. Verified four ways: capitalised \`Content-Type\`, both cases at
+// once, and lowercase alone. All three came back \`text/plain\`.
+//
+// Storage serves a static file with the right Content-Type and takes the gateway
+// out of the path, so the API is named here rather than inferred. Cross-origin
+// is fine: the function sends \`Access-Control-Allow-Origin: *\` and answers
+// OPTIONS.
+const API = '${supabaseUrl}/functions/v1/admin-drivers';
+
 function esc(v) {
   return String(v == null ? '' : v).replace(/[&<>"']/g, function (c) {
     return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
@@ -177,7 +193,7 @@ function esc(v) {
 
 async function call(body) {
   try {
-    const res = await fetch(location.pathname, {
+    const res = await fetch(API, {
       method: 'POST',
       headers: Object.assign(
         { 'Content-Type': 'application/json' },

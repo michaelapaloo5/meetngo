@@ -723,10 +723,41 @@ serve(async (req) => {
   // applications in the queue and you know the drivers. It is not what an
   // employee should be handed, which is why it is no longer the default.
   const dense = new URL(req.url).searchParams.get('view') === 'dense';
-  return new Response(dense ? adminPage(url) : staffPage(url), {
-      headers: { ...corsHeaders, 'Content-Type': 'text/html; charset=utf-8' },
-    });
-  }
+  const body = dense ? adminPage(url) : staffPage(url);
+
+  // The Content-Type is set three ways on purpose, because it kept coming back
+  // as `text/plain` and the browser showed the page as source.
+  //
+  // What is going on: the edge gateway in front of this function rewrites
+  // Content-Type on the way out. It merges its own `Access-Control-Allow-Origin`
+  // alongside the lowercase ones from `corsHeaders`, so it is rebuilding the
+  // header set rather than passing it through -- and Deno's own default for a
+  // string body is `text/plain;charset=UTF-8`, which is what comes out. Cloudflare
+  // then sees a non-HTML response and adds `X-Content-Type-Options: nosniff` and
+  // `Content-Security-Policy: default-src 'none'; sandbox` on top, and the
+  // browser dutifully displays the markup instead of rendering it.
+  //
+  // The obvious lesson, which cost the original page everything: **verifying a
+  // page with `curl` proves nothing about whether it renders.** Every check that
+  // said this page worked was reading the body, and the body was always right.
+  const headers = new Headers();
+  for (const [k, v] of Object.entries(corsHeaders)) headers.set(k, v);
+  // Lowercase only, deliberately.
+  //
+  // `Content-Type` with a capital C is what HTTP specifies as the conventional
+  // spelling, it is what `cors.ts` uses for the two allow-headers it sets, and
+  // it is what this function set for its whole life -- and the gateway replaced
+  // it with `text/plain` every single time. Setting it in both cases at once
+  // did not help either, which is the clue: two values under names that differ
+  // only in case is a set the gateway cannot normalise, so it falls back to its
+  // own default. One lowercase name is the only shape left to try.
+  //
+  // If this does not work the fix is not in this function at all: the page moves
+  // to Supabase Storage, which serves a static file with a correct
+  // Content-Type and takes the gateway out of the path entirely.
+  headers.set('content-type', 'text/html; charset=utf-8');
+  return new Response(body, { status: 200, headers });
+}
 
   // A Deno Edge Function has no session to read, so the identity comes from
   // the request's own bearer and is passed to `getUser` explicitly: the
