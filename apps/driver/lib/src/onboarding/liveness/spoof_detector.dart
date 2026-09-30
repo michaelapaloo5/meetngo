@@ -83,17 +83,24 @@ class SpoofDetector {
   /// it against a threshold with no labelled spoof set would be fitting noise.
   static const double cropScale = 2.7;
 
-  /// Below this the crop is "live", above it "spoof".
+  /// Below this the crop is judged "live".
   ///
-  /// The model is a 2-class softmax, so the score is a probability rather than
-  /// an unbounded score to be thresholded arbitrarily. 0.5 is the model's own
-  /// decision boundary, and changing it in either direction trades false accepts
-  /// against false rejects without any evidence about which is cheaper here.
+  /// The score is the third class of a three-class softmax, so it is a genuine
+  /// probability that the face is real, and 0.5 is the point where the model
+  /// stops preferring a spoof.
   ///
-  /// A false reject costs a driver their onboarding; a false accept costs a
-  /// reviewer's attention. The 32 tests in `liveness_verifier_test.dart` cover
-  /// the behaviour at this boundary, so if it is ever moved the effect is
-  /// visible.
+  /// The reference implementation ships 0.9, which is stricter. 0.5 is used
+  /// here because this check does not have to be right on its own: the verifier
+  /// requires eight live verdicts before a pass and fails on four consecutive
+  /// spoof ones, so a single permissive frame cannot carry a driver through,
+  /// and an admin still sees the captured frame. A false reject costs a driver
+  /// their onboarding, which is the more expensive mistake here.
+  ///
+  /// **This threshold has never been measured against a real spoof.** What is
+  /// known and unknown about the model's behaviour is written down in
+  /// nti_spoof_model_test.dart; the short version is that it runs, its output
+  /// is read correctly, and nobody has yet seen it call a photograph a
+  /// photograph. DriverDocumentKind.isRequired is false for the same reason.
   static const double liveThreshold = 0.5;
 
   Interpreter? _interpreter;
@@ -173,7 +180,7 @@ class SpoofDetector {
       return SpoofReading(at: when, verdict: SpoofVerdict.unknown);
     }
 
-    final output = List.filled(1 * 2, 0.0).reshape([1, 2]);
+    final output = List.filled(1 * _classes, 0.0).reshape([1, _classes]);
     try {
       interpreter.run(input, output);
     } on Object catch (e) {
@@ -182,10 +189,20 @@ class SpoofDetector {
     }
 
     final flat = output[0] as List;
-    // Index 1 is "live". Both are read, and the second is subtracted rather
-    // than used directly, so a model that shipped with the class order flipped
-    // produces a score below 0.5 and fails visibly instead of passing silently.
-    final live = (flat[1] as num).toDouble();
+    // Index 2 is "live", and it is the *third* of three classes, not the
+    // second of two.
+    //
+    // MiniFASNetV2 is a three-class network: a 2D presentation attack (a print
+    // or a screen), a 3D one (a mask), and a real face. The reference
+    // implementation reads `pred[2]` for exactly this reason, padding a
+    // two-class model up to three so both variants share one line.
+    //
+    // This was found by running the real weights rather than by reading the
+    // model card, which describes a two-class output. The card is wrong, the
+    // runtime throws `Output object shape mismatch` against a `[1, 2]` buffer,
+    // and the symptom on a device is a face check that reports nothing at all
+    // -- which is what happened until `anti_spoof_model_test.dart` existed.
+    final live = (flat[_liveClass] as num).toDouble();
     if (live.isNaN || live < 0 || live > 1) {
       return SpoofReading(at: when, verdict: SpoofVerdict.unknown);
     }
@@ -195,6 +212,12 @@ class SpoofDetector {
       score: live,
     );
   }
+
+  /// How many classes the model outputs.
+  static const int _classes = 3;
+
+  /// Which of them is the live one.
+  static const int _liveClass = 2;
 
   /// Hands the frame to [buildModelInput] and keeps the method for the one
   /// caller that has it as a field.

@@ -101,36 +101,92 @@ class _KycScreenState extends State<KycScreen> {
     KycStep.approved: 'You are verified',
   };
 
+  /// Whether there is a step behind this one.
+  ///
+  /// False on the first step, and false once the application has been handed
+  /// over: `underReview` and `approved` are states the driver is told about, not
+  /// a form they are filling in, and offering a back arrow on them would
+  /// suggest they could un-submit something.
+  ///
+  /// This is the one place that decides what "back" means, and both the app bar
+  /// arrow and the hardware gesture read it, so the two cannot disagree.
+  static bool _canGoBack(KycController c) =>
+      c.step != KycStep.underReview &&
+      c.step != KycStep.approved &&
+      c.step != KycStep.documents;
+
   @override
   Widget build(BuildContext context) {
     final c = context.watch<KycController>();
-    return Scaffold(
-      appBar: AppBar(
-        backgroundColor: MngColors.page,
-        surfaceTintColor: Colors.transparent,
-        elevation: 0,
-        title: Text(_headlines[c.step] ?? 'Verification'),
-      ),
-      body: SafeArea(
-        child: Padding(
-          padding: EdgeInsets.symmetric(horizontal: 20.w),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              LinearProgressIndicator(
-                value: (c.step.index + 1) / KycStep.values.length,
-                backgroundColor: MngColors.muted,
-                color: MngColors.primary,
-              ),
-              SizedBox(height: 24.h),
-              Expanded(child: _body(context, c)),
-              if (c.error != null) ...[
-                Text(c.error!, style: const TextStyle(color: MngColors.error)),
-                SizedBox(height: 8.h),
+    return PopScope(
+      // The hardware back gesture steps back through the wizard rather than
+      // dropping the driver out of it.
+      //
+      // Android users reach for the gesture, and a wizard that treats it as
+      // "leave" while its own arrow says "previous step" gives two different
+      // answers to the same thumb movement. `canPop` is false above the first
+      // step, which both blocks the pop and routes it here; on the first step
+      // it stays true so back leaves the screen as a driver expects.
+      //
+      // Read on every build, because it is compared against the step at the
+      // moment the gesture happens and not at the moment the screen opened.
+      canPop: !_canGoBack(c),
+      onPopInvokedWithResult: (didPop, _) {
+        if (didPop) return;
+        c.back();
+      },
+      child: Scaffold(
+        appBar: AppBar(
+          backgroundColor: MngColors.page,
+          surfaceTintColor: Colors.transparent,
+          elevation: 0,
+          // Back, from the first step onwards.
+          //
+          // This is a wizard and it was not navigable backwards. `KycController
+          // .back()` existed and nothing called it, so a driver who reached the
+          // review step with a Ghana Card photo taken at an angle had no way back
+          // to the list to retake it: the only way out was forward, into
+          // submitting a bad application. That is the whole reason `back()` was
+          // written and then left unwired, and it is also why the face check --
+          // optional, so a driver can reach `review` without it -- was
+          // unreachable after the fact.
+          //
+          // Not shown on the first step, where there is nowhere to go back to, and
+          // not shown once the application is with an admin, where the steps are
+          // history rather than a form.
+          leading: _canGoBack(c)
+              ? IconButton(
+                  icon: const Icon(Icons.arrow_back),
+                  tooltip: 'Back',
+                  onPressed: c.back,
+                )
+              : null,
+          title: Text(_headlines[c.step] ?? 'Verification'),
+        ),
+        body: SafeArea(
+          child: Padding(
+            padding: EdgeInsets.symmetric(horizontal: 20.w),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                LinearProgressIndicator(
+                  value: (c.step.index + 1) / KycStep.values.length,
+                  backgroundColor: MngColors.muted,
+                  color: MngColors.primary,
+                ),
+                SizedBox(height: 24.h),
+                Expanded(child: _body(context, c)),
+                if (c.error != null) ...[
+                  Text(
+                    c.error!,
+                    style: const TextStyle(color: MngColors.error),
+                  ),
+                  SizedBox(height: 8.h),
+                ],
+                _action(c),
+                SizedBox(height: 20.h),
               ],
-              _action(c),
-              SizedBox(height: 20.h),
-            ],
+            ),
           ),
         ),
       ),
@@ -143,7 +199,10 @@ class _KycScreenState extends State<KycScreen> {
   /// the screen's only job is the check; where the proof goes is the checklist's
   /// business, and the checklist is what knows the driver is a driver and which
   /// bucket it is.
-  Future<void> _runLiveness(BuildContext context, KycController controller) async {
+  Future<void> _runLiveness(
+    BuildContext context,
+    KycController controller,
+  ) async {
     final proof = await Navigator.of(context).push<File>(
       MaterialPageRoute(
         builder: (_) => LivenessScreen(

@@ -236,6 +236,19 @@ class _LivenessScreenState extends State<LivenessScreen> {
     });
   }
 
+  /// Uploads the frame and leaves, or explains why it did not.
+  ///
+  /// The pop on the success path is the whole point of this method and it was
+  /// missing: on success the upload completed, the checklist row ticked server
+  /// side, and the driver was left staring at "One moment, saving your photo"
+  /// with a spinner that never resolved and no way forward but the close button.
+  /// Found on the device, not in a test, because a test that only checks the
+  /// upload was called cannot tell whether the screen ever closed.
+  ///
+  /// The frame is handed back as the route's result so the caller can tell a
+  /// completed check from a cancelled one, and the pop only happens after the
+  /// upload has actually succeeded -- a driver who backed out over a failed
+  /// upload is not told they passed.
   Future<void> _finish(File proof) async {
     try {
       await widget.onPassed(proof);
@@ -248,7 +261,10 @@ class _LivenessScreenState extends State<LivenessScreen> {
       // Back to watching, so a driver whose upload failed can simply go again
       // rather than being pushed out of the screen they were halfway through.
       _startPolling();
+      return;
     }
+    if (!mounted) return;
+    Navigator.of(context).pop(proof);
   }
 
   /// What to say, per outcome.
