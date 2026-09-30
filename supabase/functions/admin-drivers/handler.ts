@@ -78,6 +78,14 @@ export interface AdminDeps {
 export interface DriverDocumentRow {
   kind: string;
   path: string;
+  /**
+   * When the row was written, from `driver_documents.created_at`.
+   *
+   * Optional because one caller does not need it: `documentsFor` serves a signed
+   * URL for a single document and has no reason to read a timestamp. The list
+   * path needs it, and `submittedAtFor` below is where it is used.
+   */
+  createdAt?: string;
 }
 
 /**
@@ -170,6 +178,71 @@ export function optionalMissing(sent: readonly { kind: string }[]): string[] {
   return ALL_DOCUMENTS.filter(
     (kind) => !REQUIRED_DOCUMENTS.includes(kind) && !have.has(kind),
   );
+}
+
+/**
+ * When a driver submitted their application, which is what the queue shows.
+ *
+ * ## Why this is not the account creation date
+ *
+ * It was, and it was wrong in a way that matters. `profiles.created_at` is when
+ * somebody made an account, which can be days before they photograph anything --
+ * they have to find a Ghana Card, a licence, a road worthy certificate, a car
+ * and a garage to take the picture in. One real driver signed up on the 28th and
+ * uploaded all seven documents on the 30th, and the queue told an employee his
+ * application was "2 days ago" while every photograph they were being asked to
+ * judge was hours old.
+ *
+ * Two things go wrong from that, and both are the employee's judgement being
+ * quietly poisoned:
+ *
+ *  * **Recency of the queue.** "2 days ago" reads as "this has been sitting here
+ *    for two days", when the truth is it arrived this morning.
+ *  * **Freshness of the evidence.** The photographs on that screen are the
+ *    evidence. Judging a Ghana Card photo that is a week old because the
+ *    *account* is a week old is a different decision from judging one taken an
+ *    hour ago, and the number on screen was describing the wrong thing.
+ *
+ * ## The rule
+ *
+ * The most recent **required** document's `created_at`. One rule for both the
+ * complete and the incomplete case, and it answers both questions above:
+ *
+ *  * Complete -- that is the moment the application became decidable, so it is
+ *    exactly "how long has this been waiting for me" and "how old are these
+ *    photographs".
+ *  * Incomplete -- it is the last thing they did, which is the progress signal an
+ *    employee wants. The missing documents are listed separately by
+ *    [missingDocuments], so the number is never read as "ready".
+ *
+ * `livenessFrame` is excluded along with every other optional document, because
+ * `documentsForAll` only ever reports required kinds and a face check taken three
+ * days after the licence would otherwise make a two-day-old application look
+ * three days old.
+ *
+ * With no documents at all there is nothing to date, so the account creation
+ * date is returned -- which is the truth, and is the one case where the old
+ * behaviour was right.
+ *
+ * Unparseable timestamps are skipped rather than allowed to win. `new Date('nonsense')`
+ * is NaN, and a NaN that reached the page would render as "NaN days ago"; losing
+ * one timestamp to a fallback is a smaller failure than showing one.
+ */
+export function submittedAtFor(
+  accountCreatedAt: string,
+  documents: readonly { kind: string; createdAt?: string }[],
+): string {
+  let newestMs = NaN;
+  for (const d of documents) {
+    if (!REQUIRED_DOCUMENTS.includes(d.kind)) continue;
+    const raw = d.createdAt;
+    if (raw === undefined || raw === '') continue;
+    const ms = Date.parse(raw);
+    if (Number.isNaN(ms)) continue;
+    if (Number.isNaN(newestMs) || ms > newestMs) newestMs = ms;
+  }
+  if (Number.isNaN(newestMs)) return accountCreatedAt;
+  return new Date(newestMs).toISOString();
 }
 
 /** One driver, as the admin page shows them. */

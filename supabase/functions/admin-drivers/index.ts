@@ -23,6 +23,7 @@ import {
   handleList,
   isAdmin,
   REQUIRED_DOCUMENTS,
+  submittedAtFor,
   type AdminDeps,
   type DriverDocumentRow,
   type PendingDriver,
@@ -444,9 +445,28 @@ export function buildAdminDeps(
           // six documents and then refuse the approval because one is missing.
           // Only the kinds, never URLs -- see `AdminDeps.documentsFor`.
           documents: (pendingDocs.get(id) ?? []).map((d) => d.kind),
-          submittedAt: str(r['created_at']),
+          // When the application arrived, which is when its last required
+          // document did. NOT `profiles.created_at`: that is when the account was
+          // made, which can be days before anybody photographed anything, and an
+          // employee reading "2 days ago" next to six photographs taken this
+          // morning is being told the wrong thing about the evidence. See
+          // `submittedAtFor`.
+          submittedAt: submittedAtFor(
+            str(r['created_at']),
+            pendingDocs.get(id) ?? [],
+          ),
         };
-      });
+      })
+        // Newest application first, by the value the page displays.
+        //
+        // The query above orders by `created_at`, which is still the account
+        // date, so the list order and the number on each row disagreed: a
+        // driver who signed up yesterday and submitted this morning sat below one
+        // who signed up this morning and submitted yesterday. Sorting here rather
+        // than in SQL costs nothing -- the rows are already in memory, and the
+        // alternative is either a second query or an aggregation across a
+        // one-to-many table that PostgREST would need a view for.
+        .sort((a, b) => Date.parse(b.submittedAt) - Date.parse(a.submittedAt));
     },
 
     decide: async (driverId, status, decidedBy) => {      // `approved_by` and `approved_at` are added by the migration beside this
@@ -674,7 +694,7 @@ async function documentsForAll(
   if (driverIds.length === 0) return out;
   const { data, error } = await service
     .from('driver_documents')
-    .select('driver_id, kind, path')
+    .select('driver_id, kind, path, created_at')
     .in('driver_id', driverIds);
   if (ok(error) !== null) return out;
   const rows = (data ?? []) as Record<string, unknown>[];
@@ -688,7 +708,11 @@ async function documentsForAll(
     // unknown name in an admin's face.
     if (id === '' || !REQUIRED_DOCUMENTS.includes(kind) || path === '') continue;
     const list = out.get(id) ?? [];
-    list.push({ kind, path });
+    // `created_at` is what `submittedAtFor` dates the application by. Read here
+    // rather than in a second query: this is already one read for every pending
+    // driver's documents, and a per-driver query to find out when they submitted
+    // would undo the reason this function exists at all.
+    list.push({ kind, path, createdAt: str(r['created_at']) });
     out.set(id, list);
   }
   return out;

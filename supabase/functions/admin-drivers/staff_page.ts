@@ -129,6 +129,9 @@ export const staffPage = (supabaseUrl: string): string => `<!doctype html>
   .q:last-child { border-bottom:0; }
   .q .who { font-weight:600; }
   .q .ago { color:var(--sub); font-size:13px; }
+  /* The "what is this number" half of the queue row. Quieter than the age
+     itself, which is the number being looked at. */
+  .ago-when { color:var(--sub); opacity:.75; }
   .badge { background:#FFF4D6; border:1px solid #F0D89B; color:#7A5A00; border-radius:999px; padding:3px 9px; font-size:12px; font-weight:600; white-space:nowrap; }
 
   .err { background:#FDECEC; border:1px solid #F3C2C2; color:#8A1A1A; border-radius:10px; padding:11px 13px; margin:12px 0; font-size:15px; }
@@ -355,7 +358,13 @@ function renderQueue() {
     queue.map(function (d) {
       return '<button class="q" data-id="' + esc(d.id) + '">' +
         '<div class="grow"><div class="who">' + esc(d.fullName || '(no name)') + '</div>' +
-        '<div class="ago">' + esc(ago(d.submittedAt)) + ' &middot; ' +
+        '<div class="ago">' + esc(ago(d.submittedAt)) +
+        // Says what the number is, because it used to be something else and an
+        // employee has no way to know which. It was the account creation date,
+        // so a driver who signed up on Monday and sent everything on Wednesday
+        // read as "2 days ago" next to six photographs taken that morning --
+        // which is not a description of the evidence being judged.
+        ' <span class="ago-when">last document</span> &middot; ' +
         esc((d.vehicle ? d.vehicle.make + ' ' + d.vehicle.model : 'no vehicle')) + '</div></div>' +
         '<span class="badge">Review</span></button>';
     }).join('');
@@ -415,6 +424,14 @@ function review(d) {
       ? '<div class="sub">' + esc(d.vehicle.make + ' ' + d.vehicle.model) +
         ' &middot; ' + esc(d.vehicle.plate) + ' &middot; ' + esc(String(d.vehicle.seats)) + ' seats</div>'
       : '<div class="sub">No vehicle on file</div>') +
+
+    // When the evidence arrived. The queue row shows it too, but this is the
+    // screen where somebody actually looks at a Ghana Card photograph and
+    // decides whether to trust it, and a card photo that is three weeks old is a
+    // different judgement from one taken this morning. The number has to be in
+    // front of them at the moment they make it, not one tap back.
+    '<div class="sub" style="margin-top:12px">Last document sent ' +
+    esc(ago(d.submittedAt)) + '.</div>' +
 
     '<div class="label" style="margin-top:16px">Same person?</div>' +
     '<div class="sub">Compare the three. If they are not the same person, decline.</div>' +
