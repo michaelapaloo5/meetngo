@@ -14,6 +14,7 @@ export 'src/models/driver.dart';
 export 'src/models/geo_point.dart';
 export 'src/models/offer.dart';
 export 'src/models/payment.dart';
+export 'src/models/phone.dart';
 export 'src/models/rating.dart';
 export 'src/models/trip.dart';
 export 'src/models/vehicle.dart';
