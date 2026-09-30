@@ -218,17 +218,32 @@ class SupabaseDriverRepository implements DriverRepository {
     }
 
     try {
-      // Upsert, not insert. `unique (driver_id, kind)` means a second photo of
-      // the same kind would fail as a duplicate, and a driver replacing a blurry
-      // licence has to be able to -- so the row is replaced, and the old object
-      // is left alone rather than deleted, because a delete that failed after a
-      // successful upload would lose the new photo over tidying the old one.
-      await _client.from('driver_documents').upsert({
-        'driver_id': uid,
-        'kind': kind.wire,
-        'path': objectPath,
-        'created_at': DateTime.now().toIso8601String(),
-      });
+      // Upsert, not insert, and `onConflict` names the constraint to resolve on.
+      //
+      // The `onConflict` is the whole thing. `unique (driver_id, kind)` means a
+      // second photo of the same kind collides, and a driver replacing a blurry
+      // licence has to be able to -- so the row is replaced rather than inserted.
+      //
+      // But PostgREST's default conflict target is the table's **primary key**,
+      // which here is `id`. The payload has no `id`, so there is nothing for it
+      // to match on, it takes the INSERT branch, and the insert violates
+      // `driver_documents_driver_id_kind_key`. Found on the device: the first
+      // upload of each kind worked and every second one failed, so the face
+      // check passed, uploaded once, and then could never be re-uploaded -- and
+      // "Tap to replace this photo" was broken for all six photographs too.
+      //
+      // The old storage object is left alone rather than deleted, because a
+      // delete that failed after a successful upload would lose the new photo
+      // over tidying up the old one.
+      await _client.from('driver_documents').upsert(
+        {
+          'driver_id': uid,
+          'kind': kind.wire,
+          'path': objectPath,
+          'created_at': DateTime.now().toIso8601String(),
+        },
+        onConflict: 'driver_id,kind',
+      );
     } on PostgrestException catch (e) {
       throw DriverAuthFailure(e.message);
     }

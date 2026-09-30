@@ -59,6 +59,15 @@ class _LivenessScreenState extends State<LivenessScreen> {
   bool _starting = true;
   bool _finishing = false;
 
+  /// The frame of a check that has already passed, kept while its upload is
+  /// retried.
+  ///
+  /// Set only after a pass, and cleared once the upload lands or the driver
+  /// gives up. While this is non-null the camera is off and the check is not
+  /// running: the driver is not being asked to do anything except press a
+  /// button, because they have already done the hard part.
+  File? _pendingProof;
+
   @override
   void initState() {
     super.initState();
@@ -250,21 +259,63 @@ class _LivenessScreenState extends State<LivenessScreen> {
   /// upload has actually succeeded -- a driver who backed out over a failed
   /// upload is not told they passed.
   Future<void> _finish(File proof) async {
-    try {
-      await widget.onPassed(proof);
-    } on Object {
+    if (await _upload(proof)) {
       if (!mounted) return;
-      setState(() {
-        _finishing = false;
-        _error = 'That photo could not be saved. Try the check again.';
-      });
-      // Back to watching, so a driver whose upload failed can simply go again
-      // rather than being pushed out of the screen they were halfway through.
-      _startPolling();
+      Navigator.of(context).pop(proof);
       return;
     }
     if (!mounted) return;
-    Navigator.of(context).pop(proof);
+    // The driver has already passed. Sending them back through the whole check
+    // because a *save* failed is what produced the loop reported from the
+    // device: pass, fail to save, redo the check, pass, fail to save, forever.
+    // The face was verified; only the write failed, so the frame is kept and
+    // only the write is offered again.
+    setState(() {
+      _pendingProof = proof;
+      _finishing = false;
+      _error = 'We could not save that photo. Tap to try saving it again.';
+    });
+    _poll?.cancel();
+  }
+
+  /// Uploads the frame. Returns whether it worked.
+  ///
+  /// A bool rather than a throw because the caller does the same thing either
+  /// way it does not -- keep the frame and offer a retry -- and a bool cannot be
+  /// forgotten on one of the paths.
+  Future<bool> _upload(File proof) async {
+    try {
+      await widget.onPassed(proof);
+      return true;
+    } on Object catch (e) {
+      debugPrint('liveness: the proof frame would not upload: $e');
+      return false;
+    }
+  }
+
+  /// Retries the upload alone, with no camera and no check.
+  ///
+  /// The frame from the frame that already passed is still on disk, so this
+  /// costs one request. A driver on a patchy connection who has already turned
+  /// their head and smiled for this app should not be asked to do it again
+  /// because the network hiccuped on the way out.
+  Future<void> _retryUpload() async {
+    final proof = _pendingProof;
+    if (proof == null || _finishing) return;
+    setState(() {
+      _finishing = true;
+      _error = null;
+    });
+    if (await _upload(proof)) {
+      if (!mounted) return;
+      Navigator.of(context).pop(proof);
+      return;
+    }
+    if (!mounted) return;
+    setState(() {
+      _finishing = false;
+      _error = 'We could not save that photo. Tap to try saving it again.';
+    });
   }
 
   /// What to say, per outcome.
@@ -308,6 +359,11 @@ class _LivenessScreenState extends State<LivenessScreen> {
     final session = _session;
     final verifier = session?.verifier;
     final outcome = verifier?.outcome ?? LivenessOutcome.notYet;
+    // A passed check whose frame would not upload is not running any more. The
+    // progress ring is not shown, because a ring that stopped moving next to a
+    // message about saving reads as "still working on it" and the driver has no
+    // way to tell that the thing that needs them is a single button.
+    final awaitingSave = _pendingProof != null;
 
     return Scaffold(
       backgroundColor: Colors.black,
@@ -349,7 +405,7 @@ class _LivenessScreenState extends State<LivenessScreen> {
                     child: Column(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        if (verifier != null)
+                        if (verifier != null && !awaitingSave)
                           _Progress(
                             done: verifier.completed,
                             total: verifier.total,
@@ -360,7 +416,9 @@ class _LivenessScreenState extends State<LivenessScreen> {
                           ),
                         SizedBox(height: 16.h),
                         Text(
-                          _headline(verifier, outcome),
+                          awaitingSave
+                              ? 'That worked'
+                              : _headline(verifier, outcome),
                           textAlign: TextAlign.center,
                           style: const TextStyle(
                             color: Colors.white,
@@ -370,15 +428,27 @@ class _LivenessScreenState extends State<LivenessScreen> {
                         ),
                         SizedBox(height: 6.h),
                         Text(
-                          _subtitle(verifier, outcome),
+                          awaitingSave
+                              ? 'Your check passed. We just need to save the '
+                                    'photo.'
+                              : _subtitle(verifier, outcome),
                           textAlign: TextAlign.center,
                           style: const TextStyle(color: Colors.white70),
                         ),
                         if (_error != null) ...[
                           SizedBox(height: 14.h),
+                          // Tapping this retries whichever thing failed: the
+                          // save when a passed check's frame did not upload, and
+                          // the whole check otherwise. Sending a driver who has
+                          // already passed back through three more challenges
+                          // because a write failed is the loop that was reported
+                          // from the device, and it is a cruel thing to do to
+                          // somebody who did everything right.
                           GestureDetector(
                             key: const Key('livenessError'),
-                            onTap: _retry,
+                            onTap: _pendingProof != null
+                                ? _retryUpload
+                                : _retry,
                             child: Text(
                               _error!,
                               textAlign: TextAlign.center,
