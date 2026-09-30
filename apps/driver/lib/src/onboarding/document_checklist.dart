@@ -42,6 +42,7 @@ class DocumentChecklist extends StatefulWidget {
     required this.documents,
     required this.onUpload,
     required this.capture,
+    this.onStartLiveness,
     this.onContinue,
   });
 
@@ -53,6 +54,16 @@ class DocumentChecklist extends StatefulWidget {
   final Future<void> Function(DriverDocumentKind kind, String filePath) onUpload;
 
   final DocumentCapture capture;
+
+  /// Opens the face check, for [DriverDocumentKind.livenessFrame].
+  ///
+  /// A separate callback rather than something [capture] handles, because the
+  /// two are different mechanisms and hiding that hides the reason: a
+  /// photograph is one still from the system camera, while a liveness check
+  /// has to watch a face move, so it runs in-app with a live preview and
+  /// returns when it has a verdict. `CameraDocumentCapture` cannot do it --
+  /// it hands the driver to another app and gets one picture back.
+  final VoidCallback? onStartLiveness;
 
   /// Enabled once every document is in. Wired to the rest of onboarding.
   final VoidCallback? onContinue;
@@ -80,6 +91,13 @@ class _DocumentChecklistState extends State<DocumentChecklist> {
   String? _error;
 
   Future<void> _take(DriverDocumentKind kind) async {
+    // The face check is not a photograph and does not go through the camera
+    // seam. Dispatched here so every row has one tap handler and the row
+    // cannot be wired to the wrong mechanism for one kind.
+    if (kind.isLiveness) {
+      widget.onStartLiveness?.call();
+      return;
+    }
     setState(() {
       _busy = kind;
       _error = null;
@@ -124,8 +142,8 @@ class _DocumentChecklistState extends State<DocumentChecklist> {
         ),
         SizedBox(height: 6.h),
         Text(
-          'Six photos. Take them now if you can, or come back to this list '
-          'later — nothing you have already sent is lost.',
+          'Six photos and one face check. Take them now if you can, or come '
+          'back to this list later -- nothing you have already sent is lost.',
           style: MngTheme.light.textTheme.bodySmall,
         ),
         SizedBox(height: 16.h),
@@ -143,7 +161,7 @@ class _DocumentChecklistState extends State<DocumentChecklist> {
               onTap: () => _take(kind),
             ),
           ),
-        const _LivenessRow(),
+        const _LivenessNote(),
         if (_error != null) ...[
           SizedBox(height: 8.h),
           Container(
@@ -270,41 +288,40 @@ class _DocumentRow extends StatelessWidget {
         DriverDocumentKind.driversLicence => Icons.badge_outlined,
         DriverDocumentKind.roadWorthy => Icons.verified_outlined,
         DriverDocumentKind.insuranceSticker => Icons.shield_outlined,
+        DriverDocumentKind.livenessFrame =>
+            Icons.face_retouching_natural,
       };
 }
 
-/// The liveness check, shown honestly.
-///
-/// Not a tick, and not one of the six. It is on the same screen because a driver
-/// has to know it is coming, and finding out at the last step is the thing this
-/// screen exists to prevent.
-///
-/// What it says is that the check is not performed by this app. Liveness --
-/// proving the person in front of the camera is a person and not a photograph --
-/// and a face match against the licence photo are both things every real
-/// ride-hailing app buys from a provider (Veriff, Onfido, Jumio, Sumsub), because
-/// a version written here would be both unreliable and trivially defeated: a
-/// replay attack, a video of someone else, a mask. Claiming otherwise on a
-/// screen whose purpose is to be trustworthy would be the single worst lie in
-/// the flow.
-///
-/// So this row is informational until a provider is configured, and it says
-/// that. Wiring one in is [LivenessRow.provider] and one server call.
-class _LivenessRow extends StatelessWidget {
-  const _LivenessRow();
 
-  /// The provider that performs the check, or null when none is configured.
-  ///
-  /// Null is the honest default for this build, and it is why the row below
-  /// reads as "not yet" rather than as a failure. Setting this to a real
-  /// provider's session bootstrap is the whole of the integration on the client;
-  /// the verification itself is server-side and needs the vendor's SDK.
-  static const String? provider = null;
+/// What the face check does, and what it does not.
+///
+/// The check is real and it runs on the device -- ML Kit's face detection, no
+/// network, no provider -- so this note is not here to apologise for it. It is
+/// here because of the one thing the check genuinely does not do, and a driver
+/// who has just been asked to turn their head and blink deserves to know which
+/// half of "this is really me" they have actually done.
+///
+///   * It proves somebody live was in front of the camera. A printed photograph
+///     cannot turn its head, blink or smile, and a driver holding up a picture
+///     of themselves is caught because the detector sees two faces.
+///
+///   * It does NOT prove the face is the one on your licence. That is a face
+///     match, it needs an embedding model, and a bundled model on a budget
+///     phone in a vehicle at night gets it wrong in the direction that blocks
+///     a real driver from earning. So the photo the check takes goes to the
+///     person reviewing your documents, beside your licence photo, and they
+///     compare the two.
+///
+/// So the honest summary is: we checked somebody real was there, and a person
+/// will check it is you. Anything stronger is a claim this app cannot support.
+class _LivenessNote extends StatelessWidget {
+  const _LivenessNote();
 
   @override
   Widget build(BuildContext context) {
     return Container(
-      key: const Key('livenessRow'),
+      key: const Key('livenessNote'),
       padding: EdgeInsets.all(12.w),
       decoration: BoxDecoration(
         color: MngColors.muted,
@@ -313,8 +330,8 @@ class _LivenessRow extends StatelessWidget {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Icon(Icons.face_retouching_natural, size: 22,
-              color: MngColors.textSub),
+          const Icon(Icons.face_retouching_natural,
+              size: 22, color: MngColors.textSub),
           SizedBox(width: 12.w),
           Expanded(
             child: Column(
@@ -322,21 +339,17 @@ class _LivenessRow extends StatelessWidget {
               mainAxisSize: MainAxisSize.min,
               children: [
                 Text(
-                  'Face check',
+                  'About the face check',
                   style: MngTheme.light.textTheme.bodyMedium?.copyWith(
                     fontWeight: FontWeight.w600,
                   ),
                 ),
                 SizedBox(height: 2.h),
                 Text(
-                  provider == null
-                      ? 'A short in-app check that your face is a real one, '
-                          'matched to your licence. This has to be done by a '
-                          'verification provider, and it is not connected yet — '
-                          'it is a separate step before your documents are '
-                          'reviewed.'
-                      : 'A short in-app check that your face is a real one, '
-                          'matched to your licence.',
+                  'It runs on your phone, with nobody else seeing it. It proves '
+                  'somebody real was in front of the camera, and the photo it '
+                  'takes goes to the person reviewing your documents so they '
+                  'can check it is you.',
                   style: MngTheme.light.textTheme.bodySmall,
                 ),
               ],

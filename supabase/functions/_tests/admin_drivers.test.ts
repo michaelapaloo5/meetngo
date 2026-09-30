@@ -316,6 +316,27 @@ Deno.test('a driver who has sent nothing is refused with all six named', async (
   assertEquals(body.missing, [...REQUIRED_DOCUMENTS]);
 });
 
+Deno.test('a driver who sent all six photographs but no face check is refused', async () => {
+  // The specific hole the face check was added to close. Anything that counts
+  // only photographs sees a complete application here: profile, vehicle,
+  // Ghana Card, licence, road worthy, insurance. The one item an admin can
+  // actually compare against the licence photograph is the missing one.
+  const deps = fake();
+  deps.state.documents = REQUIRED_DOCUMENTS
+    .filter((k) => k !== 'livenessFrame')
+    .map((kind) => ({ kind, path: `u1/${kind}/1.jpg` }));
+
+  const result = await handleDecide(deps, 'admin-1', {
+    driverId: 'd1',
+    action: 'approve',
+  });
+
+  assertEquals(result.status, 409);
+  assertEquals(deps.decided.length, 0);
+  const body = result.body as { missing?: string[] };
+  assertEquals(body.missing, ['livenessFrame']);
+});
+
 Deno.test('a rejection is always allowed, documents or not', async () => {
   // Refusing to let an admin turn a driver away is a different kind of wrong,
   // and there is no case for it. A driver whose licence came back unreadable

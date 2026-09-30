@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
@@ -6,6 +7,8 @@ import 'package:mng_core/mng_core.dart';
 import 'package:provider/provider.dart';
 
 import 'document_capture.dart';
+import 'driver_document.dart';
+import 'liveness/liveness_screen.dart';
 import 'document_checklist.dart';
 import 'document_scanner_stub.dart';
 import 'kyc_controller.dart';
@@ -134,6 +137,35 @@ class _KycScreenState extends State<KycScreen> {
     );
   }
 
+  /// Pushes the face check, and uploads the frame when it passes.
+  ///
+  /// The upload happens here rather than inside the liveness screen because
+  /// the screen's only job is the check; where the proof goes is the checklist's
+  /// business, and the checklist is what knows the driver is a driver and which
+  /// bucket it is.
+  Future<void> _runLiveness(BuildContext context, KycController controller) async {
+    final proof = await Navigator.of(context).push<File>(
+      MaterialPageRoute(
+        builder: (_) => LivenessScreen(
+          onPassed: (file) async {
+            await controller.uploadDocument(
+              kind: DriverDocumentKind.livenessFrame,
+              filePath: file.path,
+            );
+          },
+        ),
+      ),
+    );
+    // The screen pops with the frame only once the upload has succeeded, so a
+    // driver who backs out after a failed upload is not told they passed.
+    if (proof != null && context.mounted) {
+      // Nothing to do: the controller already recorded it and the checklist is
+      // listening. Stated rather than left implicit, because a bare `if` with
+      // an empty body is the shape of a bug someone later "tidies away".
+      assert(proof.path.isNotEmpty);
+    }
+  }
+
   Widget _action(KycController c) {
     switch (c.step) {
       case KycStep.review:
@@ -180,6 +212,11 @@ class _KycScreenState extends State<KycScreen> {
           onUpload: (kind, path) async {
             await controller.uploadDocument(kind: kind, filePath: path);
           },
+          // The face check is its own screen, pushed over this one. Pushed
+          // rather than pushed-and-replaced so a driver who backs out lands
+          // back on the checklist with their six photos still ticked, instead
+          // of at the top of onboarding with nothing to show for it.
+          onStartLiveness: () => _runLiveness(context, controller),
           onContinue: c.canAdvance && !c.busy ? c.advance : null,
         );
       case KycStep.identity:

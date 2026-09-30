@@ -11,7 +11,8 @@ enum DriverDocumentKind {
   ghanaCardPhoto('ghanaCardPhoto', 'Ghana card photo'),
   driversLicence('driversLicence', "Driver's licence photo"),
   roadWorthy('roadWorthy', 'Road worthy certificate'),
-  insuranceSticker('insuranceSticker', 'Insurance sticker');
+  insuranceSticker('insuranceSticker', 'Insurance sticker'),
+  livenessFrame('livenessFrame', 'Face check');
 
   const DriverDocumentKind(this.wire, this.label);
 
@@ -20,6 +21,15 @@ enum DriverDocumentKind {
 
   /// What the rider-side checklist calls it.
   final String label;
+
+  /// Whether this is the face check rather than a photograph.
+  ///
+  /// True only for [livenessFrame], and it is the one kind the checklist does
+  /// not take with the camera: a liveness check has to *watch* a face move, so
+  /// it runs in this app with a live preview, rather than handing the driver to
+  /// the system camera and getting one still back. There is no way to do that
+  /// with `ACTION_IMAGE_CAPTURE`.
+  bool get isLiveness => this == DriverDocumentKind.livenessFrame;
 
   /// The one-line instruction under the label.
   ///
@@ -40,6 +50,12 @@ enum DriverDocumentKind {
           'The certificate, with the expiry date readable.',
         DriverDocumentKind.insuranceSticker =>
           'The sticker on the windscreen, with the number readable.',
+        // Not a photograph and not a selfie. A liveness check is the driver
+        // doing small things to their face while the phone watches, and the
+        // only still that comes out of it is the evidence.
+        DriverDocumentKind.livenessFrame =>
+          'A short check that your face is a real one, done here in the app. '
+          'It asks you to turn your head and blink.',
       };
 
   static DriverDocumentKind? byWire(String wire) {
@@ -52,10 +68,29 @@ enum DriverDocumentKind {
 
 /// Every kind, in the order the checklist shows them.
 ///
-/// The order is the order a driver has to fetch them, which is not alphabetical
-/// and not the order the table happens to use: the two easy ones (a face, a
-/// vehicle) first so the list does not open with paperwork.
+/// The order is the order a driver has to fetch or do them, which is not
+/// alphabetical and not the order the table happens to use: the two easy ones
+/// (a face, a vehicle) first so the list does not open with paperwork, and the
+/// face check last because it is the only one that needs good light and a
+/// steady hand, so it is done once the driver has got everything else ready.
 const List<DriverDocumentKind> driverDocumentKinds = [
+  DriverDocumentKind.profilePhoto,
+  DriverDocumentKind.vehiclePhoto,
+  DriverDocumentKind.ghanaCardPhoto,
+  DriverDocumentKind.driversLicence,
+  DriverDocumentKind.roadWorthy,
+  DriverDocumentKind.insuranceSticker,
+  DriverDocumentKind.livenessFrame,
+];
+
+/// The six kinds that are photographs.
+///
+/// [driverDocumentKinds] has seven. The count in the app's own tests and in the
+/// admin page has to be about the photographs, and a list that was six until
+/// the face check was added and is seven now is a number that has to be
+/// updated in three places every time it changes. Naming the split once here
+/// is the cheaper shape.
+const List<DriverDocumentKind> driverPhotoKinds = [
   DriverDocumentKind.profilePhoto,
   DriverDocumentKind.vehiclePhoto,
   DriverDocumentKind.ghanaCardPhoto,

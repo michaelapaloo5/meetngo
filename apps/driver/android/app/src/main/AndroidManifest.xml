@@ -36,6 +36,22 @@
         android:label="meetngo_driver"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
+        <!-- The face-detection model is bundled into the APK rather than
+             fetched on first use.
+
+             Without this, ML Kit resolves its model over the network the first
+             time a driver opens the face check. A driver in a vehicle on a bad
+             connection gets a check that cannot start, with no message saying
+             why, and the most likely place for that to happen is exactly where
+             the check is most needed. The model is a few hundred kilobytes,
+             which is a price worth paying once at build time for a check that
+             then works on a phone in a car with no signal.
+
+             `face` is the module name. It is not the same string as the Flutter
+             package name, and the wrong one here fails silently. -->
+        <meta-data
+            android:name="com.google.mlkit.vision.DEPENDENCIES"
+            android:value="face" />
         <activity
             android:name=".MainActivity"
             android:exported="true"

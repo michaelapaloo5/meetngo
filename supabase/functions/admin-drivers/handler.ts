@@ -72,14 +72,20 @@ export interface DriverDocumentRow {
 }
 
 /**
- * The six documents a driver has to send before they can be approved.
+ * What a driver has to send before they can be approved: the six photographs
+ * and the face check's frame.
  *
- * The same six, in the same wire values, as the `driver_documents` check
- * constraint in `20260929000002_driver_documents.sql` and the
+ * The same seven, in the same wire values, as the `driver_documents` check
+ * constraint in `20260929000003_liveness_frame.sql` and the
  * `DriverDocumentKind` enum in the app. Written out here because this function
  * has no access to the Dart enum, and a list that silently drifts from the
  * constraint would let an admin approve a driver who sent a document the
  * database would not even accept.
+ *
+ * `livenessFrame` is in this list, and that is the point of it. A driver with
+ * all six photographs and no face check looks, to anything that counts only
+ * photographs, like a complete application -- and the frame is the only item
+ * here an admin can compare against the licence photograph.
  */
 export const REQUIRED_DOCUMENTS: readonly string[] = [
   'profilePhoto',
@@ -88,6 +94,7 @@ export const REQUIRED_DOCUMENTS: readonly string[] = [
   'driversLicence',
   'roadWorthy',
   'insuranceSticker',
+  'livenessFrame',
 ] as const;
 
 /** What a driver is missing, in the order the app asks for them. */

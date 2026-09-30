@@ -126,13 +126,13 @@ function signIn(message) {
   };
 }
 
-// The six documents, in the order the app asks for them.
+// The seven things a driver sends, in the order the app asks for them.
 //
 // Written out here rather than taken from the server so the page can show what
 // is *missing* as well as what is sent, and so the list cannot silently change
 // shape if the server sends something unexpected. These are the same six wire
 // values as REQUIRED_DOCUMENTS in handler.ts and the check constraint in
-// 20260929000002_driver_documents.sql.
+// 20260929000003_liveness_frame.sql.
 //
 // No backticks in this comment: this whole file is one template literal, so a
 // backtick here ends the string and the page becomes a syntax error rather
@@ -143,10 +143,11 @@ const DOCS = [
   ['ghanaCardPhoto', 'Ghana card photo'],
   ['driversLicence', "Driver's licence photo"],
   ['roadWorthy', 'Road worthy certificate'],
-  ['insuranceSticker', 'Insurance sticker']
+  ['insuranceSticker', 'Insurance sticker'],
+  ['livenessFrame', 'Face check photo']
 ];
 
-// The six rows, sent or not.
+// The seven rows, sent or not.
 //
 // This block is the reason the page exists. A card, a phone number and four
 // digits off a Ghana Card are not a document anybody can check a licence
@@ -167,9 +168,9 @@ function documentsBlock(d) {
   }).join('');
   return '<div class="label" style="margin-top:10px">Documents</div>' +
     (missing === 0
-      ? '<div class="sub">All six sent.</div>'
+      ? '<div class="sub">All seven sent.</div>'
       : '<div class="warn" style="margin:6px 0 8px">' + missing +
-        ' of 6 still missing. This driver cannot be approved until they are sent.</div>') +
+        ' of 7 still missing. This driver cannot be approved until they are sent.</div>') +
     '<div class="docs">' + rows + '</div>';
 }
 
@@ -206,7 +207,7 @@ function card(d) {
       '</div>' +
     '</div>' +
     '<div class="bar">' +
-      // Approve is dead until all six are sent. The server refuses it anyway --
+      // Approve is dead until all seven are sent. The server refuses it anyway --
       // this is so the admin finds out before clicking, not instead of.
       (complete
         ? '<button class="approve" data-decision="approve">Approve</button>'

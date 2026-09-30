@@ -11,7 +11,16 @@
 //
 //    b. `supabase/migrations/20260929000002_driver_documents.sql`
 //       The `driver_documents` table and the private `kyc-documents` bucket.
-//       Without it there is nowhere for a driver's six documents to go, so the
+//       Without it there is nowhere for a driver's documents to go, so the
+//       app's uploads fail and every driver reads as having sent nothing --
+//       which is also what a driver who really sent none reads as, so the
+//       page cannot tell you which of the two you are looking at.
+//
+//    c. `supabase/migrations/20260929000003_liveness_frame.sql`
+//       Widens the kind check constraint to allow livenessFrame, the photo
+//       the face check produces. Without it the app cannot store the one item
+//       on the list an admin can compare against the licence, and a driver who
+//       has passed the check cannot finish onboarding.
 //       app's uploads fail and every driver reads as having sent nothing --
 //       which is also what a driver who really sent nothing reads as, so the
 //       page cannot tell you which of the two you are looking at.
@@ -54,7 +63,7 @@
 //
 //   * Lists drivers with `kyc_status = 'pending'`, newest first.
 //   * Shows the six documents each driver has sent, and how many are missing.
-//     Approve is dead until all six are there, and the server refuses with a
+//     Approve is dead until all seven are there, and the server refuses with a
 //     409 naming them even if the page is bypassed. This is the substance of
 //     the decision: a licence, a road worthy and an insurance sticker are what
 //     "may drive this vehicle for paying passengers" is made of. Without them
