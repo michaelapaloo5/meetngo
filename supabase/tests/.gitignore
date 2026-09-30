@@ -1,0 +1,9 @@
+# A Dart package, not an application, so the lock file is not committed.
+#
+# `flutter pub get` resolves the same versions from the same constraints on every
+# machine, and the lock file is 11 kB of noise in review. This is the standard
+# split: applications lock, libraries do not.
+#
+# The APKs are the applications, and their lock files *are* committed. That is the
+# distinction, not "which directory".
+pubspec.lock
