@@ -81,5 +81,17 @@ export function settleAgainstTripState(input: {
   if (input.paymentState === 'succeeded') {
     return { shouldCharge: false, paymentState: 'succeeded', ledgerKinds: [] };
   }
-  return { shouldCharge: true, paymentState: 'succeeded', ledgerKinds: ['fare', 'commission'] };
+  // The launch promo settles at a 0% rate, and a `commission` entry of 0.00 is
+  // not a neutral no-op: it is a line on the driver's own statement reading
+  // "commission GH¢0.00" beside a fare they kept in full, which reads as an
+  // account that was meant to be charged and escaped it. The kinds come from
+  // the money, not from the state -- `['fare', 'commission']` on every charge
+  // was right when every charge took a commission, and is wrong now that some
+  // take none.
+  const charged = input.settlement.commissionGhs > 0;
+  return {
+    shouldCharge: true,
+    paymentState: 'succeeded',
+    ledgerKinds: charged ? ['fare', 'commission'] : ['fare'],
+  };
 }

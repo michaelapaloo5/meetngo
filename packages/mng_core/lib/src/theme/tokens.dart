@@ -15,7 +15,10 @@ abstract final class MngColors {
 
   static const standard = Color(0xFFF5B301);
   static const premium = Color(0xFF1A1A1A);
-  static const van = Color(0xFF1DB954);
+
+  /// Was `van`, renamed with the ride category it belongs to. The value is
+  /// unchanged: the tier kept its identity, only its name moved.
+  static const lite = Color(0xFF1DB954);
 
   static const success = Color(0xFF1DB954);
   static const error = Color(0xFFE5484D);

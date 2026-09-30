@@ -151,6 +151,51 @@ export function buildCompleteDeps(
       return { ok: !error, error: ok(error) };
     },
 
+    // A read, on the service key, of a table the driver can also read for
+    // themselves. `ends_at` alone is selected: the window's start is the
+    // trigger's business and nothing here has an opinion about it.
+    //
+    // Zero rows is the ordinary answer for a driver who has never completed a
+    // trip, and it is deliberately NOT folded into an error. `first()` returns
+    // null and the handler reads that as "no promo", which for a driver with no
+    // completed trip is the truth.
+    findPromoWindow: async (driverId) => {
+      const { data, error } = await service
+        .from('driver_promos')
+        .select('ends_at')
+        .eq('driver_id', driverId)
+        .limit(1);
+      if (error) return { window: null, error: ok(error) };
+      const row = first(data) as { ends_at?: unknown } | null;
+      // A row whose `ends_at` is missing is not treated as "no promo": that
+      // would quietly start charging a driver who is inside their promo, and
+      // `commissionRateFor` exists precisely to make a bad date loud.
+      if (row && typeof row.ends_at !== 'string') {
+        return { window: null, error: 'driver_promos row carries no ends_at' };
+      }
+      return { window: row ? { endsAt: row.ends_at as string } : null, error: null };
+    },
+
+    // `commission_rate` is written once, and only on a trip that actually
+    // charged. Deliberately NOT an upsert: a retry that reached the payment
+    // first is answered by `settleAgainstTripState`'s already-succeeded guard
+    // and never comes here, so a second write would mean two settlements
+    // happened and the first one did not record its rate. Overwriting would
+    // hide that.
+    recordCommissionRate: async (tripId, rate) => {
+      const { data, error } = await service
+        .from('trips')
+        .update({ commission_rate: rate })
+        .eq('id', tripId)
+        .select('*');
+      if (error) return { ok: false, error: ok(error) };
+      // Measured the same way `markPaymentSucceeded` is: an update with no
+      // `select` answers `data = null, error = null` whether it wrote a row or
+      // matched none, and the handler has to tell those apart.
+      const wrote = first(data) !== null;
+      return { ok: wrote, error: wrote ? null : 'trip not found' };
+    },
+
     // A service-role insert because there is no INSERT policy on `ratings`.
     // `rater_id` and `ratee_id` are passed in rather than read here, and
     // `from_role` is written as the handler supplied it -- which is the handler's

@@ -1,5 +1,6 @@
 import { assert, assertEquals } from 'https://deno.land/std@0.224.0/testing/asserts.ts';
 import { parseRideRequest, type Pin } from '../request-ride/request.ts';
+import { RIDE_CATEGORY_NAMES } from '../request-ride/fare.ts';
 
 const pin = (over: Partial<Pin> = {}): Pin => ({
   label: 'Pickup',
@@ -72,10 +73,22 @@ Deno.test('a body that is not a JSON object is refused', () => {
 });
 
 Deno.test('a category outside the three the schema allows is refused', () => {
+  // The message is built from `RIDE_CATEGORY_NAMES`, so this asserts the derived
+  // string rather than a second hardcoded copy of the list. The old version
+  // wrote 'standard, premium, van' out by hand and went stale when `van` became
+  // `lite` -- a refusal that told a rider to pick from a category the schema no
+  // longer has. The separate assertion below is what pins the list itself.
   assertEquals(
     refuse(body({ category: 'deluxe' })),
-    'category must be one of standard, premium, van',
+    `category must be one of ${RIDE_CATEGORY_NAMES.join(', ')}`,
   );
+  // And `van` is now refused too: it is a body style, not a fare tier, and
+  // accepting it here would write a value the check constraint rejects.
+  assertEquals(
+    refuse(body({ category: 'van' })),
+    `category must be one of ${RIDE_CATEGORY_NAMES.join(', ')}`,
+  );
+  assertEquals(RIDE_CATEGORY_NAMES, ['lite', 'standard', 'premium']);
 });
 
 // PostGIS coerces an out-of-range coordinate instead of rejecting it, so

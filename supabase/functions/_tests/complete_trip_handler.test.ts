@@ -33,6 +33,10 @@ interface Calls {
   ledger: LedgerCall[];
   payouts: { tripId: string; driverId: string; amountGhs: number }[];
   ratings: RatingInput[];
+  /** Which drivers had their launch-promo window looked up, in order. */
+  promoLookups: string[];
+  /** The rate each settled trip recorded, which must be the rate it settled at. */
+  commissionRates: { tripId: string; rate: number }[];
 }
 
 interface Options {
@@ -50,6 +54,14 @@ interface Options {
   payoutOk?: boolean;
   ratingOk?: boolean;
   ratingDuplicate?: boolean;
+  /**
+   * The driver's launch-promo window. Absent means "no window", which is the
+   * driver who has never completed a trip and therefore pays the standard 15%.
+   * Set it to a live `ends_at` to put the trip inside the promo.
+   */
+  promo?: { endsAt: string } | null;
+  promoError?: string | null;
+  commissionRateOk?: boolean;
 }
 
 const row = (over: Partial<TripRow> = {}): TripRow => ({
@@ -81,6 +93,8 @@ const harness = (options: Options = {}) => {
     ledger: [],
     payouts: [],
     ratings: [],
+    promoLookups: [],
+    commissionRates: [],
   };
   // `Promise.resolve` rather than `async`: the ports are declared as returning a
   // Promise, and an `async` arrow with no `await` in it is a `require-await`
@@ -130,6 +144,21 @@ const harness = (options: Options = {}) => {
     writePayout: (tripId, driverId, amountGhs) => {
       calls.payouts.push({ tripId, driverId, amountGhs });
       return Promise.resolve({ ok: options.payoutOk ?? true, error: null });
+    },
+    // The launch promo. A window is opt-in per test so the default case is a
+    // driver who has never completed a trip and pays the standard 15% -- the
+    // state every existing settlement test is written against, and changing it
+    // silently would have quietly rewritten what they all assert.
+    findPromoWindow: (driverId) => {
+      calls.promoLookups.push(driverId);
+      return Promise.resolve({
+        window: options.promo ?? null,
+        error: options.promoError ?? null,
+      });
+    },
+    recordCommissionRate: (tripId, rate) => {
+      calls.commissionRates.push({ tripId, rate });
+      return Promise.resolve({ ok: options.commissionRateOk ?? true, error: null });
     },
     writeRating: (input) => {
       calls.ratings.push(input);

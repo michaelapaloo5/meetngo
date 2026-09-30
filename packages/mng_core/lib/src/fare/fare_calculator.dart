@@ -18,18 +18,37 @@ class FareQuote {
 
 class FareCalculator {
   FareCalculator({
-    this.baseGhs = 5.00,
-    this.bookingFeeGhs = 1.00,
+    this.baseGhs = 0.0,
+    this.bookingFeeGhs = 0.0,
+    this.minFareGhs = 0.15,
     this.commissionRate = 0.15,
     this.maxSurge = 2.0,
   });
 
+  /// Zero, deliberately. See the note on [BASE_GHS] in
+  /// `supabase/functions/request-ride/fare.ts`, which is the authority for
+  /// this model and carries the arithmetic.
   final double baseGhs;
+
+  /// Zero, deliberately. See [baseGhs].
   final double bookingFeeGhs;
+
+  /// The floor: 15 cedis. A ride shorter than about half a kilometre costs
+  /// this, so the thinnest possible margin still covers the driver moving the
+  /// car.
+  final double minFareGhs;
+
   final double commissionRate;
   final double maxSurge;
 
-  /// fare = (base + perKm * distance) * surge + bookingFee - discount.
+  /// fare = max(minFare, (base + perKm * distance) * surge) + booking - discount.
+  ///
+  /// The floor goes on the distance-priced fare and the discount comes off
+  /// afterwards, in that order. Flooring last would let a promo push a fare
+  /// below the cost of the drive; flooring first and discounting inside the
+  /// `max` would make a promo code unable to reduce any short trip at all,
+  /// because the floor would swallow it and the rider would be told they paid
+  /// less when they did not.
   ///
   /// A negative distance collapses to zero so a reversed pin never yields a
   /// negative fare. A non-finite distance is a caller bug and throws.
@@ -44,20 +63,32 @@ class FareCalculator {
     }
     final km = math.max(0.0, distanceKm);
     final appliedSurge = surge.clamp(1.0, maxSurge).toDouble();
-    final raw = (baseGhs + category.perKmGhs * km) * appliedSurge +
-        bookingFeeGhs -
-        discountGhs;
+    final discount = math.max(0.0, discountGhs);
+    final distanceFare = math.max(
+      minFareGhs,
+      (baseGhs + category.perKmGhs * km) * appliedSurge,
+    );
+    final raw = distanceFare + bookingFeeGhs - discount;
     return FareQuote(
       fareGhs: round2(math.max(0.0, raw)),
       surge: appliedSurge,
-      discountGhs: math.max(0.0, discountGhs),
+      discountGhs: discount,
       distanceKm: km,
     );
   }
 
-  double driverPayoutGhs(FareQuote quote) =>
-      round2(quote.fareGhs * (1 - commissionRate));
+  /// What a driver takes home once [rate] is deducted, which is [rate] and not
+  /// this calculator's own [commissionRate] so a trip inside the launch promo
+  /// settles at zero.
+  double driverPayoutGhsAt(FareQuote quote, double rate) {
+    if (rate.isNaN || rate.isInfinite) {
+      throw ArgumentError.value(rate, 'rate', 'must be finite');
+    }
+    return round2(quote.fareGhs * (1 - rate));
+  }
 
-  static double round2(double value) =>
-      (value * 100).roundToDouble() / 100;
+  double driverPayoutGhs(FareQuote quote) =>
+      driverPayoutGhsAt(quote, commissionRate);
+
+  static double round2(double value) => (value * 100).roundToDouble() / 100;
 }

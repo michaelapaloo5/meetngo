@@ -6,6 +6,10 @@ import { corsHeaders } from '../_shared/cors.ts';
 // the function's own directory is not a new deployment shape either: every
 // function here already reaches `../_shared/cors.ts` and `../offers/clients.ts`.
 import { isTripStateName } from '../cancel-trip/policy.ts';
+// The launch promo's rule, imported rather than restated. `request-ride` asks
+// the same module the same question, and a second copy of a five-month rule is
+// how a driver ends up quoted one rate and paid another.
+import { commissionRateFor, STANDARD_COMMISSION_RATE, type PromoWindow } from '../_shared/promo.ts';
 import { readFareGhs, settleAgainstTripState, settleFare } from './ledger.ts';
 
 // The HTTP surface of `complete-trip`, and nothing that talks to a client.
@@ -42,6 +46,15 @@ export interface TripRow {
   driver_id: string | null;
   state: string;
   fare_ghs: unknown;
+  /**
+   * The launch promo is dated from this and not from "now", so that a trip
+   * settled late, or written up out of order, cannot cross the five-month
+   * boundary on the strength of when the function happened to run.
+   *
+   * Nullable because `ongoing` and `requested` trips have none, and the handler
+   * only reads it on a completed trip.
+   */
+  completed_at?: string | null;
   [column: string]: unknown;
 }
 
@@ -123,6 +136,31 @@ export interface CompleteDeps {
     driverId: string,
     amountGhs: number,
   ): Promise<{ ok: boolean; error: string | null }>;
+  /**
+   * The driver's launch-promo window, or null when they have never completed a
+   * trip and so have no window yet.
+   *
+   * This is a read and never a write. `driver_promos` carries no INSERT or
+   * UPDATE policy, so a client cannot hand itself five free years, and the
+   * window itself is opened by a `security definer` trigger on the driver's
+   * first completion. What the window *means* is `_shared/promo.ts`, not this
+   * file.
+   *
+   * `error` is separate from `window` on purpose: a failed lookup must not
+   * arrive as `null`, because `null` is a real answer here meaning "no promo",
+   * and reading a database error as "this driver has no promo" would quietly
+   * take 15% off every trip they drive for five months.
+   */
+  findPromoWindow(driverId: string): Promise<{ window: PromoWindow | null; error: string | null }>;
+  /**
+   * Write the rate this trip actually settled at, onto `trips`, once.
+   *
+   * Stored rather than recomputed on read: a driver who crosses five months
+   * would otherwise find their earlier trips repriced, with no row explaining
+   * where the commission came from. A driver who worked a trip for 100% should
+   * still be able to see that they did, after the promo has ended.
+   */
+  recordCommissionRate(tripId: string, rate: number): Promise<{ ok: boolean; error: string | null }>;
   /**
    * `duplicate` is the port's own reading of the insert rather than the
    * handler's, because the discriminator is PostgREST's `code` field and
@@ -256,7 +294,38 @@ export async function handleComplete(input: {
   if (fareGhs === null) {
     return json(500, { error: 'trip row carries no finite fare' });
   }
-  const settlement = settleFare(fareGhs);
+
+  // The launch promo, and the order matters: the rate is resolved from the
+  // driver's window and the trip's own `completed_at` BEFORE the fare is
+  // settled, so there is exactly one rate in this function and no window where
+  // a fare was computed and a different rate recorded.
+  //
+  // A trip with no driver cannot be inside a promo -- a promo is opened by
+  // completing a trip as a driver -- and a driver-less trip writes no ledger
+  // and no payout below, so it settles at the standard rate and is not
+  // recorded. Recording it would put a number on a trip that earned nothing.
+  let commissionRate = STANDARD_COMMISSION_RATE;
+  if (trip.driver_id) {
+    const { window, error: promoError } = await deps.findPromoWindow(trip.driver_id);
+    if (promoError) return json(500, { error: 'promo lookup failed' });
+    // Dated from the trip's `completed_at`, falling back to now() only for a
+    // completed trip that somehow carries no timestamp. The fallback is
+    // deliberate and cannot silently favour the platform: a missing
+    // `completed_at` on a settled trip is itself a data fault worth a 500, and
+    // `now()` is the closest honest reading of when it was completed.
+    const completedAt = trip.completed_at ?? new Date().toISOString();
+    try {
+      commissionRate = commissionRateFor(window, completedAt);
+    } catch (err) {
+      // `commissionRateFor` throws on an unparseable date rather than guessing.
+      // Guessing would mean either charging a driver who should pay nothing, or
+      // giving the service away, and neither is something to decide on a
+      // malformed string.
+      return json(500, { error: `promo window is unreadable: ${(err as Error).message}` });
+    }
+  }
+
+  const settlement = settleFare(fareGhs, commissionRate);
 
   const { row: payment, error: paymentError } = await deps.findOpenPayment(trip.id);
   if (paymentError) return json(500, { error: 'payment lookup failed' });
@@ -338,6 +407,18 @@ export async function handleComplete(input: {
       settlement.driverPayoutGhs,
     );
     if (!payoutOk) return json(500, { error: 'payout write failed' });
+
+    // Last, and only on the path that actually charged. Writing it earlier --
+    // before the payment, or on a cancelled trip -- would record a rate for a
+    // settlement that never happened, and a later retry would then read that
+    // stale number as though it had been decided.
+    //
+    // A failure here is reported but does not undo the payment or the ledger:
+    // those are the money, and they are already written. Returning 500 tells
+    // the driver the receipt is not trustworthy, which is the truth, and the
+    // retry path is already idempotent on the payment so it will not pay twice.
+    const { ok: rateOk } = await deps.recordCommissionRate(trip.id, commissionRate);
+    if (!rateOk) return json(500, { error: 'trip settled but its commission rate was not recorded' });
   }
 
   return json(200, { trip, settlement, paymentState: decision.paymentState, ...await rateTrip(input, trip, deps) });
