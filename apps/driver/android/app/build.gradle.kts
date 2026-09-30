@@ -34,6 +34,24 @@ android {
             // TODO: Add your own signing config for the release build.
             // Signing with the debug keys for now, so `flutter run --release` works.
             signingConfig = signingConfigs.getByName("debug")
+
+            // proguard-rules.pro and nothing else.
+            //
+            // The project's own rules are added to the library consumer rules
+            // the Flutter plugin already contributes, rather than replacing them.
+            // The file is here for one reason, which is that ML Kit's text
+            // plugin references the Chinese, Devanagari, Japanese and Korean
+            // recognisers and only the Latin model is on the classpath, so R8
+            // stops the release build with:
+            //
+            //   Missing class com.google.mlkit.vision.text.chinese.ChineseTextRecognizerOptions$Builder
+            //
+            // The Android default file is deliberately *not* named here. Naming
+            // it would switch on shrinking options that were not on before this,
+            // which is a different change and a bigger risk than the one being
+            // fixed. See the file itself for the rules, and why -dontwarn is
+            // right rather than four language dependencies.
+            proguardFiles("proguard-rules.pro")
         }
     }
 }
