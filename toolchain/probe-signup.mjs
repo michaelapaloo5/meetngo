@@ -9,13 +9,9 @@
 // either use it or not fight it, and guessing is how the previous run of that
 // script died.
 
-import { readFileSync } from 'node:fs';
+import { readEnv } from './read-env.mjs';
 
-const env = {};
-for (const line of readFileSync('toolchain/supabase-admin.env', 'utf8').split('\n')) {
-  const m = /^\s*([A-Z_0-9]+)=(.*)$/.exec(line);
-  if (m) env[m[1]] = m[2];
-}
+const env = readEnv('toolchain/supabase-admin.env');
 const q = async (sql) => {
   const res = await fetch('https://api.supabase.com/v1/projects/' + env.SUPABASE_PROJECT_REF + '/database/query', {
     method: 'POST',
