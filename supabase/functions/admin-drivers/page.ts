@@ -211,10 +211,11 @@ async function load() {
   main.innerHTML =
     '<h1>Driver approvals</h1>' +
     '<div class="note">Approving flips the driver and their vehicle together. ' +
-    'The six photographs are required; the face check photo is shown when a ' +
-    'driver sent one but is not required yet, because the in-app check cannot ' +
-    'read a frame on this build. If a face check photo is there, compare it ' +
-    'with the licence.<br><br>Two things on this page cannot be verified here, ' +
+    'The six photographs are required. The face check photo is shown when a ' +
+    'driver sent one, but is not required yet: the in-app check has not been ' +
+    'run on a real phone, so nobody has confirmed it works. If a face check ' +
+    'photo is there, compare it with the licence.<br><br>Two things on this ' +
+    'page cannot be verified here, ' +
     'and the page says so rather than implying otherwise. The Ghana Card is ' +
     'stored as four digits and an expiry, not as a picture, so there is ' +
     'nothing to look at -- what is shown is a number. And the selfie is not ' +

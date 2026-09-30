@@ -24,19 +24,25 @@ enum DriverDocumentKind {
 
   /// Whether a driver cannot leave the checklist without this one.
   ///
-  /// False only for [livenessFrame], and that is a temporary state rather than a
-  /// view about whether liveness matters. It is the one item on the list whose
-  /// detector cannot currently read a frame on this build.
+  /// False only for [livenessFrame], and the reason is a fact about this
+  /// repository's history rather than a view about whether liveness matters.
   ///
-  /// Making it required while it is broken does not make drivers safer, it
-  /// makes them stuck: every driver is blocked at the last step of onboarding
-  /// by something they cannot do anything about, and the usual result is that
-  /// they stop trying. Six photographs, plus a person comparing the face to the
-  /// licence, is a real check that works today.
+  /// The check was required until ML Kit turned out to be unusable on the test
+  /// phone: `detector.processImage` threw a NullPointerException out of Google's
+  /// own runtime on every frame, through the plugin on two versions and through
+  /// a MethodChannel calling the same API directly. A required check that
+  /// cannot run blocks every driver at the last step of onboarding by something
+  /// they cannot act on, so it was made optional rather than left as a wall.
   ///
-  /// When the detector runs this becomes true and the checklist stops being
-  /// skippable again. It is one line, and both the checklist and the KYC
-  /// controller read it, so there is nowhere for the two to disagree.
+  /// It has since been rebuilt on MediaPipe plus MiniFASNet, both Apache 2.0
+  /// and both on-device, and it is covered by tests. It is **not** required yet
+  /// because it has not been run on a real phone: the device this was developed
+  /// against is behind a PIN. Flipping this to true is one line, and it should
+  /// be flipped the moment the check has been seen working on hardware and seen
+  /// failing on a held-up photograph.
+  ///
+  /// Both the checklist and the KYC controller read this one flag, so there is
+  /// nowhere for the two to disagree about what a driver still owes.
   bool get isRequired => this != DriverDocumentKind.livenessFrame;
 
   /// Whether this is the face check rather than a photograph.

@@ -77,10 +77,10 @@ class DocumentChecklist extends StatefulWidget {
   /// The required kinds still missing, which is what Continue is gated on.
   ///
   /// Counted from [driverRequiredKinds] rather than from [driverDocumentKinds]
-  /// so an optional item -- the face check, while its detector is broken -- does
-  /// not hold a driver at the last step of onboarding. The face check is still
-  /// listed, still offered and still stored when it is done; it just is not
-  /// something a driver can be stuck behind.
+  /// so an optional item does not hold a driver at the last step of onboarding.
+  /// The face check is still listed, still offered and still stored when it is
+  /// done; it just is not something a driver can be stuck behind. See
+  /// [DriverDocumentKind.isRequired] for why it is optional.
   List<DriverDocumentKind> get _missing => driverRequiredKinds
       .where((kind) => !documents.any((d) => d.kind == kind))
       .toList();

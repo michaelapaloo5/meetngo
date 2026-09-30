@@ -36,22 +36,23 @@
         android:label="meetngo_driver"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
-        <!-- The face-detection model is bundled into the APK rather than
-             fetched on first use.
+        <!-- No ML Kit meta-data any more, and nothing needs replacing it.
 
-             Without this, ML Kit resolves its model over the network the first
-             time a driver opens the face check. A driver in a vehicle on a bad
-             connection gets a check that cannot start, with no message saying
-             why, and the most likely place for that to happen is exactly where
-             the check is most needed. The model is a few hundred kilobytes,
-             which is a price worth paying once at build time for a check that
-             then works on a phone in a car with no signal.
+             `com.google.mlkit.vision.DEPENDENCIES` with a value of `face` used
+             to sit here, telling ML Kit to bundle its face model rather than
+             fetch it on first use. ML Kit is gone: `detector.processImage`
+             threw a NullPointerException out of Google's own pre-obfuscated
+             runtime on every frame on this phone, through the plugin's input
+             marshalling and through a thirty-line MethodChannel that called the
+             same native API directly, and the throw was one layer below
+             `InputImage` in code neither of those two controlled.
 
-             `face` is the module name. It is not the same string as the Flutter
-             package name, and the wrong one here fails silently. -->
-        <meta-data
-            android:name="com.google.mlkit.vision.DEPENDENCIES"
-            android:value="face" />
+             Detection is now MediaPipe on LiteRT
+             (`face_detection_tflite`) and the anti-spoof model is MiniFASNet
+             (`silentface.tflite`). Both are plain TFLite files under
+             `assets/models/`, so bundling them is what Flutter's asset pipeline
+             does and there is no runtime resolver to configure. That is the
+             whole reason there is no equivalent line here. -->
         <activity
             android:name=".MainActivity"
             android:exported="true"

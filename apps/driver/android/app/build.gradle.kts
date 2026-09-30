@@ -48,16 +48,15 @@ flutter {
     source = "../.."
 }
 
-dependencies {
-    // ML Kit's bundled face detection, called directly from
-    // LivenessChannel.kt rather than through the google_mlkit_face_detection
-    // plugin.
-    //
-    // Declared here for one reason: that plugin's marshalling throws a
-    // NullPointerException out of Google's own runtime on every frame, and
-    // depending on the plugin would drag it in whether we use it or not. The
-    // bundled artifact -- not play-services-mlkit-face-detection -- carries its
-    // own model, which is what lets the face check work with no Play services
-    // dependency and no model download on the driver's phone.
-    implementation("com.google.mlkit:face-detection:16.1.7")
-}
+// No dependencies block, and that is the change.
+//
+// `com.google.mlkit:face-detection:16.1.7` was declared here so that
+// LivenessChannel.kt could call ML Kit's native API without going through the
+// community plugin. It does not any more. ML Kit is out of this app entirely:
+// face detection is MediaPipe on LiteRT via `face_detection_tflite`, and the
+// anti-spoof model is MiniFASNet as a TFLite asset, so both arrive through the
+// plugin's bundled native runtime.
+//
+// The APK is about 28 MB smaller for it, which is the other reason this is an
+// improvement rather than a workaround: ML Kit's bundled detector was most of
+// the driver's download and every byte of it was unusable.

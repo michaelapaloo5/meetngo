@@ -37,13 +37,13 @@ enum LivenessChallenge {
 /// [LivenessChallenge.blink] is deliberately absent, and that is a decision
 /// about this app's sample rate rather than about liveness.
 ///
-/// The check samples the camera at about 3Hz, because a frame has to be read
-/// through `InputImage.fromFilePath` -- see `LivenessSession` for why the live
-/// byte-array path is unusable in this ML Kit version. A blink lasts a few
-/// hundred milliseconds, and a 3Hz sampler misses most of them. The verifier
-/// can judge a blink correctly, and the tests prove it, but *asking* for one at
-/// 3Hz would produce intermittent failures with no visible cause: the driver
-/// blinked, the app did not see it, and the app told them they had not.
+/// The check samples the camera at about 3Hz, because a frame is analysed from
+/// a still on disk rather than from a live buffer -- see `LivenessSession` for
+/// why. A blink lasts a few hundred milliseconds, and a 3Hz sampler misses most
+/// of them. The verifier can judge a blink correctly, and the tests prove it,
+/// but *asking* for one at 3Hz would produce intermittent failures with no
+/// visible cause: the driver blinked, the app did not see it, and the app told
+/// them they had not.
 ///
 /// The verifier still supports the challenge, so a faster frame source is a
 /// one-line change here rather than a rewrite.
@@ -79,21 +79,65 @@ enum LivenessPhase {
 
 /// The verdict, with the reason. A bool would throw away the only thing worth
 /// telling the driver about why they have to do it again.
-enum LivenessOutcome { notYet, passed, tooManyFaces, noFace, timedOut, gaveUp }
+enum LivenessOutcome {
+  notYet,
+  passed,
+  tooManyFaces,
+  noFace,
+  timedOut,
+
+  /// The anti-spoof model called a flat surface too many times in a row.
+  ///
+  /// Its own outcome rather than a failure with no reason, because "that is a
+  /// photograph" and "we could not see you" need different words and a driver
+  /// told the wrong one stops trying.
+  spoofDetected,
+
+  /// Every challenge was met but the anti-spoof model was never given enough
+  /// of a look at the face to reach a verdict.
+  ///
+  /// Not a pass and not an accusation. It is the only honest outcome when the
+  /// model did not run, and it is the reason `assets/models/anti_spoof.tflite`
+  /// has to be in the APK: a check that cannot judge is not a check.
+  livenessUnproven,
+
+  gaveUp,
+}
 
 /// Decides whether a live person is in front of the camera.
 ///
-/// A pure state machine: readings in, one [LivenessPhase] and a progress
-/// number out, and nothing else. No camera, no ML Kit, no clock of its own --
-/// time arrives on the reading, which is what makes every timeout in here
-/// testable in microseconds instead of by waiting.
+/// A pure state machine: readings in, one [LivenessPhase] and a progress number
+/// out, and nothing else. No camera, no model, no clock of its own -- time
+/// arrives on the reading, which is what makes every timeout in here testable in
+/// microseconds instead of by waiting.
+///
+/// ## The two halves, and why both are needed
+///
+/// **The challenges** ask a single face to turn its head and smile, in an order
+/// drawn at random. A printed photograph has no head pose and no expression, so
+/// it satisfies none of them, and a driver holding up a picture of themselves is
+/// caught by the face count because the detector reports their real face too.
+///
+/// **The anti-spoof model** looks at the pixels and asks whether what is in
+/// front of the camera is a live face or a flat surface. This is what closes
+/// the gap the challenges leave: a short video of a real person, played at the
+/// camera, satisfies every challenge perfectly, and its pixels are exactly what
+/// a small anti-spoofing network is trained to reject.
+///
+/// Neither is much alone. A random challenge script is defeated by a recording
+/// covering all of them, and a 1.85 MB model is defeated by a very good
+/// photograph held very still at a good angle. Together they are a check that
+/// neither of those gets past, and both of them run on the driver's own phone
+/// for no cost per check.
+///
+/// Neither verdict is instant, which is why the model is counted over the whole
+/// attempt rather than required on any one frame. See [kMaxSpoofSamples] and
+/// [kMinLiveSamples].
 ///
 /// ## What this does and does not establish
 ///
-/// It establishes that a single live face responded to randomised challenges
-/// with head pose and an expression. A printed photograph cannot do any of
-/// those, and a driver holding up a picture of themselves is caught by the face
-/// count, because the detector reports their real face as well.
+/// It establishes that a single live face responded to randomised challenges,
+/// and that the anti-spoof model was satisfied repeatedly while it happened.
 ///
 /// It does not establish that the face belongs to the person on the Ghana Card
 /// and the licence. That is a face *match*, it needs a face-embedding model,
@@ -140,6 +184,34 @@ class LivenessVerifier {
   double? _lastYaw;
   double? _lastPitch;
   double? _lastSmile;
+
+  /// How many frames the anti-spoof model called live.
+  ///
+  /// Counted over the whole attempt rather than required on any one frame,
+  /// because the model is a small network reading an 80x80 crop and it is wrong
+  /// often enough that a single frame proves nothing in either direction. A live
+  /// driver in a moving car gets a handful of wrong verdicts; a screen gets the
+  /// same handful and nothing but wrong ones.
+  int _liveSamples = 0;
+
+  /// How many frames the anti-spoof model called a flat surface.
+  ///
+  /// Consecutive, not cumulative. A cumulative count would fail a driver who
+  /// turned their phone towards a window over the course of a check, which is
+  /// the kind of ordinary accident that loses a real driver their onboarding.
+  /// A phone screen does not produce one lucky frame in ten.
+  int _spoofStreak = 0;
+
+  /// The most consecutive spoof verdicts seen, for the screen to explain a
+  /// failure with.
+  int _worstSpoofStreak = 0;
+
+  /// How many frames the model declined to judge at all.
+  ///
+  /// Tracked so the failure message can tell a driver whose face is too dark
+  /// from one whose phone is misbehaving. The two need different advice and
+  /// lumping them together produces the worst of both.
+  int _unscoredFrames = 0;
 
   /// The challenge being asked for, or null once the check is over.
   LivenessChallenge? get current =>
@@ -191,12 +263,23 @@ class LivenessVerifier {
     }
   }
 
+  /// How many frames the anti-spoof model has called live.
+  int get liveSamples => _liveSamples;
+
+  /// The longest run of consecutive spoof verdicts seen so far.
+  int get worstSpoofStreak => _worstSpoofStreak;
+
+  /// How many frames the model could not judge.
+  int get unscoredFrames => _unscoredFrames;
+
   /// Feeds one frame in and returns where the check now stands.
   ///
   /// Ordering inside this method is the whole of the check, and it is
-  /// deliberate: face count, then mesh, then timing, then the challenge.
-  /// A frame with two faces never advances a challenge however much of the
-  /// challenge it happens to satisfy.
+  /// deliberate: face count, then mesh, then the anti-spoof streak, then
+  /// timing, then the challenge. A frame with two faces never advances a
+  /// challenge however much of the challenge it happens to satisfy, and a frame
+  /// the anti-spoof model has just called a flat surface never advances one
+  /// either.
   LivenessPhase observe(FaceReading reading) {
     if (isOver) return _phase;
 
@@ -204,10 +287,10 @@ class LivenessVerifier {
     _lastPitch = reading.pitch;
     _lastSmile = reading.smile;
 
-    // Nothing to measure on nobody. The face must also be big enough for the
-    // pose and eye classifiers to mean anything; ML Kit's default minimum
-    // face size is small enough that a face across the room produces confident
-    // nonsense.
+    // Nothing to measure on nobody. The face must also have a mesh, because a
+    // detection without one came from a configuration that will never produce
+    // head pose and asking for a head turn on it is a check that can only time
+    // out.
     if (!reading.hasOneFace || reading.contourPoints < kMinContourPoints) {
       // A second face is a different failure from an empty frame, and the
       // driver needs to hear the difference: one is "put the photo down", the
@@ -221,6 +304,26 @@ class LivenessVerifier {
     }
 
     _lastSeenAt = reading.at;
+
+    // The anti-spoof verdict is counted before anything else this frame is
+    // allowed to do, so a spoof cannot advance a challenge on its way to
+    // failing. A screen playing back a recording of somebody turning their head
+    // would otherwise complete every challenge and only be caught afterwards.
+    final score = reading.spoofScore;
+    if (score == null) {
+      _unscoredFrames++;
+      _spoofStreak = 0;
+    } else if (score >= kLiveScoreThreshold) {
+      _liveSamples++;
+      _spoofStreak = 0;
+    } else {
+      _spoofStreak++;
+      if (_spoofStreak > _worstSpoofStreak) _worstSpoofStreak = _spoofStreak;
+      if (_spoofStreak >= kMaxSpoofSamples) {
+        _outcome = LivenessOutcome.spoofDetected;
+        return LivenessPhase.failed;
+      }
+    }
 
     // Arming. A challenge is only armed by a frame where the head is near
     // centre, and from then on the head is free to go wherever the challenge
@@ -252,6 +355,19 @@ class LivenessVerifier {
       _sawEyesOpen = false;
       _armedAt = null;
       if (_index >= challenges.length) {
+        // Every challenge met is not yet a pass. The anti-spoof model has to
+        // have had enough of a look to agree, and this is where that is
+        // enforced.
+        //
+        // Failing here rather than at the end of the session matters for a
+        // driver who never gets a verdict: with this rule the check reports
+        // "the face check could not confirm you are real" instead of
+        // completing and then failing on the way to the server, which is the
+        // same message arriving after they have already been told they passed.
+        if (_liveSamples < kMinLiveSamples) {
+          _outcome = LivenessOutcome.livenessUnproven;
+          return LivenessPhase.failed;
+        }
         _outcome = LivenessOutcome.passed;
         return LivenessPhase.passed;
       }
@@ -264,24 +380,31 @@ class LivenessVerifier {
   }
 
   /// Whether a frame satisfies the challenge being asked for.
-  bool _met(LivenessChallenge challenge, FaceReading reading) =>
-      switch (challenge) {
-        LivenessChallenge.turnLeft => _yawPast(reading, -kTurnDegrees),
-        LivenessChallenge.turnRight => _yawPast(reading, kTurnDegrees),
-        // Positive pitch is looking up, per ML Kit's own convention on
-        // `headEulerAngleX`. These two were the wrong way round at first, and
-        // the tests caught it: a driver tilting down was asked to tilt up and
-        // could not do it in under any circumstances, which reads on a phone as
-        // "this check is broken" rather than as "you did it wrong".
-        LivenessChallenge.tiltUp => _pitchPast(reading, kTiltDegrees),
-        LivenessChallenge.tiltDown => _pitchPast(reading, -kTiltDegrees),
-        // Both halves required, and in that order within the same challenge.
-        LivenessChallenge.blink => () {
-          if (reading.eyesOpen) _sawEyesOpen = true;
-          return _sawEyesOpen && reading.eyesShut;
-        }(),
-        LivenessChallenge.smile => (reading.smile ?? 0) > kSmileThreshold,
-      };
+  ///
+  /// Gated on [_countable] first, so a frame from a flat surface completes
+  /// nothing even while the streak against it is still below the failure
+  /// threshold.
+  bool _met(LivenessChallenge challenge, FaceReading reading) {
+    if (!_countable(reading)) return false;
+    return switch (challenge) {
+      LivenessChallenge.turnLeft => _yawPast(reading, -kTurnDegrees),
+      LivenessChallenge.turnRight => _yawPast(reading, kTurnDegrees),
+      // Positive pitch is looking up, which is the convention on
+      // `headEulerAngleX` and the one `face_detection_tflite` documents it
+      // matches. These two were the wrong way round at first, and the tests
+      // caught it: a driver tilting down was asked to tilt up and could not do
+      // it in under any circumstances, which reads on a phone as "this check is
+      // broken" rather than as "you did it wrong".
+      LivenessChallenge.tiltUp => _pitchPast(reading, kTiltDegrees),
+      LivenessChallenge.tiltDown => _pitchPast(reading, -kTiltDegrees),
+      // Both halves required, and in that order within the same challenge.
+      LivenessChallenge.blink => () {
+        if (reading.eyesOpen) _sawEyesOpen = true;
+        return _sawEyesOpen && reading.eyesShut;
+      }(),
+      LivenessChallenge.smile => (reading.smile ?? 0) > kSmileThreshold,
+    };
+  }
 
   bool _yawPast(FaceReading reading, double threshold) {
     final yaw = reading.yaw;
@@ -297,6 +420,16 @@ class LivenessVerifier {
     if (pitch == null) return false;
     return threshold > 0 ? pitch >= threshold : pitch <= threshold;
   }
+
+  /// Whether a frame is good enough to count towards completing a challenge.
+  ///
+  /// A frame the anti-spoof model has just called a flat surface is excluded
+  /// here as well as being counted towards the failure, so a screen cannot
+  /// complete a challenge on the frames that are about to fail the attempt. A
+  /// live driver is never excluded: the gate below is only on an outright
+  /// spoof verdict, and a wrong one of those resets the streak rather than
+  /// ending the check.
+  bool _countable(FaceReading reading) => !reading.looksSpoofed;
 
   /// Whether the head is near enough to centre for a challenge to count.
   bool _centred(FaceReading reading) {
@@ -353,11 +486,32 @@ const double kSmileThreshold = 0.6;
 /// puts the phone down mid-check is told rather than left hanging.
 const Duration kChallengeTimeout = Duration(seconds: 12);
 
-/// The fewest mesh points a usable detection has.
+/// The fewest contour points a usable detection has.
 ///
-/// ML Kit's contour model emits 132 points across both faces when contours are
-/// enabled and none at all when they are not. Checking the count is what turns
-/// "the detector was wired up wrong" into one clear failure at the first frame
-/// instead of every driver being asked to turn their head for a model that was
-/// never going to answer.
-const int kMinContourPoints = 100;
+/// MediaPipe's face oval is 36 points and is `null` in fast mode. The threshold
+/// is far below 36 rather than equal to it, because the number is here as
+/// evidence that a mesh was computed at all rather than as a check on a
+/// detector's internals: what matters is that it is not zero. A detector wired
+/// up in fast mode then fails on the first frame with one clear message, instead
+/// of every driver being asked to turn their head for a model that was never
+/// going to answer.
+const int kMinContourPoints = 12;
+
+/// How many consecutive spoof verdicts end the attempt.
+///
+/// Four, out of roughly 36 frames in a check of three challenges. A live driver
+/// is sometimes read wrong -- a hand passing in front of the lens, a window
+/// behind them, motion blur -- and a rule that failed on the first mistake
+/// would be a rule that fails drivers in cars, which is where this runs. A
+/// phone screen does not produce one lucky frame in nine.
+const int kMaxSpoofSamples = 4;
+
+/// How many live verdicts the model must reach before the check can pass.
+///
+/// Eight, out of a check that yields about 36 usable frames. This is the other
+/// half of the arrangement with [kMaxSpoofSamples]: the model has to have
+/// actually looked and agreed, rather than the challenges passing on a handful
+/// of frames where it had nothing to say. When it has not, the outcome is
+/// [LivenessOutcome.livenessUnproven] and the driver is told the check could
+/// not confirm them, which is true, rather than being failed for it.
+const int kMinLiveSamples = 8;

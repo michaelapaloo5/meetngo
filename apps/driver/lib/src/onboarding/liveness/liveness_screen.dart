@@ -9,6 +9,7 @@ import 'package:mng_core/mng_core.dart';
 
 import 'liveness_session.dart';
 import 'liveness_verifier.dart';
+import 'spoof_detector.dart';
 
 /// The face check, run on the phone.
 ///
@@ -83,12 +84,23 @@ class _LivenessScreenState extends State<LivenessScreen> {
       );
       final controller = CameraController(
         front,
-        // A small resolution on purpose. The pose and eye models run on a
-        // downscaled frame anyway, and a 1080p stream on a budget phone costs
-        // so much that the accurate-mode detector starves and the check times
-        // out for reasons that have nothing to do with the driver.
+        // A small resolution on purpose. Every model in this path works on a
+        // heavily downscaled frame -- BlazeFace sees 128x128, the anti-spoof
+        // model sees 80x80 -- and a 1080p stream on a budget phone costs so
+        // much that the detector starves and the check times out for reasons
+        // that have nothing to do with the driver.
         ResolutionPreset.medium,
         enableAudio: false,
+        // NV21 as an explicit choice, which is what it was chosen for when the
+        // only consumer was ML Kit's `InputImage.fromBytes`. That call accepted
+        // only NV21 and YV12, so the camera had to be asked for one of them.
+        //
+        // It is kept because the alternative is worse here: `takePicture` on
+        // Android returns a JPEG either way, and with the format left unset the
+        // plugin's default differs by platform, so a driver on one Android
+        // version would get a YUV still this code cannot decode. Stated rather
+        // than left as a mystery, because the next person to see it will
+        // reasonably assume it is load-bearing for the detector and it is not.
         imageFormatGroup: ImageFormatGroup.nv21,
       );
       await controller.initialize();
@@ -97,6 +109,32 @@ class _LivenessScreenState extends State<LivenessScreen> {
         return;
       }
       _camera = controller;
+
+      // The anti-spoof model is loaded here rather than lazily on the first
+      // frame, so a build that is missing it says so before the driver has
+      // moved their head once. A check that runs to the end and then reports
+      // "we could not confirm" is the worst version of this: the driver did
+      // everything asked and is told at the last moment that the app could
+      // not do its job.
+      final warmup = SpoofDetector();
+      await warmup.load();
+      if (!mounted) {
+        await controller.dispose();
+        await warmup.dispose();
+        return;
+      }
+      if (!warmup.isReady) {
+        await controller.dispose();
+        setState(() {
+          _starting = false;
+          _error =
+              'The face check is not available in this build of the app. '
+              'Please update the app and try again.';
+        });
+        return;
+      }
+      await warmup.dispose();
+
       final session = LivenessSession(
         verifier: LivenessVerifier.random(
           count: _challengeCount,
@@ -136,9 +174,10 @@ class _LivenessScreenState extends State<LivenessScreen> {
 
   @override
   void dispose() {
-    // Disposed rather than left running: an image stream and an ML Kit
-    // detector left alive behind a popped screen is a camera that keeps the
-    // indicator light on after the driver thinks they have stopped.
+    // Disposed rather than left running: a camera and two models left alive
+    // behind a popped screen is a camera that keeps the indicator light on after
+    // the driver thinks they have stopped, and native memory that is not
+    // released until the process dies.
     unawaited(_session?.dispose());
     unawaited(_camera?.dispose());
     super.dispose();
@@ -216,6 +255,12 @@ class _LivenessScreenState extends State<LivenessScreen> {
   ///
   /// Each of these is a different instruction, and the difference is the whole
   /// reason this is a function rather than a single error string.
+  ///
+  /// The two anti-spoof outcomes get the most careful wording, because they are
+  /// the two a driver is most likely to be reading as an accusation:
+  /// [LivenessOutcome.spoofDetected] says what it thought it saw and names the
+  /// alternative, and [LivenessOutcome.livenessUnproven] says the check could
+  /// not decide rather than that it decided against them.
   String? _sentenceFor(LivenessOutcome outcome) => switch (outcome) {
     LivenessOutcome.notYet => null,
     LivenessOutcome.passed => null,
@@ -225,6 +270,20 @@ class _LivenessScreenState extends State<LivenessScreen> {
       'We cannot see your face. Hold the phone in front of you, in the light.',
     LivenessOutcome.timedOut =>
       'That took too long. Tap to try that one again.',
+    // "Something flat" rather than "a photograph", because the model cannot
+    // tell a print from a screen and claiming to would be a claim it cannot
+    // support. Saying so also leaves the driver somewhere to go: glare on a
+    // screen and a shiny photograph both read as flat, and both are the
+    // driver's to fix.
+    LivenessOutcome.spoofDetected =>
+      'That looked like a photograph or a screen, not a face. Hold the phone '
+          'with your own face in it, and try again in better light.',
+    // The honest one. It is not a pass and not an accusation, and it is the
+    // reason a broken build says this rather than quietly letting somebody
+    // through.
+    LivenessOutcome.livenessUnproven =>
+      'We could not check that your face was a real one. Try again in better '
+          'light, with your face filling the circle.',
     LivenessOutcome.gaveUp => 'Something went wrong. Tap to try again.',
   };
 
@@ -331,6 +390,8 @@ class _LivenessScreenState extends State<LivenessScreen> {
       LivenessOutcome.tooManyFaces => 'One face only',
       LivenessOutcome.noFace => 'We cannot see you',
       LivenessOutcome.timedOut => 'Too slow',
+      LivenessOutcome.spoofDetected => 'That looked flat',
+      LivenessOutcome.livenessUnproven => 'Could not confirm',
       LivenessOutcome.gaveUp => 'Something went wrong',
       LivenessOutcome.notYet => switch (v.current) {
         // Arming and performing are the same instruction to a driver. "Hold

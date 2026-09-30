@@ -3,7 +3,6 @@ import 'dart:io';
 
 import 'package:camera/camera.dart';
 import 'package:flutter/foundation.dart';
-import 'package:flutter/services.dart' show PlatformException;
 
 import 'face_reading.dart';
 import 'liveness_detector.dart';
@@ -14,39 +13,44 @@ import 'liveness_verifier.dart';
 /// Everything platform-shaped lives here, so that nothing platform-shaped is in
 /// the decision-making.
 ///
-/// ## How a frame reaches the detector, and why it is this way
+/// ## How a frame reaches the detector
 ///
-/// The obvious route -- a CameraX image stream straight into
-/// `InputImage.fromBytes` -- does not work, and the reasons are worth writing
-/// down because finding them cost several build cycles.
+/// From a still on disk, by way of `takePicture`, at about 3Hz. That is not the
+/// obvious design and the reasons are worth writing down, because the obvious
+/// one cost several build cycles.
 ///
-/// `InputImage.fromBytes` is the only way a live frame reaches ML Kit, and it
-/// is broken in the versions available here. Decompiling `vision-common` shows
-/// `fromByteArray` delegating to `InputImage(ByteBuffer, int, int, int, int)`,
-/// whose format check accepts **only** NV21 (17) and YV12 (842094169).
-/// `YUV_420_888` (35) -- what a camera actually delivers -- falls through to
-/// `Preconditions.checkArgument(false)`, a bare `IllegalArgumentException` with
-/// no message. The community plugin has a `YUV_420_888` branch that hands 35
-/// straight to that constructor, so that format can never work. Two earlier
-/// theories, the rotation and the row stride, were both wrong.
+/// The obvious route is a CameraX image stream straight into a detector, at
+/// 30Hz. It was tried first and does not work, for two separate reasons.
 ///
-/// Asking the camera for NV21 does get a correct frame past that check: one
-/// plane, raw 17, 541,392 bytes for a 720x480 stream. It then fails one layer
-/// deeper with a `NullPointerException` in Google's internal validator, and so
-/// does `fromFilePath`, and so does the `google_mlkit_face_detection` plugin on
-/// both of its versions. R8 is not enabled in this build, and Play services is
-/// present and current, so neither explains it.
+/// The first was ML Kit. `InputImage.fromBytes` is the only way a live frame
+/// reaches it, and it is broken in the versions available here: decompiling
+/// `vision-common` shows `fromByteArray` delegating to
+/// `InputImage(ByteBuffer, int, int, int, int)`, whose format check accepts
+/// **only** NV21 (17) and YV12 (842094169). `YUV_420_888` (35), which is what a
+/// camera actually delivers, falls through to `Preconditions.checkArgument
+/// (false)` -- a bare `IllegalArgumentException` with no message. Asking for
+/// NV21 does get a correct frame past that check, and it then fails one layer
+/// deeper with a `NullPointerException` in Google's own runtime, as does
+/// `fromFilePath`, and as does the plugin on both of its versions, and as does a
+/// thirty-line MethodChannel calling the same native API with the marshalling
+/// removed entirely. That is what ended it: the fault was not in anything the
+/// app passed in.
 ///
-/// That left the plugin as the only layer of the stack that was ours to change,
-/// so it is gone: [LivenessDetector] talks to a thirty-line MethodChannel that
-/// calls the same native API directly. If that throws the same
-/// NullPointerException, the fault is in Google's runtime and not in anything
-/// this app does -- which is worth knowing exactly because it cannot be fixed
-/// from Dart.
+/// ML Kit is gone, so the first reason no longer applies.
 ///
-/// Frames come from `takePicture`, so a sample is a hardware still rather than
-/// a buffer copy, at about 3Hz. Every consequence of that is accounted for in
-/// [start] and in [LivenessChallenge].
+/// The second reason still does, and it is the one that keeps this at 3Hz. Each
+/// still now costs a full JPEG encode, a full decode, a mesh pass and an
+/// anti-spoof pass -- about 8 ms plus about 12 ms, on top of camera latency. The
+/// camera is configured for NV21 for exactly the reason above, and
+/// `face_detection_tflite`'s own `detectFacesFromCameraImage` would take the
+/// YUV stream directly, so streaming is available. It is not used because a
+/// 3Hz sampler is what [LivenessChallenge] and [LivenessVerifier] are built and
+/// tested against, and 30Hz would change the meaning of every threshold in
+/// there. Changing the sample rate is a deliberate decision with its own tests,
+/// not something to arrive at by accident while replacing a camera library.
+///
+/// Every consequence of 3Hz is accounted for in [start] and in
+/// [liveCapableChallenges].
 class LivenessSession {
   LivenessSession({required this.verifier, LivenessDetector? detector})
     : _detector = detector ?? LivenessDetector();
@@ -132,27 +136,24 @@ class LivenessSession {
     try {
       final xFile = await controller.takePicture();
       shot = File(xFile.path);
-      final reading = await _detector.detect(shot.path, at: DateTime.now());
+      // One read of the still, two readings out of it: the mesh and the
+      // anti-spoof score are computed from the same bytes. Asking the detector
+      // twice would mean two decodes of the same file and two chances for the
+      // driver to move between the two judgements, which is a check deciding
+      // whether a face was real at two different instants.
+      final detection = await _detector.detect(shot.path, at: DateTime.now());
       if (_disposed) return;
       // Cleared on the first still that reads. Left set, one dropped frame
       // during a check would show a red message for the rest of it, and a
       // driver who reads that has stopped trying.
-      error = null;
-      verifier.observe(reading);
+      error = _detector.error;
+      verifier.observe(detection.face.withSpoof(detection.spoof.score));
       if (verifier.outcome == LivenessOutcome.passed && proofFrame == null) {
         // Kept rather than deleted: the upload needs it, and the verdict is
         // about this instant and no other.
         proofFrame = shot;
         shot = null;
       }
-    } on PlatformException catch (e) {
-      // The native side sets the code, so the sentence can be specific. A
-      // driver told to "check your connection" when the detector is broken is a
-      // driver who checks their Wi-Fi five times and then gives up on the app.
-      error = LivenessDetector.messageFor(e);
-      debugPrint(
-        'liveness: detector refused the frame: ${e.code} ${e.message}',
-      );
     } on Object catch (e, st) {
       error = 'The camera could not be read. Try again.';
       // Logged, not gated on `kDebugMode`: gating it on that looked tidy and
@@ -171,7 +172,7 @@ class LivenessSession {
     }
   }
 
-  /// The camera rotation, for ML Kit.
+  /// The camera rotation, for the overlay and for any coordinate mapping.
   ///
   /// `sensorOrientation` is the sensor's angle and the device rotation is how
   /// far the phone has been turned since; they compose. The front camera's

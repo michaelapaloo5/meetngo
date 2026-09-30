@@ -69,7 +69,34 @@ dependencies:
   # `maplibre_gl`, which re-exports the same `latlong2` type.
   maplibre_gl: ^0.27.1
   camera: ^0.12.1
-  google_mlkit_face_detection: 0.15.1
+
+  # Face detection for the liveness check, and the anti-spoof model itself.
+  #
+  # This replaced `google_mlkit_face_detection`, which is not a preference.
+  # `detector.processImage` threw a NullPointerException out of Google's own
+  # pre-obfuscated runtime on every single frame on the test phone: through the
+  # plugin on two versions, through both of its input paths, and through a
+  # thirty-line MethodChannel calling the same native API directly. The throw
+  # was one layer below `InputImage`, in code no caller controls. So the check
+  # could not run, and a required check that cannot run blocks every driver.
+  #
+  # `face_detection_tflite` is MediaPipe's models on LiteRT, Apache 2.0, bundled
+  # in the APK, with no model download and no network. It is documented as
+  # ML Kit compatible and its sign conventions match, which is why
+  # `LivenessVerifier` needed no change at all: the same
+  # `headEulerAngleX/Y/Z`, the same smile and per-eye open probabilities, the
+  # same named contours. It is also about 5.5x faster than ML Kit, and it runs
+  # on a background isolate, so the live preview keeps moving.
+  face_detection_tflite: ^6.10.1
+  # The LiteRT runtime behind it, named explicitly because the liveness code
+  # loads the anti-spoof model through the interpreter API directly. Both
+  # packages are by the same publisher and this is a transitive dependency of
+  # the other; it is here so the intent is visible rather than implied.
+  flutter_litert: ^3.9.3
+  # JPEG decode, for cropping the face region the anti-spoof model needs.
+  # `face_detection_tflite` brings OpenCV, but reaching into its internals for
+  # a decode is worse than using the one package whose whole job is decoding.
+  image: ^4.5.4
 
 dev_dependencies:
   flutter_test:
@@ -98,11 +125,20 @@ flutter:
   #   - images/a_dot_burr.jpeg
   #   - images/a_dot_ham.jpeg
 
-  # An image asset can refer to one or more resolution-specific "variants", see
-  # https://flutter.dev/to/resolution-aware-images
-
-  # For details regarding adding assets from package dependencies, see
-  # https://flutter.dev/to/asset-from-package
+  # The anti-spoof model. 1.85 MB, and the single largest asset in the app.
+  #
+  # MiniFASNet, from minivision-ai/Silent-Face-Anti-Spoofing, Apache 2.0, which
+  # is a licence that permits commercial use and is why this is in a pilot that
+  # cannot afford a vendor's per-check fee. It is the whole anti-spoofing half
+  # of the face check: a small convolutional network that takes an 80x80 crop of
+  # a face and says whether it is a live person or a printed photograph or a
+  # phone screen.
+  #
+  # Bundled rather than fetched, for the same reason the map style is: a driver
+  # in a vehicle on a bad connection gets a check that cannot start, and the
+  # place that happens is exactly where the check is most needed.
+  assets:
+    - assets/models/
 
   # To add custom fonts to your application, add a fonts section here,
   # in this "flutter" section. Each entry in this list should have a

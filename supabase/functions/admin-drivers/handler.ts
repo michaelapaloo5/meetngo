@@ -80,19 +80,30 @@ export interface DriverDocumentRow {
  * list that silently drifts from the constraint would let an admin approve a
  * driver who sent a document the database would not even accept.
  *
- * `livenessFrame` is deliberately NOT here, and that is a temporary decision
- * rather than a view about whether liveness matters. The face check's detector
- * cannot currently read a frame on this build -- ML Kit throws a
- * NullPointerException out of its own runtime on every frame -- and the frame is
- * the one item an admin could compare against the licence photograph. Requiring
- * it would block every driver at the last step of onboarding over something
- * nobody can act on.
+ * `livenessFrame` is deliberately NOT here, and the reason is a fact about the
+ * app's history rather than a view about whether liveness matters.
  *
- * It is still in [ALL_DOCUMENTS], so the page still shows a row for it, still
- * says when it is missing, and still displays the frame when there is one.
- * Optional for approval, visible to the reviewer -- hiding it would hide the
- * one photograph from the only person who could judge it. When the detector
- * works, this becomes `[...REQUIRED_DOCUMENTS, 'livenessFrame']`.
+ * The face check was required until ML Kit proved unusable on the test phone:
+ * `detector.processImage` threw a NullPointerException out of Google's own
+ * runtime on every frame, through the community plugin on two versions and
+ * through a MethodChannel calling the same native API directly. A required
+ * check that cannot run blocks every driver at the last step of onboarding over
+ * something they cannot act on, so it was made optional rather than left as a
+ * wall.
+ *
+ * It has since been rebuilt on MediaPipe plus MiniFASNet, both Apache 2.0 and
+ * both on-device, and it is covered by tests. It is not required *here* yet
+ * because it has not been run on a real phone. Being precise about what that
+ * costs: an admin approving a driver who skipped it is approving on the six
+ * photographs plus their own comparison of the profile picture against the
+ * licence, and the face check frame is the one extra photograph they could
+ * have compared.
+ *
+ * It is still in [ALL_DOCUMENTS], so the page shows a row for it, says when it
+ * is missing, and displays the frame when there is one. Optional for approval,
+ * visible to the reviewer -- hiding it would hide the one photograph from the
+ * only person who could judge it. Once the check has been seen working on a
+ * phone, this becomes `[...REQUIRED_DOCUMENTS, 'livenessFrame']`.
  */
 export const REQUIRED_DOCUMENTS: readonly string[] = [
   'profilePhoto',
