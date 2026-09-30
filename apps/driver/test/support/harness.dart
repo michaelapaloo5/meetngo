@@ -45,11 +45,11 @@ void useDesignSurface(WidgetTester tester) {
 /// builder is not constant, and `MngTheme.light` is a `static final` getter
 /// rather than a constant anyway.
 Widget appHarness(Widget child, {Key? key}) => ScreenUtilInit(
-      designSize: const Size(390, 844),
-      minTextAdapt: true,
-      builder: (_, _) => MaterialApp(theme: MngTheme.light, home: child),
-      key: key,
-    );
+  designSize: const Size(390, 844),
+  minTextAdapt: true,
+  builder: (_, _) => MaterialApp(theme: MngTheme.light, home: child),
+  key: key,
+);
 
 /// A profile the tests can vary one field of at a time.
 DriverProfile driverProfile({
@@ -58,17 +58,16 @@ DriverProfile driverProfile({
   KycStatus kyc = KycStatus.approved,
   DriverAvailability availability = DriverAvailability.offline,
   String? vehicleId = 'v1',
-}) =>
-    DriverProfile(
-      id: id,
-      fullName: fullName,
-      phone: '+233200000000',
-      rating: 4.9,
-      tripCount: 12,
-      kyc: kyc,
-      availability: availability,
-      vehicleId: vehicleId,
-    );
+}) => DriverProfile(
+  id: id,
+  fullName: fullName,
+  phone: '+233200000000',
+  rating: 4.9,
+  tripCount: 12,
+  kyc: kyc,
+  availability: availability,
+  vehicleId: vehicleId,
+);
 
 /// A trip with a label and an address on each stop, and the two set to
 /// different strings.
@@ -86,55 +85,58 @@ Trip tripIn(
   String dropoffLabel = 'Airport Residential',
   String dropoffAddress = 'Airport Residential, Accra',
   double fareGhs = 12.50,
-}) =>
-    Trip(
-      id: id,
-      riderId: 'r1',
-      driverId: 'd1',
-      category: RideCategory.standard,
-      state: state,
-      pickup: TripStop(pickupLabel, const GeoPoint(5.6037, -0.1870), pickupAddress),
-      dropoff: TripStop(
-        dropoffLabel,
-        const GeoPoint(5.6200, -0.1870),
-        dropoffAddress,
-      ),
-      distanceKm: 2.02,
-      fareGhs: fareGhs,
-      isDemo: true,
-    );
+}) => Trip(
+  id: id,
+  riderId: 'r1',
+  driverId: 'd1',
+  category: RideCategory.standard,
+  state: state,
+  pickup: TripStop(pickupLabel, const GeoPoint(5.6037, -0.1870), pickupAddress),
+  dropoff: TripStop(
+    dropoffLabel,
+    const GeoPoint(5.6200, -0.1870),
+    dropoffAddress,
+  ),
+  distanceKm: 2.02,
+  fareGhs: fareGhs,
+  isDemo: true,
+);
 
 Offer offer(
   String id, {
-  Duration ttl = const Duration(seconds: 20),
+  // Defaults to the real TTL rather than a number chosen here. It used to be
+  // `Duration(seconds: 20)`, which matched the product when the product's TTL was
+  // 20 seconds and silently stopped matching when it became 5 minutes -- so
+  // every test using this default was exercising a fixture the app can no longer
+  // produce. Deriving it from `kOfferTtl` means the fixture and the product move
+  // together, and a test that wants a specific window passes one.
+  Duration ttl = kOfferTtl,
   OfferState state = OfferState.pending,
   String tripId = 't1',
   double fareGhs = 12.50,
   double pickupDistanceKm = 0.8,
-}) =>
-    Offer(
-      id: id,
-      tripId: tripId,
-      driverId: 'd1',
-      fareGhs: fareGhs,
-      pickupDistanceKm: pickupDistanceKm,
-      expiresAt: DateTime.now().add(ttl),
-      state: state,
-    );
+}) => Offer(
+  id: id,
+  tripId: tripId,
+  driverId: 'd1',
+  fareGhs: fareGhs,
+  pickupDistanceKm: pickupDistanceKm,
+  expiresAt: DateTime.now().add(ttl),
+  state: state,
+);
 
 LedgerEntry ledgerEntry(
   String id,
   String kind,
   double amount, {
   DateTime? createdAt,
-}) =>
-    LedgerEntry(
-      id: id,
-      kind: kind,
-      amountGhs: amount,
-      note: '',
-      createdAt: createdAt ?? DateTime(2026, 9, 27),
-    );
+}) => LedgerEntry(
+  id: id,
+  kind: kind,
+  amountGhs: amount,
+  note: '',
+  createdAt: createdAt ?? DateTime(2026, 9, 27),
+);
 
 /// A trip history row with both timestamps filled in.
 ///
@@ -172,16 +174,14 @@ Vehicle driverVehicle({
   String model = 'Corolla',
   String plate = 'GR-1234-25',
   int seats = 4,
-}) =>
-    Vehicle(
-      id: 'v1',
-      ownerId: 'd1',
-      category: VehicleCategory.sedan,
-      make: make,
-      model: model,
-      plate: plate,
-      seats: seats,
-      photoUrl: '',
-      rideCategory: RideCategory.standard,
-    );
-
+}) => Vehicle(
+  id: 'v1',
+  ownerId: 'd1',
+  category: VehicleCategory.sedan,
+  make: make,
+  model: model,
+  plate: plate,
+  seats: seats,
+  photoUrl: '',
+  rideCategory: RideCategory.standard,
+);

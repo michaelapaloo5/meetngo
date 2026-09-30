@@ -5,11 +5,16 @@ import '../data/driver_repository.dart';
 
 /// The driver's offer queue, newest first.
 ///
-/// The 20-second TTL is `kOfferTtl` in `mng_core` and is not configurable
-/// anywhere. [tick] is what enforces it on screen: the server's own sweeper
-/// does not exist, so an offer whose `expires_at` has passed is still
+/// The TTL is `kOfferTtl` in `mng_core` -- five minutes -- and is not
+/// configurable anywhere. [tick] is what enforces it on screen: the server's own
+/// sweeper does not exist, so an offer whose `expires_at` has passed is still
 /// `pending` in the database until somebody acts on it, and the only somebody
 /// here is this list.
+///
+/// That means this list, and only this list, decides what a driver can see. The
+/// server is the authority on whether an offer can still be *accepted* --
+/// `accept_offer` refuses one whose trip is no longer awaiting a driver -- so a
+/// stale card here is a card that fails on tap, not a double booking.
 class OfferQueueController extends ChangeNotifier {
   OfferQueueController(this._repo);
 

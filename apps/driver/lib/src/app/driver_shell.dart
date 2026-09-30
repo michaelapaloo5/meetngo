@@ -29,8 +29,14 @@ import 'driver_flow.dart';
 ///
 /// Two timers, both owned here rather than by a screen, so a screen can be
 /// rendered in a test without leaving a pending timer behind:
-///  * a one-second tick that expires the offer queue, because the 20-second TTL
-///    is enforced on screen and nowhere else -- no sweeper exists in the tree;
+///  * a one-second tick over the offer queue, which does two jobs. It enforces
+///    the TTL on screen, because no sweeper exists in the tree, and it re-renders
+///    the countdown on the offer card. The second job is the reason the timer
+///    stays at one second rather than going to five alongside the TTL: with a
+///    five-minute offer and a thirty-second tick, the card would read "300s" for
+///    half a minute and then jump, and a countdown that lies about being live is
+///    worse than no countdown. One wake-up a second to keep one number honest is
+///    not the cost that mattered;
 ///  * a three-second poll of the live trip, because `accept_offer` matches the
 ///    trip under a lock on another device's call, and the only way this driver
 ///    learns about it is by asking again.

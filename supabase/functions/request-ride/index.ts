@@ -7,7 +7,32 @@ import { MAX_OFFERS, pickDrivers } from './match.ts';
 import { pickupOtp } from './otp.ts';
 import { isFiniteNumber, parseRideRequest, type Pin } from './request.ts';
 
-const OFFER_TTL_SECONDS = 20;
+// How long an offer stays live.
+//
+// This was 20 seconds, and it was the single most damaging number in the
+// product. A driver has to notice a notification, read a destination they have
+// never heard of, decide whether the fare is worth the drive, and tap accept. In
+// Accra, with the phone in a pocket and traffic at a standstill, that is not
+// twenty seconds -- it is one to three minutes. Every driver slower than the
+// timer lost the ride to a faster one, and since the driver who *is* nearby
+// always wins the race, the practical effect was that the nearest driver got
+// every offer and everyone else got none. A driver's phone is also frequently
+// on a slow network; the offer arrives, the screen renders, and the row is
+// already past its deadline.
+//
+// Five minutes. Long enough to read the destination and think about it, short
+// enough that a trip nobody wanted does not sit in the offer queue of every
+// driver in the city, and long enough that the release that happens on the
+// other driver's acceptance (migration `release_sibling_offers`) is what ends
+// most offers rather than this clock.
+//
+// What expiry is still FOR, and this is the reason it is not infinite: a driver
+// who is offered a trip and looks away for six minutes should not come back to
+// a pickup that is no longer happening. The trip's own state is the real
+// authority -- `accept_offer` refuses an offer whose trip is no longer
+// awaiting a driver -- so a long TTL cannot produce a double booking. It only
+// decides how long a stale card sits on a phone.
+const OFFER_TTL_SECONDS = 300;
 
 const json = (status: number, payload: Record<string, unknown>) =>
   new Response(JSON.stringify(payload), {

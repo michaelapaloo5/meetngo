@@ -44,25 +44,30 @@ void main() {
     expect(c.offers, isEmpty);
   });
 
-  test('accepting asks the server about the exact offer that was shown', () async {
-    final c = OfferQueueController(repo)
-      ..add(offer('a'))
-      ..add(offer('b'));
-    await c.accept(c.next!);
-    expect(repo.acceptedOfferIds, ['b']);
-  });
+  test(
+    'accepting asks the server about the exact offer that was shown',
+    () async {
+      final c = OfferQueueController(repo)
+        ..add(offer('a'))
+        ..add(offer('b'));
+      await c.accept(c.next!);
+      expect(repo.acceptedOfferIds, ['b']);
+    },
+  );
 
   // A lost race is the ordinary outcome of five drivers and one trip, and the
   // offer may still be live -- the loss can be a transport fault. Dropping it
   // hides a trip the driver can still take.
-  test('a losing accept returns false and keeps the offer for a retry',
-      () async {
-    repo.acceptLoses = true;
-    final c = OfferQueueController(repo)..add(offer('a'));
-    expect(await c.accept(c.next!), isFalse);
-    expect(c.error, isNotNull);
-    expect(c.offers.map((o) => o.id), ['a']);
-  });
+  test(
+    'a losing accept returns false and keeps the offer for a retry',
+    () async {
+      repo.acceptLoses = true;
+      final c = OfferQueueController(repo)..add(offer('a'));
+      expect(await c.accept(c.next!), isFalse);
+      expect(c.error, isNotNull);
+      expect(c.offers.map((o) => o.id), ['a']);
+    },
+  );
 
   test('the refusal reason from the server reaches the driver', () async {
     repo.acceptLoses = true;
@@ -90,7 +95,7 @@ void main() {
     expect(c.error, isNotNull);
   });
 
-  // The 20-second TTL is `kOfferTtl` in `mng_core` and is not configurable. The
+  // The TTL is `kOfferTtl` in `mng_core` and is not configurable. The
   // server has no sweeper, so an offer past `expires_at` is still `pending` in
   // the database until somebody acts on it.
   test('tick drops expired offers and keeps live ones', () {
@@ -120,10 +125,16 @@ void main() {
 
   // The TTL is a constant in `mng_core` and nothing in this app can change it.
   // `secondsRemaining` truncates rather than rounds, so a freshly built offer
-  // reads 19 or 20 depending on where in the second the assertion lands; what
+  // reads 299 or 300 depending on where in the second the assertion lands; what
   // is pinned here is the boundary, not the reading of a moving clock.
-  test('the TTL really is 20 seconds and is not configurable', () {
-    expect(kOfferTtl, const Duration(seconds: 20));
+  //
+  // It was 20 seconds, which is not enough time to read an unfamiliar
+  // destination, judge a fare and tap accept with the phone in a pocket. The
+  // value is asserted exactly rather than "greater than some threshold" so that
+  // changing it is a deliberate act in a diff rather than something a product
+  // decision slipped in through.
+  test('the TTL is five minutes and is not configurable', () {
+    expect(kOfferTtl, const Duration(seconds: 300));
     expect(offer('a').isExpired, isFalse);
     expect(
       offer('a', ttl: kOfferTtl - const Duration(milliseconds: 1)).isExpired,
@@ -166,23 +177,44 @@ void main() {
     );
   });
 
-  testWidgets('the card shows a whole-number countdown, never a decimal',
-      (tester) async {
+  testWidgets('the card shows a whole-number countdown, never a decimal', (
+    tester,
+  ) async {
     useDesignSurface(tester);
-    await tester.pumpWidget(appHarness(
-      Scaffold(body: OfferCard(offer: offer('a'), onAccept: () {}, onDecline: () {})),
-    ));
+    await tester.pumpWidget(
+      appHarness(
+        Scaffold(
+          body: OfferCard(offer: offer('a'), onAccept: () {}, onDecline: () {}),
+        ),
+      ),
+    );
     // Which second the first frame lands in is not pinnable -- building the
     // first frame of a test can take most of a second of real time, and the
     // value is a live reading of a clock that does not stop for tests. What is
     // pinned is the shape, the range, and that it is strictly under the TTL.
+    //
+    // The bounds are derived from `kOfferTtl` rather than written as 20 and 10.
+    // They were literals, so when the TTL went from 20 seconds to 5 minutes the
+    // countdown rendered "300s" and the two-digit pattern below rejected it --
+    // which is a real signal that the card and the TTL disagree, but the failure
+    // text said "expected a 1-2 digit number" rather than anything about the
+    // offer, and the fix somebody would reach for is loosening the regex.
     final pill = tester
         .widgetList<Text>(find.byType(Text))
         .map((t) => t.data ?? '')
         .firstWhere((s) => s.endsWith('s'));
-    expect(pill, matches(RegExp(r'^\d{1,2}s$')));
-    expect(int.parse(pill.substring(0, pill.length - 1)), lessThan(20));
-    expect(int.parse(pill.substring(0, pill.length - 1)), greaterThan(10));
+    final ttlSeconds = kOfferTtl.inSeconds;
+    expect(pill, matches(RegExp('^\\d{1,${ttlSeconds.toString().length}}s\$')));
+    final shown = int.parse(pill.substring(0, pill.length - 1));
+    expect(
+      shown,
+      lessThanOrEqualTo(ttlSeconds),
+      reason: 'a countdown cannot exceed the window it counts down',
+    );
+    // Comfortably inside it, so a card stuck at the TTL still passes the shape
+    // check: a whole second of slack is a generous allowance for a slow first
+    // frame and a narrow one for a countdown that never moved.
+    expect(shown, greaterThan(ttlSeconds - 30));
   });
 
   test('clear empties the queue', () {
@@ -198,12 +230,17 @@ void main() {
     expect(() => c.offers.add(offer('b')), throwsUnsupportedError);
   });
 
-  testWidgets('the card shows the fare, the distance and the countdown',
-      (tester) async {
+  testWidgets('the card shows the fare, the distance and the countdown', (
+    tester,
+  ) async {
     useDesignSurface(tester);
-    await tester.pumpWidget(appHarness(
-      Scaffold(body: OfferCard(offer: offer('a'), onAccept: () {}, onDecline: () {})),
-    ));
+    await tester.pumpWidget(
+      appHarness(
+        Scaffold(
+          body: OfferCard(offer: offer('a'), onAccept: () {}, onDecline: () {}),
+        ),
+      ),
+    );
     expect(find.textContaining('GHS 12.50'), findsOneWidget);
     expect(find.textContaining('800 m'), findsOneWidget);
     expect(find.byKey(const Key('acceptOfferButton')), findsOneWidget);
@@ -213,15 +250,17 @@ void main() {
 
   testWidgets('an expired card cannot be accepted', (tester) async {
     useDesignSurface(tester);
-    await tester.pumpWidget(appHarness(
-      Scaffold(
-        body: OfferCard(
-          offer: offer('a', ttl: const Duration(seconds: -1)),
-          onAccept: () {},
-          onDecline: () {},
+    await tester.pumpWidget(
+      appHarness(
+        Scaffold(
+          body: OfferCard(
+            offer: offer('a', ttl: const Duration(seconds: -1)),
+            onAccept: () {},
+            onDecline: () {},
+          ),
         ),
       ),
-    ));
+    );
     final button = tester.widget<FilledButton>(
       find.byKey(const Key('acceptOfferButton')),
     );
@@ -232,15 +271,17 @@ void main() {
   testWidgets('a declined offer can still be declined', (tester) async {
     useDesignSurface(tester);
     var declined = 0;
-    await tester.pumpWidget(appHarness(
-      Scaffold(
-        body: OfferCard(
-          offer: offer('a', ttl: const Duration(seconds: -1)),
-          onAccept: () {},
-          onDecline: () => declined++,
+    await tester.pumpWidget(
+      appHarness(
+        Scaffold(
+          body: OfferCard(
+            offer: offer('a', ttl: const Duration(seconds: -1)),
+            onAccept: () {},
+            onDecline: () => declined++,
+          ),
         ),
       ),
-    ));
+    );
     await tester.tap(find.byKey(const Key('declineOfferButton')));
     expect(declined, 1);
   });
@@ -249,41 +290,54 @@ void main() {
     useDesignSurface(tester);
     var accepted = 0;
     var declined = 0;
-    await tester.pumpWidget(appHarness(
-      Scaffold(
-        body: OfferCard(
-          offer: offer('a'),
-          onAccept: () => accepted++,
-          onDecline: () => declined++,
+    await tester.pumpWidget(
+      appHarness(
+        Scaffold(
+          body: OfferCard(
+            offer: offer('a'),
+            onAccept: () => accepted++,
+            onDecline: () => declined++,
+          ),
         ),
       ),
-    ));
+    );
     await tester.tap(find.byKey(const Key('acceptOfferButton')));
     await tester.tap(find.byKey(const Key('declineOfferButton')));
     expect(accepted, 1);
     expect(declined, 1);
   });
 
-  testWidgets('the distance is rounded to whole metres, not truncated',
-      (tester) async {
+  testWidgets('the distance is rounded to whole metres, not truncated', (
+    tester,
+  ) async {
     useDesignSurface(tester);
-    await tester.pumpWidget(appHarness(
-      Scaffold(
-        body: OfferCard(
-          offer: offer('a', pickupDistanceKm: 0.8006),
-          onAccept: () {},
-          onDecline: () {},
+    await tester.pumpWidget(
+      appHarness(
+        Scaffold(
+          body: OfferCard(
+            offer: offer('a', pickupDistanceKm: 0.8006),
+            onAccept: () {},
+            onDecline: () {},
+          ),
         ),
       ),
-    ));
+    );
     expect(find.textContaining('801 m'), findsOneWidget);
   });
 
   testWidgets('the card is keyed by the offer id', (tester) async {
     useDesignSurface(tester);
-    await tester.pumpWidget(appHarness(
-      Scaffold(body: OfferCard(offer: offer('xyz-1'), onAccept: () {}, onDecline: () {})),
-    ));
+    await tester.pumpWidget(
+      appHarness(
+        Scaffold(
+          body: OfferCard(
+            offer: offer('xyz-1'),
+            onAccept: () {},
+            onDecline: () {},
+          ),
+        ),
+      ),
+    );
     expect(find.byKey(const Key('offer-xyz-1')), findsOneWidget);
   });
 }

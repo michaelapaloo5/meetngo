@@ -96,13 +96,13 @@ void main() {
 
   group('Offer', () {
     Offer build(Duration ttl) => Offer(
-          id: 'o1',
-          tripId: 't1',
-          driverId: 'd1',
-          fareGhs: 12.50,
-          pickupDistanceKm: 0.8,
-          expiresAt: DateTime.now().add(ttl),
-        );
+      id: 'o1',
+      tripId: 't1',
+      driverId: 'd1',
+      fareGhs: 12.50,
+      pickupDistanceKm: 0.8,
+      expiresAt: DateTime.now().add(ttl),
+    );
 
     test('pending offer is not expired while ttl remains', () {
       expect(build(kOfferTtl).isExpired, isFalse);
@@ -116,13 +116,23 @@ void main() {
       expect(build(const Duration(minutes: -5)).secondsRemaining, 0);
     });
 
-    test('ttl is the hard-coded 20 seconds', () {
-      expect(kOfferTtl, const Duration(seconds: 20));
+    // Five minutes, not the 20 seconds this used to assert. 20 seconds is not
+    // enough to read an unfamiliar destination, decide whether the fare covers
+    // the drive, and tap accept -- and because the nearest driver is always the
+    // fastest to react, a short TTL quietly gave every offer to the same
+    // driver. The twin of this assertion is `OFFER_TTL_SECONDS` in
+    // `supabase/functions/request-ride/index.ts`; the two must agree or a card
+    // claims one thing and the server does another.
+    test('ttl is the hard-coded five minutes', () {
+      expect(kOfferTtl, const Duration(seconds: 300));
     });
 
     test('copyWith moves the offer to released', () {
       final offer = build(kOfferTtl);
-      expect(offer.copyWith(state: OfferState.released).state, OfferState.released);
+      expect(
+        offer.copyWith(state: OfferState.released).state,
+        OfferState.released,
+      );
       expect(offer.state, OfferState.pending);
     });
   });
@@ -131,17 +141,16 @@ void main() {
     DriverProfile build({
       KycStatus kyc = KycStatus.approved,
       DriverAvailability availability = DriverAvailability.online,
-    }) =>
-        DriverProfile(
-          id: 'd1',
-          fullName: 'Jane Cooper',
-          phone: '0240000000',
-          photoUrl: '',
-          rating: 4.8,
-          tripCount: 148,
-          kyc: kyc,
-          availability: availability,
-        );
+    }) => DriverProfile(
+      id: 'd1',
+      fullName: 'Jane Cooper',
+      phone: '0240000000',
+      photoUrl: '',
+      rating: 4.8,
+      tripCount: 148,
+      kyc: kyc,
+      availability: availability,
+    );
 
     test('approved online driver can accept offers', () {
       expect(build().isApproved, isTrue);
