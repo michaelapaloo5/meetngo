@@ -168,6 +168,7 @@ class SupabaseDriverRepository implements DriverRepository {
     String sex = '',
     String nationality = '',
     String issued = '',
+    String phone = '',
   }) async {
     final uid = _uid;
     final digits = cardNumber.replaceAll(RegExp(r'[^0-9]'), '');
@@ -191,6 +192,22 @@ class SupabaseDriverRepository implements DriverRepository {
             'ghana_card_issued': issued.trim(),
             'ghana_card_expiry': expiry,
             'full_name': fullName,
+            // Normalised on the way in, so the column never holds `024 123 4567`
+            // for one driver and `+233 24 123 4567` for another. Written here
+            // rather than in the controller because this is the last point
+            // before the database and every other writer of `profiles.phone` has
+            // to go through the same rule -- `DriverRepository` is the only
+            // writer of this table from the driver app, so it is the right place
+            // for it.
+            //
+            // An empty or unparseable value is written as the empty string
+            // rather than as null. The column is `not null default ''`, and a
+            // driver who reaches this call without a phone -- which is every
+            // driver on a build from before the field existed -- should keep the
+            // value they already have rather than have it cleared.
+            'phone': phone.trim().isEmpty
+                ? null
+                : (normaliseGhanaPhone(phone) ?? ''),
           })
           .eq('id', uid)
           .select('id')

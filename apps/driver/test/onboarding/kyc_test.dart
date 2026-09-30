@@ -186,10 +186,81 @@ void main() {
       expect(c.canAdvance, isFalse);
     });
 
-    test('advances once the identity name is set', () {
+    // The phone is part of the same step and part of the same gate. These are
+    // the cases that say so, and they are the ones that would have caught the
+    // phone being collected on a screen nobody reaches while the Continue button
+    // below it stayed lit.
+    test('a name alone is not enough: the phone is on the same gate', () {
       final c = KycController(StubDriverRepository())
         ..step = KycStep.identity
         ..fullName = 'Jane Cooper';
+      expect(
+        c.canAdvance,
+        isFalse,
+        reason: 'a driver with a name and no phone cannot be called by a rider',
+      );
+    });
+
+    test('a half-typed phone does not open the gate', () {
+      final c = KycController(StubDriverRepository())
+        ..step = KycStep.identity
+        ..fullName = 'Jane Cooper'
+        ..phone = '024123';
+      expect(c.phoneComplete, isFalse);
+      expect(c.canAdvance, isFalse);
+    });
+
+    test('a phone with an impossible prefix does not open the gate', () {
+      final c = KycController(StubDriverRepository())
+        ..step = KycStep.identity
+        ..fullName = 'Jane Cooper'
+        ..phone = '0191234567';
+      expect(c.phoneComplete, isFalse);
+      expect(c.canAdvance, isFalse);
+    });
+
+    test('a phone in any of the four spellings opens the gate', () {
+      for (final typed in [
+        '0241234567',
+        '024 123 4567',
+        '+233 24 123 4567',
+        '0024 123 4567',
+      ]) {
+        final c = KycController(StubDriverRepository())
+          ..step = KycStep.identity
+          ..fullName = 'Jane Cooper'
+          ..phone = typed;
+        expect(c.phoneComplete, isTrue, reason: typed);
+        expect(c.canAdvance, isTrue, reason: typed);
+      }
+    });
+
+    test('the problem is explained rather than the button just staying grey', () {
+      final c = KycController(StubDriverRepository())..step = KycStep.identity;
+      // Three different messages for three different states, and all three
+      // asserted. The first version of this asked an *empty* field for an
+      // example number, which is a message for a malformed number, not for an
+      // unanswered one -- so the test was asserting that the field tells a
+      // driver who has typed nothing what a correct number looks like.
+      expect(c.phoneProblem, isNotNull);
+      expect(c.phoneProblem, contains('reach you'),
+          reason: 'an empty field is unanswered, not malformed');
+      c.phone = '024123';
+      expect(c.phoneProblem, contains('0241234567'),
+          reason: 'a part-typed number should say what a complete one looks like');
+      c.phone = '0191234567';
+      expect(c.phoneProblem, contains('020'),
+          reason: 'ten digits with an impossible prefix should say so, rather than '
+              'asking a driver who just typed ten digits to type ten digits');
+      c.phone = '0241234567';
+      expect(c.phoneProblem, isNull);
+    });
+
+    test('advances once the identity name and phone are set', () {
+      final c = KycController(StubDriverRepository())
+        ..step = KycStep.identity
+        ..fullName = 'Jane Cooper'
+        ..phone = '024 123 4567';
       expect(c.canAdvance, isTrue);
     });
 
@@ -203,6 +274,14 @@ void main() {
       c.addListener(() => notifications++);
       c.fullName = 'Jane Cooper';
       expect(notifications, 1);
+      // It used to assert `canAdvance` on the name alone. It cannot any more,
+      // and that is the point rather than a problem: the identity step now also
+      // collects a phone, and a driver with a name and no number cannot be
+      // reached by a rider. What this test is about is the *wake-up* -- the bug
+      // it was written for was a plain field with no `notifyListeners` -- so it
+      // sets both fields and checks the button comes alive. Whether a name
+      // alone opens the gate is covered by the cases either side of this one.
+      c.phone = '0241234567';
       expect(c.canAdvance, isTrue);
     });
 
@@ -446,21 +525,40 @@ void main() {
       expect(find.byKey(const Key('kycNextButton')), findsOneWidget);
     });
 
-    testWidgets('typing a name enables Continue', (tester) async {
+    testWidgets('a name and a phone enable Continue; either alone does not',
+        (tester) async {
       useDesignSurface(tester);
       final c = KycController(StubDriverRepository())..step = KycStep.identity;
       await tester.pumpWidget(wrap(c));
+
+      FilledButton button() => tester.widget<FilledButton>(
+            find.byKey(const Key('kycNextButton')),
+          );
+
+      // The identity step collects a phone as well as a name, and the gate is
+      // both of them. The button has to be grey with only one of them, and wake
+      // with both. Asserting only the final state would have passed while the
+      // phone field was not connected to the controller at all, which is the bug
+      // worth catching here.
+      expect(button().onPressed, isNull, reason: 'nothing entered yet');
 
       await tester.enterText(
         find.byKey(const Key('fullNameField')),
         'Jane Cooper',
       );
       await tester.pumpAndSettle();
-
-      final button = tester.widget<FilledButton>(
-        find.byKey(const Key('kycNextButton')),
+      expect(
+        button().onPressed,
+        isNull,
+        reason: 'a name with no phone is not enough to continue',
       );
-      expect(button.onPressed, isNotNull);
+
+      await tester.enterText(
+        find.byKey(const Key('phoneField')),
+        '024 123 4567',
+      );
+      await tester.pumpAndSettle();
+      expect(button().onPressed, isNotNull);
     });
 
     testWidgets('the card step renders the three fields and next button', (
@@ -769,6 +867,7 @@ class _FailingDriverRepository extends StubDriverRepository {
     String sex = '',
     String nationality = '',
     String issued = '',
+    String phone = '',
   }) async {
     throw const DriverAuthFailure('Upload failed, try again');
   }

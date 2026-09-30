@@ -317,12 +317,48 @@ class _KycScreenState extends State<KycScreen> {
           children: [
             TextField(
               key: const Key('fullNameField'),
+              // Seeded from the controller rather than left empty, so a driver
+              // who backs out of a later step and returns sees what they already
+              // typed instead of an empty field they have to retype. The same
+              // reason the card fields are seeded.
+              controller: TextEditingController(text: c.fullName ?? ''),
               onChanged: (v) => c.fullName = v,
               decoration: const InputDecoration(hintText: 'Full legal name'),
             ),
             SizedBox(height: 12.h),
             Text(
               'This is the name on your Ghana Card.',
+              style: MngTheme.light.textTheme.bodySmall,
+            ),
+            SizedBox(height: 20.h),
+            TextField(
+              key: const Key('phoneField'),
+              onChanged: (v) => c.phone = v,
+              // The phone keypad, not the default. A number field that brings up
+              // a keyboard with no digits is a field every driver has to fight
+              // with, and the first thing a driver does with this field is type
+              // ten numbers.
+              keyboardType: TextInputType.phone,
+              // The stored value is normalised, so what is shown back is the
+              // driver's own number in the form they typed it. `formatGhanaPhone`
+              // regroups it as `024 123 4567` from either form, which is easier
+              // to read back and check than either raw spelling.
+              decoration: InputDecoration(
+                hintText: '024 123 4567',
+                helperText: c.phoneProblem,
+                // Only red once they have typed something. An empty required
+                // field is not an error yet, and painting it red before the
+                // driver has touched it is the platform telling them they have
+                // already got it wrong.
+                errorText: (c.phone ?? '').trim().isEmpty
+                    ? null
+                    : c.phoneProblem,
+                prefixIcon: const Icon(Icons.phone_outlined),
+              ),
+            ),
+            SizedBox(height: 8.h),
+            Text(
+              'The number a rider will use to reach you while you are driving.',
               style: MngTheme.light.textTheme.bodySmall,
             ),
           ],

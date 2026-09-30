@@ -84,6 +84,14 @@ abstract class DriverRepository {
     String sex = '',
     String nationality = '',
     String issued = '',
+    /// The driver's own phone number, normalised by the implementation.
+    ///
+    /// Optional on the port so every existing caller and every existing fake
+    /// still compiles, and defaulted to empty so a caller that does not know
+    /// about the phone writes nothing rather than failing. It is required at the
+    /// *screen*, which is where it is enforced: the field is on the form, so a
+    /// driver cannot reach this call without having been asked for a number.
+    String phone = '',
   });
 
   /// Records the selfie the driver captured on this device.

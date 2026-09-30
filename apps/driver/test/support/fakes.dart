@@ -116,6 +116,7 @@ class StubDriverRepository implements DriverRepository {
     String sex = '',
     String nationality = '',
     String issued = '',
+    String phone = '',
   }) async {
     this.cardNumber = cardNumber;
     cardExpiry = expiry;
@@ -124,6 +125,11 @@ class StubDriverRepository implements DriverRepository {
     cardSex = sex;
     cardNationality = nationality;
     cardIssued = issued;
+    // Normalised here for the same reason the real repository normalises it, so
+    // a test that asserts on what was stored sees what a driver would. Storing
+    // the raw string in the fake would let a test pass against a controller that
+    // passes an un-normalised number through.
+    this.phone = normaliseGhanaPhone(phone) ?? '';
   }
 
   /// The card fields the fake was last sent, so a test can assert the write
@@ -132,6 +138,12 @@ class StubDriverRepository implements DriverRepository {
   String cardSex = '';
   String cardNationality = '';
   String cardIssued = '';
+
+  /// The phone the fake was last sent, **normalised**, so a test can assert what
+  /// would actually have been written to the database rather than what the
+  /// controller passed in. A test that stored the raw argument would pass
+  /// against a controller handing an un-normalised number straight through.
+  String phone = '';
 
   @override
   Future<void> submitSelfie(String path) async => selfiePath = path;

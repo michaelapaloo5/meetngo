@@ -539,6 +539,75 @@ class KycController extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// The driver's own phone number, in Ghana's 0XX format.
+  ///
+  /// Collected at sign-up because three things depend on it and none of them can
+  /// work without it: the rider has no way to call the driver, the driver has no
+  /// way to call the rider, and neither side can be reached when a trip goes
+  /// wrong. The column has existed since the first migration with a default of
+  /// `''` and nothing ever wrote to it, so a rider tapping "call driver" had
+  /// nothing to call.
+  ///
+  /// Normalised rather than stored as typed. Ghanaian numbers are written
+  /// `024 123 4567`, `+233 24 123 4567` and `0024 123 4567` by three different
+  /// people who all mean the same one, and a number that is compared for
+  /// equality after being typed two different ways is a number that does not
+  /// match. What is stored is `0241234567` or `233241234567`; anything that does
+  /// not reduce to one of those is refused here rather than written.
+  String? _phone;
+  String? get phone => _phone;
+  set phone(String? value) {
+    _phone = value;
+    notifyListeners();
+  }
+
+  /// What is written to the database, or null when what was typed is not a
+  /// Ghanaian number yet.
+  ///
+  /// Normalised on the way out rather than on the way in, and the distinction
+  /// matters. Normalising in the setter threw away what the driver typed: a
+  /// driver part way through `024 123 4567` has typed something that does not
+  /// normalise, so the setter stored null, and the field's own error text --
+  /// which asks "is what I typed too short?" -- had nothing left to ask about.
+  /// Three tests failed on exactly that: the gate would not open for a number
+  /// that was correct, and the message said "enter your number" to a driver who
+  /// had already entered one.
+  ///
+  /// So [phone] keeps what was typed, this answers what would be stored, and the
+  /// repository normalises again on the way in because it is the only writer of
+  /// the column and the rule has to hold for every caller.
+  String? get phoneNormalised => normaliseGhanaPhone(_phone);
+
+  /// The digits of what would be stored, for the call affordance.
+  String get phoneDigits => phoneNormalised ?? '';
+
+  /// Whether the phone is present and is a real Ghanaian number.
+  bool get phoneComplete => phoneNormalised != null;
+
+  /// Why the phone is not acceptable, or null when it is. The screen shows this
+  /// rather than silently refusing to advance, because a driver who cannot move
+  /// past a field with no explanation concludes the app is broken.
+  ///
+  /// Read against [phone], the text as typed, and never against the normalised
+  /// value: a part-typed number normalises to null and every message here would
+  /// then say "enter your number" rather than saying which part is wrong.
+  String? get phoneProblem {
+    final typed = (_phone ?? '').trim();
+    if (typed.isEmpty) return 'Enter the number a rider would use to reach you';
+    if (phoneComplete) return null;
+    final digitCount = typed.replaceAll(RegExp(r'[^0-9]'), '').length;
+    if (digitCount < 9) {
+      return 'That looks too short. Enter 10 digits, e.g. 0241234567';
+    }
+    // Ten digits, and still refused: the prefix is not one Ghana issues. The
+    // message says so rather than repeating "enter 10 digits" to a driver who
+    // has just typed ten of them.
+    if (digitCount == 10) {
+      return 'That does not start like a Ghanaian number. It should begin 020, 024, 050, 055 or 059.';
+    }
+    return 'Enter 10 digits, e.g. 0241234567';
+  }
+
   String? _cardNumber;
   String? get cardNumber => _cardNumber;
   set cardNumber(String? value) {
@@ -662,7 +731,16 @@ class KycController extends ChangeNotifier {
     // driver reaching the review step with three of six and finding out at the
     // far end.
     KycStep.documents => _requiredSent >= driverRequiredKinds.length,
-    KycStep.identity => (_fullName ?? '').trim().length >= 3,
+    // Name **and** a phone that is a real Ghanaian number. Both, and both here,
+    // rather than the phone being collected later or being optional: a driver
+    // with a name and six documents and no phone is a driver a rider cannot
+    // call when the pickup goes wrong, and discovering that at 2am at a junction
+    // in Osu is the worst possible time.
+    //
+    // `phoneComplete` rather than "is not empty" so that a driver who has typed
+    // seven digits cannot advance on a number that will not dial.
+    KycStep.identity =>
+      (_fullName ?? '').trim().length >= 3 && phoneComplete,
     KycStep.ghanaCard =>
       (_cardNumber ?? '').isNotEmpty && (_cardExpiry ?? '').isNotEmpty,
     KycStep.selfie => (_selfiePath ?? '').isNotEmpty,
@@ -734,6 +812,16 @@ class KycController extends ChangeNotifier {
             sex: _cardSex ?? '',
             nationality: _cardNationality ?? '',
             issued: _cardIssued ?? '',
+            // Written with the identity details rather than as a separate call.
+            // It is part of the same row, it is part of the same `pending`
+            // write, and a driver who has a name and a card number but no phone
+            // is a driver neither the rider nor the platform can reach -- so
+            // there is no state in which one is written and the other is not.
+            //
+            // The normalised form, not the raw field. `phoneComplete` has already
+            // gated this call, so a null here is unreachable in practice, and an
+            // empty string is the honest value for it if it ever is.
+            phone: phoneNormalised ?? '',
           );
           step = KycStep.selfie;
           break;
