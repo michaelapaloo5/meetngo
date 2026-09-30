@@ -101,4 +101,23 @@ abstract final class PremiumMapPalette {
   /// both label layers carry a halo: on their own these names are a grey
   /// suggestion of text rather than text.
   static const String label = '#8A8A8E';
+
+  /// The name of a point of interest, and the name of a district once the map
+  /// is zoomed in far enough to be navigating rather than orienting.
+  ///
+  /// A step darker than [label] on purpose, and this is the whole reason the
+  /// style has two label greys rather than one. A district name and a POI name
+  /// are both secondary to the road you are on and neither is a heading, but a
+  /// rider looking for a landmark reads the *darkest* text on the map first. At
+  /// the lighter grey, "37 Military Hospital" competes with "Switchback Road"
+  /// and loses, which is backwards: the road is the thing you are driving on and
+  /// the hospital is the thing you are looking for.
+  static const String labelStrong = '#6E6E73';
+
+  /// A POI's own name, a step darker again.
+  ///
+  /// Separate from [labelStrong] because a POI name sits directly under its own
+  /// icon and competes with the *label* greys rather than with the district
+  /// name, and the three read as three levels of quiet.
+  static const String labelPoi = '#5A5A5F';
 }

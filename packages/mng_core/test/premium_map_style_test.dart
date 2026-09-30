@@ -7,9 +7,8 @@ import 'package:mng_core/mng_core.dart';
 Future<Map<String, dynamic>> style() async =>
     jsonDecode(await premiumMapStyleJson()) as Map<String, dynamic>;
 
-List<Map<String, dynamic>> layersOf(Map<String, dynamic> s) => (s['layers']
-        as List)
-    .cast<Map<String, dynamic>>();
+List<Map<String, dynamic>> layersOf(Map<String, dynamic> s) =>
+    (s['layers'] as List).cast<Map<String, dynamic>>();
 
 Map<String, dynamic> layerNamed(Map<String, dynamic> s, String id) {
   final match = layersOf(s).where((l) => l['id'] == id);
@@ -31,20 +30,23 @@ void main() {
       expect(s['name'], isNotEmpty);
     });
 
-    test('draws from OpenFreeMap with no key, no account and no card', () async {
-      final s = await style();
-      final sources = s['sources'] as Map<String, dynamic>;
-      final ofm = sources['openfreemap'] as Map<String, dynamic>;
-      expect(ofm['type'], 'vector');
-      // The whole reason this app has a map at all: the vector source is
-      // fetched from a URL that needs no credentials. A regression to a keyed
-      // provider here is invisible on a developer machine and fatal in
-      // production, so it is worth an assertion.
-      expect(ofm['url'], 'https://tiles.openfreemap.org/planet');
-      final asText = jsonEncode(s);
-      expect(asText.toLowerCase(), isNot(contains('access_token')));
-      expect(asText.toLowerCase(), isNot(contains('mapbox.com')));
-    });
+    test(
+      'draws from OpenFreeMap with no key, no account and no card',
+      () async {
+        final s = await style();
+        final sources = s['sources'] as Map<String, dynamic>;
+        final ofm = sources['openfreemap'] as Map<String, dynamic>;
+        expect(ofm['type'], 'vector');
+        // The whole reason this app has a map at all: the vector source is
+        // fetched from a URL that needs no credentials. A regression to a keyed
+        // provider here is invisible on a developer machine and fatal in
+        // production, so it is worth an assertion.
+        expect(ofm['url'], 'https://tiles.openfreemap.org/planet');
+        final asText = jsonEncode(s);
+        expect(asText.toLowerCase(), isNot(contains('access_token')));
+        expect(asText.toLowerCase(), isNot(contains('mapbox.com')));
+      },
+    );
 
     test('credits OpenStreetMap, as the tile usage policy requires', () async {
       final s = await style();
@@ -69,41 +71,52 @@ void main() {
     test('parks are very soft desaturated mint', () async {
       final s = await style();
       for (final id in ['park-fill', 'park-fill-polygons']) {
-        expect((layerNamed(s, id)['paint'] as Map)['fill-color'], '#E2F0D9',
-            reason: id);
+        expect(
+          (layerNamed(s, id)['paint'] as Map)['fill-color'],
+          '#E2F0D9',
+          reason: id,
+        );
       }
     });
 
-    test('every colour in the style is one of the declared palette values', () async {
-      // The point of declaring a palette is that it is obeyed. A hand-edited
-      // `#4a90d9` in one layer is exactly how a map ends up with two blues.
-      final s = await style();
-      final allowed = {
-        PremiumMapPalette.land,
-        PremiumMapPalette.water,
-        PremiumMapPalette.park,
-        PremiumMapPalette.road,
-        PremiumMapPalette.roadCasing,
-        PremiumMapPalette.building,
-        PremiumMapPalette.label,
-      }.map((c) => c.toLowerCase()).toSet();
+    test(
+      'every colour in the style is one of the declared palette values',
+      () async {
+        // The point of declaring a palette is that it is obeyed. A hand-edited
+        // `#4a90d9` in one layer is exactly how a map ends up with two blues.
+        final s = await style();
+        final allowed = {
+          PremiumMapPalette.land,
+          PremiumMapPalette.water,
+          PremiumMapPalette.park,
+          PremiumMapPalette.road,
+          PremiumMapPalette.roadCasing,
+          PremiumMapPalette.building,
+          PremiumMapPalette.label,
+          PremiumMapPalette.labelStrong,
+          PremiumMapPalette.labelPoi,
+        }.map((c) => c.toLowerCase()).toSet();
 
-      final found = <String, String>{};
-      for (final l in layersOf(s)) {
-        final paint = l['paint'];
-        if (paint is! Map) continue;
-        for (final entry in paint.entries) {
-          if (entry.key.contains('color') && entry.value is String) {
-            found['${l['id']}.${entry.key}'] = entry.value as String;
+        final found = <String, String>{};
+        for (final l in layersOf(s)) {
+          final paint = l['paint'];
+          if (paint is! Map) continue;
+          for (final entry in paint.entries) {
+            if (entry.key.contains('color') && entry.value is String) {
+              found['${l['id']}.${entry.key}'] = entry.value as String;
+            }
           }
         }
-      }
-      expect(found, isNotEmpty);
-      found.forEach((where, colour) {
-        expect(allowed, contains(colour.toLowerCase()),
-            reason: '$where is $colour, which is not in the palette');
-      });
-    });
+        expect(found, isNotEmpty);
+        found.forEach((where, colour) {
+          expect(
+            allowed,
+            contains(colour.toLowerCase()),
+            reason: '$where is $colour, which is not in the palette',
+          );
+        });
+      },
+    );
   });
 
   group('2. road network', () {
@@ -116,47 +129,65 @@ void main() {
           .toList();
       expect(roadLayers, isNotEmpty);
       for (final l in roadLayers) {
-        expect((l['paint'] as Map)['line-color'], '#FFFFFF', reason: '${l['id']}');
+        expect(
+          (l['paint'] as Map)['line-color'],
+          '#FFFFFF',
+          reason: '${l['id']}',
+        );
       }
     });
 
-    test('highways carry the thin soft gray casing, drawn under the white', () async {
-      final s = await style();
-      final casing = layerNamed(s, 'road-casing');
-      expect((casing['paint'] as Map)['line-color'], '#E0E0E5');
+    test(
+      'highways carry the thin soft gray casing, drawn under the white',
+      () async {
+        final s = await style();
+        final casing = layerNamed(s, 'road-casing');
+        expect((casing['paint'] as Map)['line-color'], '#E0E0E5');
 
-      // "Ultra-thin" is a ratio, not an absolute: a casing that is a large
-      // fraction of the road it outlines is a border, not a separation. The
-      // widest casing in the style is checked against the widest road.
-      final casingMax = _maxWidth(casing);
-      final roadMax = _maxWidth(layerNamed(s, 'road-major'));
-      expect(casingMax, isNotNull);
-      expect(roadMax, isNotNull);
-      // Same zoom, same road: a 2px wider casing is what MapLibre draws, and
-      // it is half exposed either side of an 8.5px road.
-      expect(casingMax! - roadMax!, lessThanOrEqualTo(2.5),
-          reason: 'casing $casingMax vs road $roadMax');
+        // "Ultra-thin" is a ratio, not an absolute: a casing that is a large
+        // fraction of the road it outlines is a border, not a separation. The
+        // widest casing in the style is checked against the widest road.
+        final casingMax = _maxWidth(casing);
+        final roadMax = _maxWidth(layerNamed(s, 'road-major'));
+        expect(casingMax, isNotNull);
+        expect(roadMax, isNotNull);
+        // Same zoom, same road: a 2px wider casing is what MapLibre draws, and
+        // it is half exposed either side of an 8.5px road.
+        expect(
+          casingMax! - roadMax!,
+          lessThanOrEqualTo(2.5),
+          reason: 'casing $casingMax vs road $roadMax',
+        );
 
-      // The casing has to be earlier in the layer list or the white road is
-      // painted over it and it is invisible.
-      final order = layersOf(s).map((l) => l['id']).toList();
-      expect(order.indexOf('road-casing'), lessThan(order.indexOf('road-major')));
-    });
+        // The casing has to be earlier in the layer list or the white road is
+        // painted over it and it is invisible.
+        final order = layersOf(s).map((l) => l['id']).toList();
+        expect(
+          order.indexOf('road-casing'),
+          lessThan(order.indexOf('road-major')),
+        );
+      },
+    );
 
-    test('only highways are cased, so local streets do not get a border', () async {
-      final casing = layerNamed(await style(), 'road-casing');
-      final classes = _classesIn(casing);
-      expect(classes, {'motorway', 'trunk', 'primary'});
-      expect(classes, isNot(contains('minor')));
-      expect(classes, isNot(contains('service')));
-    });
+    test(
+      'only highways are cased, so local streets do not get a border',
+      () async {
+        final casing = layerNamed(await style(), 'road-casing');
+        final classes = _classesIn(casing);
+        expect(classes, {'motorway', 'trunk', 'primary'});
+        expect(classes, isNot(contains('minor')));
+        expect(classes, isNot(contains('service')));
+      },
+    );
 
     test('casing and the road it outlines select the same roads', () async {
       final s = await style();
       // A casing drawn on a different set of roads than the white on top of it
       // is a grey line running through the countryside.
-      expect(_classesIn(layerNamed(s, 'road-casing')),
-          _classesIn(layerNamed(s, 'road-major')));
+      expect(
+        _classesIn(layerNamed(s, 'road-casing')),
+        _classesIn(layerNamed(s, 'road-major')),
+      );
     });
 
     test('every road width is zoom-interpolated, not a flat line', () async {
@@ -164,9 +195,10 @@ void main() {
       // Filtered to line layers, because `road-name` is also a "road" layer by
       // name and has no `line-width` to interpolate -- it draws text along the
       // line instead.
-      for (final l in layersOf(s)
-          .where((l) => l['type'] == 'line')
-          .where((l) => l['source-layer'] == 'transportation')) {
+      for (final l
+          in layersOf(s)
+              .where((l) => l['type'] == 'line')
+              .where((l) => l['source-layer'] == 'transportation')) {
         final w = (l['paint'] as Map)['line-width'];
         expect(w, isA<List>(), reason: '${l['id']} has a fixed width');
         expect(jsonEncode(w), contains('zoom'), reason: '${l['id']}');
@@ -175,32 +207,77 @@ void main() {
 
     test('rails, ferries and tunnels are not drawn', () async {
       final s = await style();
-      final asText = jsonEncode(layersOf(s));
-      for (final unwanted in ['"rail"', '"ferry"', '"transit"', '"aerialway"']) {
-        expect(asText, isNot(contains(unwanted)),
-            reason: '$unwanted would put rail and transit lines on a road map');
+      // Scoped to *line and fill* layers, which is what this rule is about: no
+      // rail track, no ferry route, no transit line drawn as geometry a driver
+      // could mistake for a road. It used to scan the whole style as one string,
+      // which is not the same test -- `"ferry"` is now a legitimate POI *class*
+      // on a pin layer, and a harbour is a thing a rider picks a pickup beside.
+      // A whole-file scan would have failed on that and the fix would have been
+      // to delete a useful pin rather than to scope the rule correctly.
+      final geometry = layersOf(s)
+          .where((l) => l['type'] == 'line' || l['type'] == 'fill')
+          .toList();
+      expect(geometry, isNotEmpty);
+      final asText = jsonEncode(geometry);
+      for (final unwanted in [
+        '"rail"',
+        '"ferry"',
+        '"transit"',
+        '"aerialway"',
+      ]) {
+        expect(
+          asText,
+          isNot(contains(unwanted)),
+          reason: '$unwanted would put rail and transit lines on a road map',
+        );
+      }
+      // And the same check across every layer's filter, so a geometry layer
+      // cannot smuggle a rail class in through its own `in` expression.
+      for (final l in geometry) {
+        final filter = jsonEncode(l['filter']);
+        for (final unwanted in ['rail', 'ferry', 'aerialway']) {
+          expect(
+            filter,
+            isNot(contains(unwanted)),
+            reason: '${l['id']} filters on $unwanted',
+          );
+        }
       }
       // Every road layer filters tunnels out: a tunnel drawn as a surface
       // street is a road that appears to run through a building.
-      for (final l in layersOf(s).where((l) => l['source-layer'] == 'transportation')) {
-        expect(jsonEncode(l['filter']), contains('brunnel'),
-            reason: '${l['id']} does not exclude tunnels');
+      for (final l in layersOf(
+        s,
+      ).where((l) => l['source-layer'] == 'transportation')) {
+        expect(
+          jsonEncode(l['filter']),
+          contains('brunnel'),
+          reason: '${l['id']} does not exclude tunnels',
+        );
       }
     });
   });
 
-  group('3. extreme decluttering', () {
-    test('no POI, boundary or address-number layer exists at all', () async {
+  group('3. decluttering', () {
+    // This group used to assert the opposite of most of what follows: that no
+    // layer read the `poi` source-layer at all, because a map showing business
+    // names was judged to be noise. That was a reasonable call for a map you
+    // only ever used to orient yourself, and the wrong call for one you pick a
+    // pickup on -- "there is a hospital on that corner" is exactly the fact a
+    // rider needs and it is a fact only a POI layer can show.
+    //
+    // So the rule is no longer "no business names" but "only ranked ones, only
+    // as far as the tiles carry them, and never at the expense of the roads".
+    // The tests below are as strict about the new rule as the old ones were
+    // about the old one, because a style that draws everything is the same
+    // failure as one that draws nothing.
+
+    test('no boundary, address-number or peak layer exists at all', () async {
       final s = await style();
-      // Not "hidden" -- absent. `visibility: none` still costs a style diff to
-      // carry, still shows up in every layer list anyone reads, and is one
-      // careless edit away from being turned back on.
-      //
-      // `place` and `transportation_name` are deliberately NOT in this list.
-      // They were, and the result was a map with no street names on it, which
-      // is not decluttering -- it is an unnavigable picture of a city.
+      // Still absent rather than `visibility: none`. A hidden layer still costs a
+      // style diff to carry, still shows up in every layer list anyone reads, and
+      // is one careless edit away from being turned back on. None of these three
+      // tells a driver anything about where to drive.
       final banned = {
-        'poi',
         'boundary',
         'aerodrome_label',
         'housenumber',
@@ -208,26 +285,159 @@ void main() {
         'water_name',
       };
       for (final l in layersOf(s)) {
-        expect(banned, isNot(contains(l['source-layer'])),
-            reason: '${l['id']} draws ${l['source-layer']}');
+        expect(
+          banned,
+          isNot(contains(l['source-layer'])),
+          reason: '${l['id']} draws ${l['source-layer']}',
+        );
       }
     });
 
-    test('no layer draws a business or commercial name', () async {
+    test(
+      'POIs are drawn, because a pickup is chosen by what is on the corner',
+      () async {
+        final s = await style();
+        final poi = layersOf(s)
+            .where((l) => l['source-layer'] == 'poi')
+            .toList();
+        expect(
+          poi,
+          isNotEmpty,
+          reason: 'no layer reads the poi source-layer at all',
+        );
+        // The classes a rider actually navigates by. A POI layer that drew only
+        // `bench` and `waste_basket` would satisfy "draws POIs" and be useless.
+        final all = <String>{..._classesIn(poi.first), ..._classesIn(poi.last)};
+        expect(
+          all,
+          containsAll(<String>[
+            'hospital',
+            'pharmacy',
+            'bank',
+            'fuel',
+            'restaurant',
+          ]),
+        );
+      },
+    );
+
+    test('every POI layer is capped at the zoom the tiles carry POIs to', () async {
       final s = await style();
-      // The real constraint, as opposed to the one I first wrote. "Hide all
-      // POIs, local businesses, stores and commercial labels" reduces to: no
-      // layer reads a name off the `poi` source-layer, which is where every
-      // shop, restaurant and landmark name lives. A business name cannot be
-      // decluttered if it is never asked for.
-      for (final l in layersOf(s)) {
-        expect(l['source-layer'], isNot('poi'),
-            reason: '${l['id']} reads the POI layer');
+      // The `poi` source-layer in OpenFreeMap's tiles stops at zoom 14. A layer
+      // with no `maxzoom` would ask for data that is not there at 16, draw
+      // nothing, and read as "this map has no restaurants near you" -- which is
+      // false, and is worse than showing nothing deliberately. The cap is the
+      // honest statement of where the data ends.
+      for (final l in layersOf(s).where((l) => l['source-layer'] == 'poi')) {
+        expect(
+          l['maxzoom'],
+          isNotNull,
+          reason:
+              '${l['id']} has no maxzoom, so it asks for POIs above the '
+              'zoom the tiles stop at and silently draws nothing',
+        );
+        expect(l['maxzoom'], lessThanOrEqualTo(14), reason: '${l['id']}');
       }
     });
 
-    test('road names are drawn, because an unnamed road cannot be navigated',
-        () async {
+    test('every POI layer filters on rank, so a neighbourhood is not a wall of pins', () async {
+      final s = await style();
+      for (final l in layersOf(s).where((l) => l['source-layer'] == 'poi')) {
+        final filter = jsonEncode(l['filter']);
+        expect(
+          filter,
+          contains('rank'),
+          reason:
+              '${l['id']} draws every POI in the tile with no '
+              'importance cut-off',
+        );
+        // And the cut-off has to be numeric-safe: `to-number` of a missing
+        // `rank` is NaN, NaN fails every comparison, and the POI disappears
+        // rather than falling into the less-important layer. A coalesce is what
+        // sends it there instead.
+        expect(filter, contains('to-number'), reason: '${l['id']}');
+        expect(filter, contains('coalesce'), reason: '${l['id']}');
+      }
+    });
+
+    test('only the important POIs get a name; the rest get a pin alone', () async {
+      final s = await style();
+      // Two layers rather than one: a rider at zoom 13 should see the hospital
+      // named and forty restaurants unnamed, not eighty named pins fighting for
+      // the same centimetre of screen.
+      final named = layerNamed(s, 'poi-label');
+      final minor = layerNamed(s, 'poi-icon-minor');
+      expect(
+        named['minzoom'],
+        lessThan(minor['minzoom'] as num),
+        reason: 'the named layer must appear before the unnamed one',
+      );
+      expect(_classesIn(minor), isNotEmpty);
+      expect(
+        (minor['layout'] as Map)['text-size'],
+        isA<num>(),
+        reason:
+            'the minor layer sets no text size, so its names are '
+            'indistinguishable from the major layer\'s',
+      );
+    });
+
+    test(
+      'a POI name is optional, so a crowded corner keeps its pins',
+      () async {
+        final s = await style();
+        // Without this, MapLibre drops the entire symbol -- icon included --
+        // whenever the text collides with something, which on a street with a
+        // bank, a pharmacy and a restaurant in fifty metres means the map loses
+        // all three rather than showing three pins and two names.
+        for (final l in layersOf(s).where((l) => l['source-layer'] == 'poi')) {
+          expect(
+            (l['layout'] as Map)['text-optional'],
+            isTrue,
+            reason:
+                '${l['id']} will drop the whole symbol when its text collides',
+          );
+        }
+      },
+    );
+
+    test('a layer using icon-image has a sprite to get the icon from', () async {
+      final s = await style();
+      // A symbol layer whose `icon-image` matches nothing draws nothing and
+      // throws no error. That is the whole hazard of adding POI pins, and it is
+      // why this is asserted rather than left to a device.
+      final needingSprite = layersOf(s)
+          .where(
+            (l) =>
+                (l['layout'] is Map) &&
+                (l['layout'] as Map)['icon-image'] != null,
+          )
+          .where((l) => l['id'] != 'moving-car-icon') // registered at runtime
+          .toList();
+      expect(needingSprite, isNotEmpty);
+      expect(
+        s['sprite'],
+        isNotNull,
+        reason:
+            'POI layers ask the sprite for icons and the style declares none',
+      );
+    });
+
+    test('a POI class with no icon in the sprite is aliased onto one that has it', () async {
+      final s = await style();
+      // The `icon-image` is a `match` that aliases before it falls back to
+      // `["get", "class"]`. Both halves matter: the alias is what makes
+      // `supermarket` draw (the sheet has `grocery` and no `supermarket`), and
+      // the fallback is what lets a class nobody anticipated still get an icon
+      // without editing this file.
+      for (final l in layersOf(s).where((l) => l['source-layer'] == 'poi')) {
+        final image = jsonEncode((l['layout'] as Map)['icon-image']);
+        expect(image, contains('match'), reason: '${l['id']} does not alias');
+        expect(image, contains('get'), reason: '${l['id']} has no fallback');
+      }
+    });
+
+    test('road names are drawn, because an unnamed road cannot be navigated', () async {
       final s = await style();
       // This test is here because it was missing, and its absence shipped a map
       // with no street names on it. A driver told to meet at a junction, and a
@@ -243,19 +453,70 @@ void main() {
       expect(layout['symbol-placement'], 'line');
     });
 
-    test('place names are drawn, and only for places a person would name',
-        () async {
+    test('a district name survives zooming in, which it used not to', () async {
       final s = await style();
-      final place = layerNamed(s, 'place-label');
-      expect(place['source-layer'], 'place');
-      final layout = place['layout'] as Map<String, dynamic>;
-      expect(layout['text-field'], isNotNull);
-      // Towns, cities, districts. Not every hamlet and not every islet: a
-      // screen with the name of a two-house village on it is as useless as one
-      // with no names on it.
-      final classes = _classesIn(place);
-      expect(classes, containsAll(<String>['city', 'town', 'suburb']));
-      expect(classes, isNot(contains('hamlet')));
+      // `place-label` carried `maxzoom: 12`, so the moment a driver zoomed in to
+      // navigate -- zoom 14, 15, 16, exactly when a street name starts to
+      // matter -- every district name disappeared and the map stopped saying
+      // whether it was Osu or Tema. The zoomed layer is the fix, and it fades the
+      // name *down* as it goes in so it does not compete with the street names
+      // it now sits among.
+      expect(
+        layerNamed(s, 'place-label')['maxzoom'],
+        isNull,
+        reason:
+            'place-label must not cap out, or districts vanish when zoomed in',
+      );
+      final zoomed = layerNamed(s, 'place-label-zoomed');
+      expect(zoomed['minzoom'], isNotNull);
+      expect(
+        _classesIn(zoomed),
+        containsAll(<String>['suburb', 'neighbourhood']),
+      );
+      // Shrinking with zoom, not growing: at 15 px it would shout over the road
+      // names that are the actual instruction.
+      //
+      // Read as pairs rather than by scraping digits. An `interpolate` is
+      // `["interpolate", ["linear"], ["zoom"], zoomIn, sizeAtZoomIn, ...]` --
+      // the sizes are the *second* of each pair, and a regex over the whole
+      // array picks up the zoom stops as well. The first version of this test
+      // did that and compared zoom 11 against size 10, which is comparing two
+      // unrelated numbers and happened to pass for the wrong reason.
+      final expr = (zoomed['layout'] as Map)['text-size'];
+      expect(expr, isA<List>());
+      final list = (expr as List).cast<Object?>();
+      expect(list.first, 'interpolate');
+      // Skip the interpolation specifier and the ["zoom"] input, then walk the
+      // remaining numbers as (zoom, size) pairs.
+      final numbers = <double>[];
+      for (final v in list.skip(2)) {
+        if (v is List) {
+          expect(
+            v.first,
+            'zoom',
+            reason: 'the input is the zoom, so the numbers after it are pairs',
+          );
+        } else if (v is num) {
+          numbers.add(v.toDouble());
+        }
+      }
+      expect(
+        numbers.length,
+        greaterThanOrEqualTo(2),
+        reason: 'no (zoom, size) pairs found in $expr',
+      );
+      expect(numbers.length % 2, 0, reason: 'a dangling stop in $expr');
+      final sizes = <double>[];
+      for (var i = 1; i < numbers.length; i += 2) {
+        sizes.add(numbers[i]);
+      }
+      expect(
+        sizes.first,
+        greaterThan(sizes.last),
+        reason:
+            'the zoomed district label should get smaller, not larger, '
+            'as the map closes in; sizes were $sizes',
+      );
     });
 
     test('every text layer has a font, or it draws nothing', () async {
@@ -269,8 +530,11 @@ void main() {
         final layout = l['layout'];
         if (layout is! Map || layout['text-field'] == null) continue;
         checked++;
-        expect(layout['text-font'], isNotNull,
-            reason: '${l['id']} has text but no font, so it draws nothing');
+        expect(
+          layout['text-font'],
+          isNotNull,
+          reason: '${l['id']} has text but no font, so it draws nothing',
+        );
         // Every font has to be one the style's `glyphs` URL can actually serve.
         final fonts = (layout['text-font'] as List).cast<String>();
         expect(fonts, isNotEmpty);
@@ -278,50 +542,113 @@ void main() {
           expect(f, isNotEmpty);
         }
       }
-      expect(checked, 2, reason: 'the two label layers, and no others');
+      // This used to be `expect(checked, 2)`, an exact count, and it is a
+      // number that has to be edited every time a label is added. That is fine
+      // for catching an accidental layer and useless for catching the real
+      // hazard, which is one label with no font. What is asserted now is that
+      // every text layer is one of the four that are supposed to exist, so a
+      // fifth text layer -- from a plugin, or a layer pasted in from a style
+      // someone else wrote -- fails here by name.
+      expect(checked, greaterThanOrEqualTo(4));
+      final textLayers = layersOf(s)
+          .where(
+            (l) =>
+                (l['layout'] is Map) &&
+                (l['layout'] as Map)['text-field'] != null,
+          )
+          .map((l) => l['id'] as String)
+          .toSet();
+      expect(
+        textLayers,
+        everyElement(
+          anyOf(
+            'place-label',
+            'place-label-zoomed',
+            'road-name',
+            'poi-label',
+            'poi-icon-minor',
+          ),
+        ),
+        reason: 'an unexpected text layer appeared: $textLayers',
+      );
     });
 
-    test('labels carry a halo, because grey text on pale land is unreadable',
-        () async {
+    test('labels carry a halo, because grey text on pale land is unreadable', () async {
       // The land is #F4F4F6 and the text is #8A8A8E, a difference of about 40
       // levels of luminance. Without a halo the names sit on the map as a grey
       // suggestion of text.
       final s = await style();
-      for (final id in ['place-label', 'road-name']) {
+      for (final id in [
+        'place-label',
+        'place-label-zoomed',
+        'road-name',
+        'poi-label',
+        'poi-icon-minor',
+      ]) {
         final paint = layerNamed(s, id)['paint'] as Map;
         expect(paint['text-halo-width'], isNotNull, reason: id);
         expect((paint['text-halo-width'] as num), greaterThan(0), reason: id);
       }
     });
 
-    test('the car is still the only thing drawn as an image', () async {
+    test('the car icon and the POI icons come from different places', () async {
       final s = await style();
-      // `icon-image` is what makes a symbol an icon rather than a label. One
-      // icon, and it is the car: a style that grows business icons has stopped
-      // being a map for finding a pickup and become a directory.
-      final icons = layersOf(s)
-          .where((l) => (l['layout'] as Map?)?['icon-image'] != null)
-          .map((l) => l['id'])
-          .toList();
-      expect(icons, [kMovingCarLayerId]);
+      // This used to read "the car is still the only thing drawn as an image",
+      // and it was the rule that kept business icons out. It is now the rule
+      // that keeps the *car* correct, which is a different and still-worth-
+      // having check: the car's `icon-image` is a fixed name the apps register
+      // at runtime, while the POI layers' is a `match` resolved per feature out
+      // of the sheet. If either quietly became the other, one of them stops
+      // drawing and nothing says so.
+      final car = layerNamed(s, kMovingCarLayerId);
+      final carImage = (car['layout'] as Map)['icon-image'];
+      expect(
+        carImage,
+        kCarTopdownIconName,
+        reason: 'the car must name the sprite the apps register, not the sheet',
+      );
+
+      final poi = layersOf(s).where((l) => l['source-layer'] == 'poi').toList();
+      expect(poi, isNotEmpty);
+      for (final l in poi) {
+        final image = (l['layout'] as Map)['icon-image'];
+        expect(
+          image,
+          isNot(kCarTopdownIconName),
+          reason: '${l['id']} asks for the car sprite',
+        );
+        expect(
+          jsonEncode(image),
+          contains('get'),
+          reason: '${l['id']} must resolve its icon per feature',
+        );
+      }
     });
 
-    test('keeps only the geometry a driver needs, and drops aeroways', () async {
-      final used = layersOf(await style())
-          .map((l) => l['source-layer'])
-          .whereType<String>()
-          .toSet();
-      expect(used, {
-        'landcover',
-        'landuse',
-        'water',
-        'waterway',
-        'building',
-        'transportation',
-        'place',
-        'transportation_name',
-      });
-    });
+    test(
+      'keeps only the geometry a driver needs, and drops aeroways',
+      () async {
+        final used = layersOf(await style())
+            .map((l) => l['source-layer'])
+            .whereType<String>()
+            .toSet();
+        // An exact set, because this is the test that stops the style growing a
+        // source layer nobody decided on. `poi` is in it now, and deliberately:
+        // the rest of this group is about what is drawn, and a POI layer the
+        // rank tests above constrain is drawn on purpose.
+        expect(used, {
+          'landcover',
+          'landuse',
+          'water',
+          'waterway',
+          'building',
+          'transportation',
+          'place',
+          'transportation_name',
+          'poi',
+        });
+      },
+    );
   });
 
   group('4. 3D buildings', () {
@@ -359,10 +686,13 @@ void main() {
       expect(paint['fill-extrusion-opacity'] as double, greaterThan(0.7));
     });
 
-    test('a vertical gradient, without which the extrusions read as flat cutouts', () async {
-      final p = layerNamed(await style(), 'building-3d')['paint'] as Map;
-      expect(p['fill-extrusion-vertical-gradient'], isTrue);
-    });
+    test(
+      'a vertical gradient, without which the extrusions read as flat cutouts',
+      () async {
+        final p = layerNamed(await style(), 'building-3d')['paint'] as Map;
+        expect(p['fill-extrusion-vertical-gradient'], isTrue);
+      },
+    );
 
     test('height comes from the tile, not from a constant', () async {
       final p = layerNamed(await style(), 'building-3d')['paint'] as Map;
@@ -395,8 +725,9 @@ void main() {
     });
 
     test('the vehicle source is GeoJSON and starts empty', () async {
-      final v = ((await style())['sources'] as Map)[kVehicleSourceId]
-          as Map<String, dynamic>;
+      final v =
+          ((await style())['sources'] as Map)[kVehicleSourceId]
+              as Map<String, dynamic>;
       expect(v['type'], 'geojson');
       final data = v['data'] as Map<String, dynamic>;
       expect(data['type'], 'FeatureCollection');
@@ -406,8 +737,9 @@ void main() {
     });
 
     test('every required icon property is set exactly as specified', () async {
-      final layout = layerNamed(await style(), 'moving-car-icon')['layout']
-          as Map<String, dynamic>;
+      final layout =
+          layerNamed(await style(), 'moving-car-icon')['layout']
+              as Map<String, dynamic>;
       expect(layout['icon-image'], 'car-topdown');
       expect(layout['icon-allow-overlap'], isTrue);
       expect(layout['icon-ignore-placement'], isTrue);
@@ -415,14 +747,18 @@ void main() {
     });
 
     test('rotation comes from the feature bearing, not from the camera', () async {
-      final layout = layerNamed(await style(), 'moving-car-icon')['layout']
-          as Map<String, dynamic>;
+      final layout =
+          layerNamed(await style(), 'moving-car-icon')['layout']
+              as Map<String, dynamic>;
       // `viewport` alignment would pin the sprite to the screen's own rotation,
       // so the car would point north on the map whatever road it was on --
       // which is the specific failure this layer exists to avoid.
       expect(layout['icon-rotation-alignment'], 'map');
-      expect(layout['icon-pitch-alignment'], 'map',
-          reason: 'the car should lie on the pitched road, not stand up on it');
+      expect(
+        layout['icon-pitch-alignment'],
+        'map',
+        reason: 'the car should lie on the pitched road, not stand up on it',
+      );
       final rotate = jsonEncode(layout['icon-rotate']);
       expect(rotate, contains(kVehicleBearingProperty));
     });
@@ -432,8 +768,9 @@ void main() {
       // the property evaluates to null, and a null icon-rotate draws nothing at
       // all. A car that vanishes when the compass has no answer is worse than a
       // car pointing the wrong way.
-      final layout = layerNamed(await style(), 'moving-car-icon')['layout']
-          as Map<String, dynamic>;
+      final layout =
+          layerNamed(await style(), 'moving-car-icon')['layout']
+              as Map<String, dynamic>;
       final rotate = layout['icon-rotate'] as List;
       expect(rotate.first, 'coalesce');
       expect(rotate[1], ['get', kVehicleBearingProperty]);
@@ -441,8 +778,9 @@ void main() {
     });
 
     test('icon-image names the sprite the apps register', () async {
-      final layout = layerNamed(await style(), 'moving-car-icon')['layout']
-          as Map<String, dynamic>;
+      final layout =
+          layerNamed(await style(), 'moving-car-icon')['layout']
+              as Map<String, dynamic>;
       // A symbol layer whose icon-image matches nothing does not throw. It
       // silently draws nothing, so the car just is not there. This is the
       // assertion that would have caught it.
@@ -455,37 +793,46 @@ void main() {
       // A car behind a 0.45-opacity extrusion on a pitched camera is a car seen
       // through a wall.
       expect(order.last, kMovingCarLayerId);
-      expect(order.indexOf(kMovingCarLayerId),
-          greaterThan(order.indexOf('building-3d')));
+      expect(
+        order.indexOf(kMovingCarLayerId),
+        greaterThan(order.indexOf('building-3d')),
+      );
     });
   });
 
   group('the style survives a round trip', () {
-    test('is valid JSON with no unresolved expressions of the wrong arity', () async {
-      final s = await style();
-      // Every filter is a bare list, so a typo in one is a style MapLibre
-      // rejects at load time -- on a phone, where the map is then simply
-      // blank. Checking arity here turns that into a failing test.
-      for (final l in layersOf(s)) {
-        final filter = l['filter'];
-        if (filter == null) continue;
-        expect(filter, isA<List>(), reason: '${l['id']}');
-        final head = (filter as List).first;
-        const arity = {
-          'all': 2,
-          'any': 2,
-          'in': 2,
-          '==': 2,
-          '!=': 2,
-          'coalesce': 2,
-          'has': 1,
-        };
-        if (arity.containsKey(head)) {
-          expect(filter.length, greaterThanOrEqualTo(arity[head]!),
-              reason: '${l['id']}: $head needs at least ${arity[head]} operands');
+    test(
+      'is valid JSON with no unresolved expressions of the wrong arity',
+      () async {
+        final s = await style();
+        // Every filter is a bare list, so a typo in one is a style MapLibre
+        // rejects at load time -- on a phone, where the map is then simply
+        // blank. Checking arity here turns that into a failing test.
+        for (final l in layersOf(s)) {
+          final filter = l['filter'];
+          if (filter == null) continue;
+          expect(filter, isA<List>(), reason: '${l['id']}');
+          final head = (filter as List).first;
+          const arity = {
+            'all': 2,
+            'any': 2,
+            'in': 2,
+            '==': 2,
+            '!=': 2,
+            'coalesce': 2,
+            'has': 1,
+          };
+          if (arity.containsKey(head)) {
+            expect(
+              filter.length,
+              greaterThanOrEqualTo(arity[head]!),
+              reason:
+                  '${l['id']}: $head needs at least ${arity[head]} operands',
+            );
+          }
         }
-      }
-    });
+      },
+    );
 
     test('the palette block agrees with the constants the apps use', () async {
       final meta = (await style())['metadata'] as Map<String, dynamic>;

@@ -216,8 +216,9 @@ DateTime? parseGhanaCardExpiry(String raw) {
   // A full date first, so `31/01/2031` and `11/31/2031` both work.
   final full = RegExp(r'^(\d{1,2})\s*[/\-.]\s*(\d{1,2})\s*[/\-.]\s*(\d{4})$')
       .firstMatch(text);
-  if (full != null)
+  if (full != null) {
     return _expiry(int.parse(full.group(2)!), int.parse(full.group(3)!));
+  }
 
   final my = RegExp(r'^(\d{1,2})\s*[/\-.]\s*(\d{2,4})$').firstMatch(text);
   if (my == null) return null;
