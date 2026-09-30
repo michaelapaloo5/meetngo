@@ -130,6 +130,10 @@ class SupabaseDriverRepository implements DriverRepository {
     required String cardNumber,
     required String expiry,
     required String fullName,
+    String dob = '',
+    String sex = '',
+    String nationality = '',
+    String issued = '',
   }) async {
     final uid = _uid;
     final digits = cardNumber.replaceAll(RegExp(r'[^0-9]'), '');
@@ -138,7 +142,17 @@ class SupabaseDriverRepository implements DriverRepository {
           .from('profiles')
           .update({
             'kyc_status': 'pending',
+            // The first four digits, as before. `ghana_card_number` now carries
+            // the whole thing and is what readers prefer, but this is still
+            // written so no row is ever missing it, and so a downgrade to an
+            // older build loses the full number rather than being unable to show
+            // anything at all.
             'ghana_card_last4': digits.length >= 4 ? digits.substring(0, 4) : null,
+            'ghana_card_number': cardNumber.trim(),
+            'ghana_card_dob': dob.trim(),
+            'ghana_card_sex': sex.trim(),
+            'ghana_card_nationality': nationality.trim(),
+            'ghana_card_issued': issued.trim(),
             'ghana_card_expiry': expiry,
             'full_name': fullName,
           })

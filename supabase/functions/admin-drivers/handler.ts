@@ -216,9 +216,8 @@ export function optionalMissing(sent: readonly { kind: string }[]): string[] {
  *    [missingDocuments], so the number is never read as "ready".
  *
  * `livenessFrame` is excluded along with every other optional document, because
- * `documentsForAll` only ever reports required kinds and a face check taken three
- * days after the licence would otherwise make a two-day-old application look
- * three days old.
+ * a face check taken three days after the licence would otherwise make a
+ * two-day-old application look three days old.
  *
  * With no documents at all there is nothing to date, so the account creation
  * date is returned -- which is the truth, and is the one case where the old
@@ -245,6 +244,71 @@ export function submittedAtFor(
   return new Date(newestMs).toISOString();
 }
 
+/**
+ * Whole years from a Ghana Card date of birth to today, or null.
+ *
+ * The same arithmetic as `ageFromGhanaCardDate` in `mng_core`, written out again
+ * because a Deno Edge Function cannot import Dart and an employee needs the age
+ * next to the photograph. The two are kept in step by the tests: this one is
+ * pinned here, the Dart one in `ghana_card_parser_test.dart`, and the formats
+ * they accept are asserted in both.
+ *
+ * A null is the answer for anything unreadable, and the page says "not given"
+ * rather than showing a number. An age is the fastest thing an eye checks
+ * against a face, so a plausible wrong one is a plausible wrong approval.
+ *
+ * `now` is a parameter so the tests do not have to freeze time, and so this is
+ * not secretly a second source of today's date.
+ */
+export function ageFromGhanaCardDate(
+  raw: string | null | undefined,
+  now: Date = new Date(),
+): number | null {
+  if (raw === null || raw === undefined) return null;
+  const text = raw.trim();
+  if (text === '') return null;
+
+  let year: number;
+  let month: number;
+  let day: number;
+
+  // ISO first: `1994-03-14` would otherwise be read as day 1994, which is not a
+  // date. Order matters for the same reason it does in Dart.
+  const iso = /^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})$/.exec(text);
+  if (iso !== null) {
+    year = Number(iso[1]);
+    month = Number(iso[2]);
+    day = Number(iso[3]);
+  } else {
+    const dmy = /^(\d{1,2})[-/.](\d{1,2})[-/.](\d{2,4})$/.exec(text);
+    if (dmy === null) return null;
+    day = Number(dmy[1]);
+    month = Number(dmy[2]);
+    year = Number(dmy[3]);
+    if (year < 100) year += year <= 30 ? 2000 : 1900;
+  }
+
+  // Reject rather than roll over. `Date` would turn 31 February into 3 March and
+  // the page would show that as a fact.
+  if (month < 1 || month > 12) return null;
+  if (day < 1 || day > 31) return null;
+  if (year < 1900 || year > now.getUTCFullYear() + 1) return null;
+  const probe = new Date(Date.UTC(year, month - 1, day));
+  if (
+    probe.getUTCFullYear() !== year ||
+    probe.getUTCMonth() !== month - 1 ||
+    probe.getUTCDate() !== day
+  ) {
+    return null;
+  }
+
+  let years = now.getUTCFullYear() - year;
+  const hadBirthday = now.getUTCMonth() + 1 > month ||
+    (now.getUTCMonth() + 1 === month && now.getUTCDate() >= day);
+  if (!hadBirthday) years -= 1;
+  return years < 0 ? null : years;
+}
+
 /** One driver, as the admin page shows them. */
 export interface PendingDriver {
   id: string;
@@ -253,10 +317,34 @@ export interface PendingDriver {
   phone: string;
   /** What the app stores of the Ghana Card. See the note on `last4` below. */
   cardLast4: string;
-  cardExpiry: string;
   selfieUrl: string;
   vehicle: { make: string; model: string; plate: string; seats: number } | null;
   submittedAt: string;
+
+  /**
+   * The Ghana Card, as the driver entered it.
+   *
+   * Reported as stored rather than tidied. An employee is comparing these
+   * against a photograph of the card, and a value this function has quietly
+   * reformatted is a value they cannot check.
+   *
+   * `cardNumber` is null for a driver who submitted before
+   * `20260930000003_ghana_card_fields.sql`, and then carries the four digits of
+   * `ghana_card_last4` with `cardNumberIsPartial` set, so the page can say "first
+   * four digits only" rather than presenting four digits as the whole number.
+   * Note that `last4` holds the *first* four digits -- the app writes
+   * `digits.substring(0, 4)` -- so the name is a misnomer that predates this.
+   */
+  cardNumber: string | null;
+  /** True when [cardNumber] is only the leading four digits. */
+  cardNumberIsPartial: boolean;
+  cardDob: string;
+  cardSex: string;
+  cardNationality: string;
+  cardIssued: string;
+  cardExpiry: string;
+  /** Computed from [cardDob]; null when it cannot be read. */
+  cardAge: number | null;
 
   /**
    * The kinds this driver has sent.

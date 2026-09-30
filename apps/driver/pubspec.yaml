@@ -97,6 +97,23 @@ dependencies:
   # `face_detection_tflite` brings OpenCV, but reaching into its internals for
   # a decode is worse than using the one package whose whole job is decoding.
   image: ^4.5.4
+  # On-device text recognition, for reading the Ghana Card off its photograph.
+  #
+  # Free and on-device, which is the whole reason this is acceptable: the Latin
+  # model is bundled into the APK rather than downloaded, so there is no per-card
+  # cost, no network call, and nothing about a driver's identity document leaves
+  # the phone. A Ghana Card is printed in English, so the default Latin script is
+  # the only model needed and none of the `text-recognition-*` language
+  # dependencies are required.
+  #
+  # This is a different plugin from the `google_mlkit_face_detection` that was
+  # removed from this app. That one called `FaceDetector.processImage`, which
+  # threw a NullPointerException out of Google's own runtime on every frame on the
+  # A06. Text recognition is a different native API with no such history here --
+  # but it is the same kind of third-party native plugin on a phone that has
+  # already surprised us once, so it sits behind `CardReader` and a failure has
+  # to degrade to the driver typing rather than to a dead screen.
+  google_mlkit_text_recognition: ^0.17.1
 
 dev_dependencies:
   flutter_test:

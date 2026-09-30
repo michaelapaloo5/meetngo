@@ -132,6 +132,15 @@ export const staffPage = (supabaseUrl: string): string => `<!doctype html>
   /* The "what is this number" half of the queue row. Quieter than the age
      itself, which is the number being looked at. */
   .ago-when { color:var(--sub); opacity:.75; }
+
+  /* The Ghana Card block. Two columns so a driver with a long name and a long
+     plate do not push the photographs off the bottom of a phone screen, which
+     is the thing this screen is for. */
+  .cardgrid { display:grid; grid-template-columns:1fr 1fr; gap:10px 14px; margin-top:8px; }
+  .crow { min-width:0; }
+  .clabel { font-size:11px; text-transform:uppercase; letter-spacing:.07em; color:var(--sub); }
+  .cvalue { font-weight:600; overflow-wrap:anywhere; }
+  @media (max-width:380px) { .cardgrid { grid-template-columns:1fr; } }
   .badge { background:#FFF4D6; border:1px solid #F0D89B; color:#7A5A00; border-radius:999px; padding:3px 9px; font-size:12px; font-weight:600; white-space:nowrap; }
 
   .err { background:#FDECEC; border:1px solid #F3C2C2; color:#8A1A1A; border-radius:10px; padding:11px 13px; margin:12px 0; font-size:15px; }
@@ -356,6 +365,13 @@ function renderQueue() {
     '<h2>Waiting: ' + queue.length + '</h2>' +
     '<div class="sub">Tap one to review it.</div>' +
     queue.map(function (d) {
+      // Age on the queue row, not only on the review screen. It is the fastest
+      // thing to check and the one that most often catches a card belonging to
+      // somebody else -- so it is worth having while choosing which application
+      // to open, and it costs one span.
+      const age = (d.cardAge === null || d.cardAge === undefined)
+        ? ''
+        : ' &middot; ' + esc(String(d.cardAge)) + ' yrs';
       return '<button class="q" data-id="' + esc(d.id) + '">' +
         '<div class="grow"><div class="who">' + esc(d.fullName || '(no name)') + '</div>' +
         '<div class="ago">' + esc(ago(d.submittedAt)) +
@@ -364,8 +380,9 @@ function renderQueue() {
         // so a driver who signed up on Monday and sent everything on Wednesday
         // read as "2 days ago" next to six photographs taken that morning --
         // which is not a description of the evidence being judged.
-        ' <span class="ago-when">last document</span> &middot; ' +
-        esc((d.vehicle ? d.vehicle.make + ' ' + d.vehicle.model : 'no vehicle')) + '</div></div>' +
+        ' <span class="ago-when">last document</span>' + age + ' &middot; ' +
+        esc((d.vehicle ? d.vehicle.make + ' ' + d.vehicle.model : 'no vehicle')) +
+        '</div></div>' +
         '<span class="badge">Review</span></button>';
     }).join('');
   wireQueue();
@@ -383,6 +400,21 @@ function wireQueue() {
 // ----------------------------------------------------------------- review
 
 let current = null;
+
+/// One label-and-value row of the Ghana Card block.
+///
+/// A row rather than a sentence, because these are being read against a
+/// photograph of the same card one field at a time. A blank value says "not
+/// given" rather than rendering as nothing: an empty row reads as a bug, and a
+/// driver who thinks the app lost their date of birth will retype the whole
+/// card.
+function cardLine(label, value) {
+  const shown = (value === null || value === undefined || String(value).trim() === '')
+    ? 'not given'
+    : String(value);
+  return '<div class="crow"><div class="clabel">' + esc(label) + '</div>' +
+    '<div class="cvalue">' + shown + '</div></div>';
+}
 
 // Whether the open driver has every required document, so Approve is offered.
 // Set by review, read by decideButtons, cleared by load.
@@ -432,6 +464,31 @@ function review(d) {
     // front of them at the moment they make it, not one tap back.
     '<div class="sub" style="margin-top:12px">Last document sent ' +
     esc(ago(d.submittedAt)) + '.</div>' +
+
+    '<div class="label" style="margin-top:16px">Ghana Card</div>' +
+    '<div class="sub">What the driver typed. Check it against the card photo ' +
+    'below.</div>' +
+    '<div class="cardgrid">' +
+    cardLine('Name on card', d.fullName) +
+    cardLine('Date of birth', d.cardDob) +
+    // The age sits beside the date rather than instead of it, because it is the
+    // fastest thing to check against a face and the one that most often catches
+    // a card belonging to somebody else.
+    cardLine('Age', d.cardAge === null || d.cardAge === undefined
+      ? 'not given'
+      : String(d.cardAge)) +
+    cardLine('Sex', d.cardSex) +
+    cardLine('Nationality', d.cardNationality) +
+    // Four digits presented as a card number is something an employee could
+    // check and find wrong, or worse, not check -- so a partial one says so.
+    cardLine('Card number', d.cardNumber
+      ? (d.cardNumberIsPartial
+        ? esc(d.cardNumber) + ' &middot; first four digits only'
+        : esc(d.cardNumber))
+      : 'not given') +
+    cardLine('Date of issue', d.cardIssued) +
+    cardLine('Expires', d.cardExpiry) +
+    '</div>' +
 
     '<div class="label" style="margin-top:16px">Same person?</div>' +
     '<div class="sub">Compare the three. If they are not the same person, decline.</div>' +

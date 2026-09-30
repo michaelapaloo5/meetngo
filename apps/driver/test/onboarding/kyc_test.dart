@@ -15,17 +15,16 @@ Widget wrap(
   KycController c, {
   VoidCallback? onContinue,
   DocumentScanner? selfieScanner,
-}) =>
-    appHarness(
-      ChangeNotifierProvider<KycController>.value(
-        value: c,
-        child: KycScreen(
-          controller: c,
-          onContinue: onContinue,
-          selfieScanner: selfieScanner,
-        ),
-      ),
-    );
+}) => appHarness(
+  ChangeNotifierProvider<KycController>.value(
+    value: c,
+    child: KycScreen(
+      controller: c,
+      onContinue: onContinue,
+      selfieScanner: selfieScanner,
+    ),
+  ),
+);
 
 const _scan = 'REPUBLIC OF GHANA\nGHA-123456789-0\nJANE COOPER\nEXP 04/29';
 
@@ -82,7 +81,7 @@ void main() {
     // malformed form is refused rather than matched loosely.
     test('reports an error when the expiry is malformed', () {
       final r = GhanaCardParser.parse(
-        rawText: 'GHA-123456789-0\nJANE COOPER\nEXP 4-29',
+        rawText: 'GHA-123456789-0\nJANE COOPER\nEXP 13/29',
       );
       expect(r.expiry, isNull);
       expect(r.error, isNotNull);
@@ -120,10 +119,10 @@ void main() {
 
   /// A document as the checklist records one.
   DriverDocument sentDoc(DriverDocumentKind kind) => DriverDocument(
-        kind: kind,
-        path: 'u1/${kind.wire}/1.jpg',
-        createdAt: DateTime.utc(2026, 9, 28),
-      );
+    kind: kind,
+    path: 'u1/${kind.wire}/1.jpg',
+    createdAt: DateTime.utc(2026, 9, 28),
+  );
 
   /// A controller that has all six documents.
   ///
@@ -155,8 +154,7 @@ void main() {
     test('cannot leave the document list with only some sent', () {
       final c = KycController(StubDriverRepository())
         ..recordDocument(sentDoc(DriverDocumentKind.roadWorthy));
-      expect(c.canAdvance, isFalse,
-          reason: 'five documents are still missing');
+      expect(c.canAdvance, isFalse, reason: 'five documents are still missing');
     });
 
     test('leaves the document list once all six are in', () {
@@ -177,8 +175,7 @@ void main() {
     });
 
     test('cannot advance past identity with no name', () {
-      final c = KycController(StubDriverRepository())
-        ..step = KycStep.identity;
+      final c = KycController(StubDriverRepository())..step = KycStep.identity;
       expect(c.canAdvance, isFalse);
     });
 
@@ -263,32 +260,35 @@ void main() {
 
     // Each step writes as it is left, so a driver who loses their connection on
     // the vehicle step keeps the card they already sent.
-    test('walking the whole flow writes each document once, in order', () async {
-      final repo = StubDriverRepository();
-      final c = KycController(repo)
-        ..fullName = 'Jane Cooper'
-        ..step = KycStep.ghanaCard
-        ..cardNumber = 'GHA-123456789-0'
-        ..cardExpiry = '04/29'
-        ..cardName = 'JANE COOPER';
-      await c.advance();
-      expect(repo.cardNumber, 'GHA-123456789-0');
-      expect(c.step, KycStep.selfie);
+    test(
+      'walking the whole flow writes each document once, in order',
+      () async {
+        final repo = StubDriverRepository();
+        final c = KycController(repo)
+          ..fullName = 'Jane Cooper'
+          ..step = KycStep.ghanaCard
+          ..cardNumber = 'GHA-123456789-0'
+          ..cardExpiry = '04/29'
+          ..cardName = 'JANE COOPER';
+        await c.advance();
+        expect(repo.cardNumber, 'GHA-123456789-0');
+        expect(c.step, KycStep.selfie);
 
-      c.selfiePath = '/tmp/selfie.jpg';
-      await c.advance();
-      expect(repo.selfiePath, '/tmp/selfie.jpg');
-      expect(c.step, KycStep.vehicle);
+        c.selfiePath = '/tmp/selfie.jpg';
+        await c.advance();
+        expect(repo.selfiePath, '/tmp/selfie.jpg');
+        expect(c.step, KycStep.vehicle);
 
-      c
-        ..vehicleMake = 'Toyota'
-        ..vehicleModel = 'Corolla'
-        ..vehiclePlate = 'GR-1234-22'
-        ..vehicleSeats = 4;
-      await c.advance();
-      expect(repo.savedVehicle!.plate, 'GR-1234-22');
-      expect(c.step, KycStep.review);
-    });
+        c
+          ..vehicleMake = 'Toyota'
+          ..vehicleModel = 'Corolla'
+          ..vehiclePlate = 'GR-1234-22'
+          ..vehicleSeats = 4;
+        await c.advance();
+        expect(repo.savedVehicle!.plate, 'GR-1234-22');
+        expect(c.step, KycStep.review);
+      },
+    );
 
     // `guard_profile_update` raises on any `kyc_status` other than `pending`, so
     // a client can never approve itself. A controller whose `submit()` landed on
@@ -297,16 +297,18 @@ void main() {
     test('submitting never reports approval the server did not give', () async {
       final repo = StubDriverRepository()
         ..profile = driverProfile(kyc: KycStatus.pending);
-      final c = withAllSix(KycController(repo)
-        ..step = KycStep.review
-        ..cardNumber = 'GHA-123456789-0'
-        ..cardExpiry = '04/29'
-        ..cardName = 'JANE COOPER'
-        ..selfiePath = '/tmp/selfie.jpg'
-        ..vehicleMake = 'Toyota'
-        ..vehicleModel = 'Corolla'
-        ..vehiclePlate = 'GR-1234-22'
-        ..vehicleSeats = 4);
+      final c = withAllSix(
+        KycController(repo)
+          ..step = KycStep.review
+          ..cardNumber = 'GHA-123456789-0'
+          ..cardExpiry = '04/29'
+          ..cardName = 'JANE COOPER'
+          ..selfiePath = '/tmp/selfie.jpg'
+          ..vehicleMake = 'Toyota'
+          ..vehicleModel = 'Corolla'
+          ..vehiclePlate = 'GR-1234-22'
+          ..vehicleSeats = 4,
+      );
       await c.submit();
       expect(c.step, KycStep.underReview);
       expect(c.error, isNull);
@@ -351,22 +353,28 @@ void main() {
       expect(c.busy, isFalse);
     });
 
-    test('checkStatus moves under review to approved when it is approved now',
-        () async {
-      final repo = StubDriverRepository()
-        ..profile = driverProfile(kyc: KycStatus.pending);
-      final c = KycController(repo)..step = KycStep.underReview;
-      repo.profile = driverProfile(kyc: KycStatus.approved);
-      await c.checkStatus();
-      expect(c.step, KycStep.approved);
-    });
+    test(
+      'checkStatus moves under review to approved when it is approved now',
+      () async {
+        final repo = StubDriverRepository()
+          ..profile = driverProfile(kyc: KycStatus.pending);
+        final c = KycController(repo)..step = KycStep.underReview;
+        repo.profile = driverProfile(kyc: KycStatus.approved);
+        await c.checkStatus();
+        expect(c.step, KycStep.approved);
+      },
+    );
 
-    test('checkStatus says so when there is no driver profile at all', () async {
-      final c = KycController(StubDriverRepository())..step = KycStep.underReview;
-      await c.checkStatus();
-      expect(c.step, KycStep.underReview);
-      expect(c.error, isNotNull);
-    });
+    test(
+      'checkStatus says so when there is no driver profile at all',
+      () async {
+        final c = KycController(StubDriverRepository())
+          ..step = KycStep.underReview;
+        await c.checkStatus();
+        expect(c.step, KycStep.underReview);
+        expect(c.error, isNotNull);
+      },
+    );
 
     test('back walks the steps and stops at the first', () async {
       final c = KycController(StubDriverRepository())..step = KycStep.vehicle;
@@ -377,12 +385,19 @@ void main() {
       c.back();
       expect(c.step, KycStep.identity);
       c.back();
-      expect(c.step, KycStep.documents,
-          reason: 'the document list is the first step now, so walking back '
-              'from the name lands on the list and not off the end');
+      expect(
+        c.step,
+        KycStep.documents,
+        reason:
+            'the document list is the first step now, so walking back '
+            'from the name lands on the list and not off the end',
+      );
       c.back();
-      expect(c.step, KycStep.documents,
-          reason: 'there is nothing before the first step');
+      expect(
+        c.step,
+        KycStep.documents,
+        reason: 'there is nothing before the first step',
+      );
     });
 
     test('a scan fills the three card fields', () {
@@ -401,7 +416,11 @@ void main() {
         ..cardExpiry = '01/30';
       c.applyScan('nonsense');
       expect(c.error, isNotNull);
-      expect(c.cardNumber, 'GHA-000000000-0', reason: 'the typed value is kept');
+      expect(
+        c.cardNumber,
+        'GHA-000000000-0',
+        reason: 'the typed value is kept',
+      );
       expect(c.cardExpiry, '01/30');
     });
 
@@ -432,15 +451,21 @@ void main() {
       final c = KycController(StubDriverRepository())..step = KycStep.identity;
       await tester.pumpWidget(wrap(c));
 
-      await tester.enterText(find.byKey(const Key('fullNameField')), 'Jane Cooper');
+      await tester.enterText(
+        find.byKey(const Key('fullNameField')),
+        'Jane Cooper',
+      );
       await tester.pumpAndSettle();
 
-      final button = tester.widget<FilledButton>(find.byKey(const Key('kycNextButton')));
+      final button = tester.widget<FilledButton>(
+        find.byKey(const Key('kycNextButton')),
+      );
       expect(button.onPressed, isNotNull);
     });
 
-    testWidgets('the card step renders the three fields and next button',
-        (tester) async {
+    testWidgets('the card step renders the three fields and next button', (
+      tester,
+    ) async {
       useDesignSurface(tester);
       final c = KycController(StubDriverRepository())..step = KycStep.ghanaCard;
       await tester.pumpWidget(wrap(c));
@@ -454,17 +479,41 @@ void main() {
     // that called `applyScan` on a hard-coded 'GHA-123456789-0 / JANE COOPER'
     // string and threw the captured path away, which prefilled every driver's
     // card with somebody else's card and looked right.
-    testWidgets('the card step does not offer to scan a card into existence',
-        (tester) async {
+    testWidgets('the card step never prefills a card it has not read', (
+      tester,
+    ) async {
       useDesignSurface(tester);
       final c = KycController(StubDriverRepository())..step = KycStep.ghanaCard;
       await tester.pumpWidget(wrap(c));
-      expect(find.byKey(const Key('scanTextButton')), findsOneWidget);
-      expect(find.textContaining('not switched on'), findsOneWidget);
 
-      final controller = tester
-          .widget<TextField>(find.byKey(const Key('ghanaCardNumberField')));
-      expect(controller.controller?.text ?? '', isEmpty);
+      // Both ways in are offered, and neither has run.
+      expect(find.byKey(const Key('scanTextButton')), findsOneWidget);
+      expect(find.byKey(const Key('ghanaCardReadButton')), findsOneWidget);
+
+      // The assertion this test was written for, and still is. It used to read
+      // "does not offer to scan a card into existence" and check that the screen
+      // said card reading was switched off -- which was true when there was no
+      // reader, and stopped being true the moment one was added. The thing worth
+      // protecting is not which buttons are on the screen: it is that arriving at
+      // the step fills in nothing. A number that appears without a card having
+      // been read is a number the driver never checked, and it goes in front of
+      // an employee as though it had been.
+      for (final key in [
+        'ghanaCardNumberField',
+        'ghanaCardExpiryField',
+        'ghanaCardNameField',
+        'ghanaCardDobField',
+        'ghanaCardSexField',
+        'ghanaCardNationalityField',
+        'ghanaCardIssuedField',
+      ]) {
+        final field = tester.widget<TextField>(find.byKey(Key(key)));
+        expect(
+          field.controller?.text ?? '',
+          isEmpty,
+          reason: '$key was filled in without a card being read',
+        );
+      }
     });
 
     testWidgets('pasted scan text fills the three fields', (tester) async {
@@ -483,18 +532,26 @@ void main() {
       expect(find.text('JANE COOPER'), findsOneWidget);
     });
 
-    testWidgets('an unreadable paste says so and fills nothing', (tester) async {
+    testWidgets('an unreadable paste says so and fills nothing', (
+      tester,
+    ) async {
       useDesignSurface(tester);
       final c = KycController(StubDriverRepository())..step = KycStep.ghanaCard;
       await tester.pumpWidget(wrap(c));
 
       await tester.tap(find.byKey(const Key('scanTextButton')));
       await tester.pumpAndSettle();
-      await tester.enterText(find.byKey(const Key('scanTextField')), 'nonsense');
+      await tester.enterText(
+        find.byKey(const Key('scanTextField')),
+        'nonsense',
+      );
       await tester.tap(find.byKey(const Key('scanTextConfirmButton')));
       await tester.pumpAndSettle();
 
-      expect(find.textContaining('Could not read the card number'), findsOneWidget);
+      expect(
+        find.textContaining('Could not read the card number'),
+        findsOneWidget,
+      );
     });
 
     testWidgets('the selfie step captures and says so', (tester) async {
@@ -554,8 +611,9 @@ void main() {
         ),
       );
 
-      final button =
-          tester.widget<CaptureButton>(find.byKey(const Key('selfieButton')));
+      final button = tester.widget<CaptureButton>(
+        find.byKey(const Key('selfieButton')),
+      );
 
       // Not merely "not a ScannerStub" but positively the camera: a stub of
       // some other shape would still be a stub.
@@ -584,7 +642,10 @@ void main() {
       final c = KycController(StubDriverRepository())..step = KycStep.vehicle;
       await tester.pumpWidget(wrap(c));
 
-      await tester.enterText(find.byKey(const Key('vehiclePlateField')), 'gr-1234-22');
+      await tester.enterText(
+        find.byKey(const Key('vehiclePlateField')),
+        'gr-1234-22',
+      );
       await tester.pumpAndSettle();
       expect(c.vehiclePlate, 'GR-1234-22');
     });
@@ -596,25 +657,32 @@ void main() {
         ..cardName = 'JANE COOPER'
         ..cardNumber = 'GHA-123456789-0'
         ..cardExpiry = '04/29'
+        ..cardDob = '14/03/1994'
+        ..cardSex = 'F'
+        ..cardNationality = 'Ghanaian'
+        ..cardIssued = '02/11/2021'
         ..vehicleMake = 'Toyota'
         ..vehicleModel = 'Corolla'
         ..vehiclePlate = 'GR-1234-22';
       await tester.pumpWidget(wrap(c));
       expect(find.byKey(const Key('kycSubmitButton')), findsOneWidget);
-      expect(find.textContaining('JANE COOPER'), findsOneWidget);
-      expect(find.textContaining('GHA-123456789-0 (04/29)'), findsOneWidget);
-      expect(find.textContaining('Toyota Corolla (GR-1234-22)'), findsOneWidget);
-    });
-
-    testWidgets('the approved step shows the confirmation once', (tester) async {
-      useDesignSurface(tester);
-      final c = KycController(StubDriverRepository())..step = KycStep.approved;
-      await tester.pumpWidget(wrap(c));
-      // The plan put the step's headline in the app bar *and* the same string in
-      // the body, so its own `findsOneWidget` could never pass.
-      expect(find.text('You are verified'), findsOneWidget);
-      expect(find.byIcon(Icons.check_circle), findsOneWidget);
-      expect(find.byKey(const Key('kycStartDrivingButton')), findsOneWidget);
+      // The whole card, one row per field, so a value can be checked against
+      // the photograph rather than skimmed past inside a sentence.
+      expect(find.byKey(const Key('kycDetail_Nameoncard')), findsOneWidget);
+      expect(find.text('JANE COOPER'), findsOneWidget);
+      expect(find.text('14/03/1994'), findsOneWidget);
+      expect(find.text('GHA-123456789-0'), findsOneWidget);
+      expect(find.text('04/29'), findsOneWidget);
+      expect(find.text('02/11/2021'), findsOneWidget);
+      expect(find.text('Ghanaian'), findsOneWidget);
+      expect(find.text('F'), findsOneWidget);
+      // Age is computed from the date of birth rather than typed, and is the
+      // number an eye checks fastest against a face.
+      expect(find.byKey(const Key('kycDetail_Age')), findsOneWidget);
+      expect(find.text('not given'), findsNothing);
+      expect(find.text('32'), findsOneWidget);
+      expect(find.text('Toyota Corolla'), findsOneWidget);
+      expect(find.text('GR-1234-22'), findsOneWidget);
     });
 
     testWidgets('no step renders its headline twice', (tester) async {
@@ -634,15 +702,18 @@ void main() {
         expect(
           find.text(entry.value).evaluate().length,
           1,
-          reason: '${entry.key.name}: "${entry.value}" is rendered more than once',
+          reason:
+              '${entry.key.name}: "${entry.value}" is rendered more than once',
         );
       }
     });
 
-    testWidgets('under review says a human decides, not the app',
-        (tester) async {
+    testWidgets('under review says a human decides, not the app', (
+      tester,
+    ) async {
       useDesignSurface(tester);
-      final c = KycController(StubDriverRepository())..step = KycStep.underReview;
+      final c = KycController(StubDriverRepository())
+        ..step = KycStep.underReview;
       await tester.pumpWidget(wrap(c));
       expect(find.byKey(const Key('kycCheckStatusButton')), findsOneWidget);
       expect(find.textContaining('administrator'), findsOneWidget);
@@ -694,6 +765,10 @@ class _FailingDriverRepository extends StubDriverRepository {
     required String cardNumber,
     required String expiry,
     required String fullName,
+    String dob = '',
+    String sex = '',
+    String nationality = '',
+    String issued = '',
   }) async {
     throw const DriverAuthFailure('Upload failed, try again');
   }

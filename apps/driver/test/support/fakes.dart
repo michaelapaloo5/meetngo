@@ -96,11 +96,26 @@ class StubDriverRepository implements DriverRepository {
     required String cardNumber,
     required String expiry,
     required String fullName,
+    String dob = '',
+    String sex = '',
+    String nationality = '',
+    String issued = '',
   }) async {
     this.cardNumber = cardNumber;
     cardExpiry = expiry;
     cardName = fullName;
+    cardDob = dob;
+    cardSex = sex;
+    cardNationality = nationality;
+    cardIssued = issued;
   }
+
+  /// The card fields the fake was last sent, so a test can assert the write
+  /// carried them rather than only that it did not fail.
+  String cardDob = '';
+  String cardSex = '';
+  String cardNationality = '';
+  String cardIssued = '';
 
   @override
   Future<void> submitSelfie(String path) async => selfiePath = path;

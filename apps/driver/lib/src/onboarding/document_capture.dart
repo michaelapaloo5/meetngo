@@ -18,7 +18,7 @@ import 'document_checklist.dart';
 /// upload trivially faked, and there is no server-side check on any of this.
 class CameraDocumentCapture implements DocumentCapture {
   CameraDocumentCapture([ImagePicker? picker])
-      : _picker = picker ?? ImagePicker();
+    : _picker = picker ?? ImagePicker();
 
   final ImagePicker _picker;
 

@@ -317,10 +317,9 @@ void main() {
       // the app.
       var continued = 0;
       await tester.pumpWidget(
-        wrap(
-          [for (final kind in driverPhotoKinds) sent(kind)],
-          onContinue: () => continued++,
-        ),
+        wrap([
+          for (final kind in driverPhotoKinds) sent(kind),
+        ], onContinue: () => continued++),
       );
       await reveal(tester, footer);
 

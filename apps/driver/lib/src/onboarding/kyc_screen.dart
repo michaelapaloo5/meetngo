@@ -7,6 +7,7 @@ import 'package:mng_core/mng_core.dart';
 import 'package:provider/provider.dart';
 
 import 'document_capture.dart';
+import 'card_reader.dart';
 import 'driver_document.dart';
 import 'liveness/liveness_screen.dart';
 import 'document_checklist.dart';
@@ -262,8 +263,40 @@ class _KycScreenState extends State<KycScreen> {
     }
   }
 
-  Widget _body(BuildContext context, KycController c) {
-    switch (c.step) {
+  /// One label-and-value row for the review screen.
+  ///
+  /// A row rather than a sentence, and the label above the value rather than
+  /// beside it. The reason is that these are being checked against a photograph
+  /// by a person in a hurry, one field at a time: "Date of birth / 14/03/1994" is
+  /// something you can scan down a column of, and "Date of birth: 14/03/1994,
+  /// Sex: M, Nationality: Ghanaian" is a sentence you have to parse.
+  ///
+  /// A blank value says "not given" rather than rendering as nothing. An empty row
+  /// reads as a rendering failure, and a driver would retype a field that is
+  /// perfectly fine -- or worse, would assume the app had lost it.
+  static Widget _detail(String label, String value) {
+    final shown = value.trim().isEmpty ? 'not given' : value.trim();
+    return Padding(
+      padding: EdgeInsets.only(bottom: 10.h),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            label,
+            style: MngTheme.light.textTheme.labelSmall,
+          ),
+          SizedBox(height: 2.h),
+          Text(
+            shown,
+            key: Key('kycDetail_${label.replaceAll(' ', '')}'),
+            style: MngTheme.light.textTheme.bodyMedium,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _body(BuildContext context, KycController c) {    switch (c.step) {
       case KycStep.documents:
         return DocumentChecklist(
           documents: c.documents,
@@ -339,21 +372,46 @@ class _KycScreenState extends State<KycScreen> {
       case KycStep.review:
         return ListView(
           children: [
+            // The whole Ghana Card, because an employee is about to be handed a
+            // photograph of it and asked whether the person in it is who they say
+            // they are. Three fields and a shrug gave them nothing to check
+            // against, and one line per field with a label and a value run
+            // together is easy to skim past.
+            //
+            // Age sits beside the date of birth rather than instead of it, and is
+            // computed rather than typed: it is the number an eye checks fastest
+            // and the one that most often catches a card belonging to somebody
+            // else. `cardAge` is null when the date cannot be read, and the row
+            // then says "not given" rather than showing a guess.
             Text(
-              'Name: ${c.cardName ?? c.fullName ?? ''}',
-              style: MngTheme.light.textTheme.bodyMedium,
+              'Ghana Card',
+              style: MngTheme.light.textTheme.titleSmall,
             ),
-            Text(
-              'Ghana Card: ${c.cardNumber ?? ''} (${c.cardExpiry ?? ''})',
-              style: MngTheme.light.textTheme.bodyMedium,
+            _detail('Name on card', c.cardName ?? c.fullName ?? ''),
+            _detail('Date of birth', c.cardDob ?? ''),
+            _detail(
+              'Age',
+              c.cardAge == null ? 'not given' : '${c.cardAge}',
             ),
+            _detail('Sex', c.cardSex ?? ''),
+            _detail('Nationality', c.cardNationality ?? ''),
+            _detail('Card number', c.cardNumber ?? ''),
+            _detail('Date of issue', c.cardIssued ?? ''),
+            _detail('Expires', c.cardExpiry ?? ''),
+            const SizedBox(height: 20),
             Text(
-              'Vehicle: ${c.vehicleMake ?? ''} ${c.vehicleModel ?? ''} '
-              '(${c.vehiclePlate ?? ''})',
-              style: MngTheme.light.textTheme.bodyMedium,
+              'Vehicle',
+              style: MngTheme.light.textTheme.titleSmall,
             ),
+            _detail(
+              'Registered',
+              '${c.vehicleMake ?? ''} ${c.vehicleModel ?? ''}',
+            ),
+            _detail('Number plate', c.vehiclePlate ?? ''),
+            const SizedBox(height: 20),
             Text(
-              'Demo verification. A human reviews this before launch.',
+              'We check this by hand. Nothing on this screen is decided '
+              'automatically.',
               style: MngTheme.light.textTheme.bodySmall,
             ),
           ],
@@ -423,12 +481,59 @@ class _CardStep extends StatefulWidget {
 }
 
 class _CardStepState extends State<_CardStep> {
-  final _number = TextEditingController();
-  final _expiry = TextEditingController();
+  /// Whether a read is in flight, so the button shows a spinner and cannot be
+  /// pressed twice. Two reads racing would interleave two `applyScan` calls and
+  /// the second would overwrite the first with a worse read of the same card.
+  bool _reading = false;
+
+  CardReader? _reader;
+  DocumentScanner? _scanner;
+
+  /// The reader, and the camera, are built on first use rather than in
+  /// `initState`.
+  ///
+  /// `TextRecognizer` is a native object with a lifetime, and constructing one
+  /// for a driver who never taps the button is a native call on every screen
+  /// build for nothing. `dispose` closes whichever was made.
+  CardReader get _cardReader => _reader ??= MlKitCardReader();
+  DocumentScanner get _cardScanner =>
+      _scanner ??= ImagePickerScanner();
+
+  Future<void> _readCard() async {
+    setState(() => _reading = true);
+    try {
+      await readCardFromCamera(
+        reader: _cardReader,
+        capture: _cardScanner.capture,
+        controller: widget.controller,
+        onMessage: _say,
+        onRead: () => setState(() {}),
+      );
+    } finally {
+      if (mounted) setState(() => _reading = false);
+    }
+  }
+
+  void _say(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+      ..clearSnackBars()
+      ..showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  final _number = TextEditingController();  final _expiry = TextEditingController();
   final _name = TextEditingController();
+  final _dob = TextEditingController();
+  final _sex = TextEditingController();
+  final _nationality = TextEditingController();
+  final _issued = TextEditingController();
   final _numberFocus = FocusNode();
   final _expiryFocus = FocusNode();
   final _nameFocus = FocusNode();
+  final _dobFocus = FocusNode();
+  final _sexFocus = FocusNode();
+  final _nationalityFocus = FocusNode();
+  final _issuedFocus = FocusNode();
 
   @override
   void initState() {
@@ -440,12 +545,32 @@ class _CardStepState extends State<_CardStep> {
   @override
   void dispose() {
     widget.controller.removeListener(_pull);
-    _number.dispose();
-    _expiry.dispose();
-    _name.dispose();
-    _numberFocus.dispose();
-    _expiryFocus.dispose();
-    _nameFocus.dispose();
+    // Only whichever was actually built, and only if it is the real one: a test
+    // that injected a stub has nothing to close, and calling close() on it would
+    // be a method it does not have.
+    if (_reader is MlKitCardReader) (_reader! as MlKitCardReader).dispose();
+    for (final f in <TextEditingController>[
+      _number,
+      _expiry,
+      _name,
+      _dob,
+      _sex,
+      _nationality,
+      _issued,
+    ]) {
+      f.dispose();
+    }
+    for (final n in <FocusNode>[
+      _numberFocus,
+      _expiryFocus,
+      _nameFocus,
+      _dobFocus,
+      _sexFocus,
+      _nationalityFocus,
+      _issuedFocus,
+    ]) {
+      n.dispose();
+    }
     super.dispose();
   }
 
@@ -457,6 +582,14 @@ class _CardStepState extends State<_CardStep> {
     _sync(_number, _numberFocus, c.cardNumber);
     _sync(_expiry, _expiryFocus, c.cardExpiry);
     _sync(_name, _nameFocus, c.cardName);
+    // The four that a card reader can fill, restored the same way. Without these
+    // in `_pull` a resumed driver's date of birth would sit on the server and
+    // show as "not given" on the review screen -- the review being the one place
+    // it is read.
+    _sync(_dob, _dobFocus, c.cardDob);
+    _sync(_sex, _sexFocus, c.cardSex);
+    _sync(_nationality, _nationalityFocus, c.cardNationality);
+    _sync(_issued, _issuedFocus, c.cardIssued);
   }
 
   void _sync(TextEditingController field, FocusNode node, String? value) {
@@ -508,9 +641,70 @@ class _CardStepState extends State<_CardStep> {
           decoration: const InputDecoration(hintText: 'Name on card'),
         ),
         const SizedBox(height: 12),
+        // The rest of the card, after the three that were always here.
+        //
+        // Optional and unvalidated, both deliberately. The gate is still
+        // `cardNumber` and `cardExpiry`: a driver who cannot read or type a date
+        // of birth must still be able to hand in a licence photo and a car, since
+        // the alternative is a person who cannot drive over a form field. And an
+        // unreadable date is stored as typed rather than refused -- see
+        // `20260930000003_ghana_card_fields.sql` for why a `date` column would
+        // have thrown away the entire submission over one mistyped digit.
+        TextField(
+          key: const Key('ghanaCardDobField'),
+          controller: _dob,
+          focusNode: _dobFocus,
+          onChanged: (v) => c.cardDob = v,
+          decoration:
+              const InputDecoration(hintText: 'Date of birth, DD/MM/YYYY'),
+        ),
+        const SizedBox(height: 12),
+        TextField(
+          key: const Key('ghanaCardSexField'),
+          controller: _sex,
+          focusNode: _sexFocus,
+          onChanged: (v) => c.cardSex = v,
+          decoration: const InputDecoration(hintText: 'Sex, M or F'),
+        ),
+        const SizedBox(height: 12),
+        TextField(
+          key: const Key('ghanaCardNationalityField'),
+          controller: _nationality,
+          focusNode: _nationalityFocus,
+          onChanged: (v) => c.cardNationality = v,
+          decoration: const InputDecoration(hintText: 'Nationality'),
+        ),
+        const SizedBox(height: 12),
+        TextField(
+          key: const Key('ghanaCardIssuedField'),
+          controller: _issued,
+          focusNode: _issuedFocus,
+          onChanged: (v) => c.cardIssued = v,
+          decoration:
+              const InputDecoration(hintText: 'Date of issue, DD/MM/YYYY'),
+        ),
+        const SizedBox(height: 12),
+        // Read the card off its photograph, on the phone. Fills the fields
+        // below; never required, and a failure leaves every one of them
+        // editable. See `card_reader.dart` for why a plugin failure is not
+        // allowed to be a driver's problem.
+        OutlinedButton.icon(
+          key: const Key('ghanaCardReadButton'),
+          onPressed: _reading ? null : _readCard,
+          icon: _reading
+              ? const SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Icon(Icons.document_scanner, size: 18),
+          label: Text(_reading ? 'Reading the card' : 'Read my card'),
+        ),
+        const SizedBox(height: 12),
         Text(
-          'Automatic card reading is not switched on in this build. Enter '
-          'the three fields by hand, or paste the text a scan produced.',
+          'Reading the card fills these in from the photograph. Check every one '
+          'against the card before you continue -- an employee checks them '
+          'against the same photograph, and a wrong value here is a rejection.',
           style: MngTheme.light.textTheme.bodySmall,
         ),
       ],

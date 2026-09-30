@@ -22,6 +22,8 @@ import {
   handleDecide,
   handleList,
   isAdmin,
+  ageFromGhanaCardDate,
+  ALL_DOCUMENTS,
   REQUIRED_DOCUMENTS,
   submittedAtFor,
   type AdminDeps,
@@ -391,6 +393,8 @@ export function buildAdminDeps(
       const { data, error } = await service
         .from('profiles')
         .select('id, full_name, phone, ghana_card_last4, ghana_card_expiry, ' +
+          'ghana_card_number, ghana_card_dob, ghana_card_sex, ' +
+          'ghana_card_nationality, ghana_card_issued, ' +
           'selfie_url, vehicle_id, created_at')
         .eq('role', 'driver')
         .eq('kyc_status', 'pending')
@@ -433,6 +437,20 @@ export function buildAdminDeps(
           // and the mismatch is worth seeing.
           cardLast4: str(r['ghana_card_last4']),
           cardExpiry: str(r['ghana_card_expiry']),
+          // The full number when the driver sent one, and the leading four
+          // digits when they submitted before the column existed. Flagged rather
+          // than padded: four digits presented as a card number is something an
+          // employee could check and find wrong, or worse, not check.
+          cardNumber: str(r['ghana_card_number']) ||
+            str(r['ghana_card_last4']) ||
+            null,
+          cardNumberIsPartial: str(r['ghana_card_number']) === '' &&
+            str(r['ghana_card_last4']) !== '',
+          cardDob: str(r['ghana_card_dob']),
+          cardSex: str(r['ghana_card_sex']),
+          cardNationality: str(r['ghana_card_nationality']),
+          cardIssued: str(r['ghana_card_issued']),
+          cardAge: ageFromGhanaCardDate(str(r['ghana_card_dob'])),
           selfieUrl: str(r['selfie_url']),
           vehicle: vehicle === null ? null : {
             make: vehicle.make,
@@ -508,6 +526,18 @@ export function buildAdminDeps(
         // list any more. The names would be a claim about a driver who is gone.
         documents: [],
         submittedAt: '',
+        // The card fields are empty here for the same reason `documents` is: this
+        // row is what the page is left holding after a decision, and the driver
+        // is no longer on the list. Only the card number and expiry are carried
+        // at all, because they were on the row this query already selected for
+        // the decision's own sake.
+        cardNumber: null,
+        cardNumberIsPartial: false,
+        cardDob: '',
+        cardSex: '',
+        cardNationality: '',
+        cardIssued: '',
+        cardAge: null,
       };
     },
 
@@ -702,11 +732,33 @@ async function documentsForAll(
     const id = str(r['driver_id']);
     const kind = str(r['kind']);
     const path = str(r['path']);
-    // A row whose kind is not one of the six is dropped rather than reported.
-    // It cannot help `missingDocuments` -- a kind the list has never heard of
-    // is a kind that was never sent -- and passing it through would put an
-    // unknown name in an admin's face.
-    if (id === '' || !REQUIRED_DOCUMENTS.includes(kind) || path === '') continue;
+    // A row whose kind the list has never heard of is dropped rather than
+    // reported, because passing it through would put an unknown name in an
+    // admin's face. The list of kinds it *has* heard of is `ALL_DOCUMENTS`, which
+    // includes the optional ones -- see the note at the filter below.
+    // Filtered against ALL_DOCUMENTS, not REQUIRED_DOCUMENTS, and the difference
+    // is the face check.
+    //
+    // This tested `REQUIRED_DOCUMENTS.includes(kind)`, which reads like the
+    // comment above it -- "a kind the list has never heard of is a kind that was
+    // never sent" -- but it does something else: it drops every *optional* kind
+    // as well. `livenessFrame` is optional, so the row was discarded here, and
+    // `handleList` builds its `documents` from this map, so the list never
+    // reported that a face check existed.
+    //
+    // The approval page asks for exactly three photographs side by side to answer
+    // "is this the same person": the profile picture, the face check, and the
+    // licence. With the face check silently missing, that comparison has been
+    // running on two photographs, and the empty tile reads as "this driver did
+    // not do the face check" rather than as a fault. An employee is being asked
+    // to make a judgement on identity from less evidence than the screen says
+    // they have, with nothing to tell them so.
+    //
+    // Nothing downstream depended on the narrower filter. `missingDocuments`
+    // still answers over REQUIRED_DOCUMENTS, so the approval gate is unchanged,
+    // and `optionalMissing` is now correct rather than always listing the face
+    // check as absent.
+    if (id === '' || !ALL_DOCUMENTS.includes(kind) || path === '') continue;
     const list = out.get(id) ?? [];
     // `created_at` is what `submittedAtFor` dates the application by. Read here
     // rather than in a second query: this is already one read for every pending

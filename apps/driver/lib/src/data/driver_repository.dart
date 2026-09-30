@@ -49,6 +49,10 @@ abstract class DriverRepository {
     required String cardNumber,
     required String expiry,
     required String fullName,
+    String dob = '',
+    String sex = '',
+    String nationality = '',
+    String issued = '',
   });
 
   /// Records the selfie the driver captured on this device.

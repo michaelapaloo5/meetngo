@@ -77,6 +77,17 @@ function fake(overrides: Partial<AdminDeps> = {}) {
         vehicle: null,
         documents: [],
         submittedAt: '',
+        // The Ghana Card, as PendingDriver now carries it. cardNumber is
+        // the full number and cardNumberIsPartial says when it is not,
+        // because four digits presented as a card number is something an
+        // employee could check and find wrong.
+        cardNumber: 'GHA-123456789-0',
+        cardNumberIsPartial: false,
+        cardDob: '14/03/1994',
+        cardSex: 'F',
+        cardNationality: 'Ghanaian',
+        cardIssued: '02/11/2021',
+        cardAge: 32,
       };
     },
     approveVehicle: async (driverId: string): Promise<boolean> => {
@@ -163,6 +174,17 @@ Deno.test('an admin gets the pending list', async () => {
       // than about the gate. The gate has its own tests below.
       documents: [...REQUIRED_DOCUMENTS],
       submittedAt: '2026-09-29T00:00:00Z',
+        // The Ghana Card, as PendingDriver now carries it. cardNumber is
+        // the full number and cardNumberIsPartial says when it is not,
+        // because four digits presented as a card number is something an
+        // employee could check and find wrong.
+        cardNumber: 'GHA-123456789-0',
+        cardNumberIsPartial: false,
+        cardDob: '14/03/1994',
+        cardSex: 'F',
+        cardNationality: 'Ghanaian',
+        cardIssued: '02/11/2021',
+        cardAge: 32,
     },
   ];
   const deps = fake({ listPending: async () => drivers });
