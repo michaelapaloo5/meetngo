@@ -22,11 +22,13 @@ abstract class DriverAuthRepository {
   Future<void> signInWithPassword(String email, String password);
 
   /// Creates an account and stores [fullName] as `full_name` in
-  /// `raw_user_meta_data`.
+  /// `raw_user_meta_data`, along with `role: 'driver'`.
   ///
-  /// Throws [DriverAuthFailure] when the project has email confirmation on --
-  /// Supabase answers a signup with no session, which is a success the caller
-  /// cannot otherwise tell from a silent no-op.
+  /// The project has `mailer_autoconfirm` on, so this answers with a usable
+  /// session straight away and the driver goes into the app without touching an
+  /// inbox. That was not always so, and it is the setting most likely to be
+  /// turned off by accident, so the no-session case is handled and explained
+  /// rather than assumed impossible.
   Future<void> signUp(String email, String password, String fullName);
 
   Future<void> signInWithGoogle();
@@ -77,7 +79,23 @@ class SupabaseDriverAuthRepository implements DriverAuthRepository {
         // `full_name` is the key `20260928000001_persist_signup_name.sql` reads
         // to seed `profiles.full_name`, and it is the key the rider app sends,
         // so one account carries the same name whichever app created it.
-        data: {'full_name': fullName},
+        //
+        // `role: 'driver'` is the other half of that, and it was missing, which
+        // is why no driver who signed up could ever be matched to a trip.
+        // `handle_new_user` reads it once, here, at signup; the value written is
+        // `driver` when this key says `driver` and `rider` for anything else,
+        // including no key at all. So a person who installed the *rider* app
+        // first was a rider forever: they could upload all seven documents and
+        // be approved by an employee and still be invisible to
+        // `match_offers_for_trip`, which filters on `role = 'driver'`.
+        //
+        // Sending it here is not a privilege escalation and does not need one.
+        // It is a category, not a capability -- `20260930000002_driver_role.sql`
+        // explains why the same transition is also allowed afterwards, and that
+        // `role = 'driver'` on its own gets a person no further than a place in
+        // the approval queue, because `kyc_status = 'approved'` and
+        // `vehicles.approved` are both service-role writes.
+        data: {'full_name': fullName, 'role': 'driver'},
       );
     } on AuthException catch (e) {
       throw DriverAuthFailure(e.message);
@@ -85,12 +103,20 @@ class SupabaseDriverAuthRepository implements DriverAuthRepository {
       throw DriverAuthFailure(_readableTransportFailure(e));
     }
     if (response.session == null) {
-      // The project has "Confirm email" switched on: the account exists, but
-      // there is no session until the address is confirmed. Saying nothing here
-      // leaves the Sign Up button looking like it did nothing, so it says what
-      // happened and what to do next.
+      // The project used to have "Confirm email" switched on, and this branch
+      // existed to explain to a driver that their account existed but needed a
+      // click on an email first. `mailer_autoconfirm` is now true, so a signup
+      // answers with a session every time, and this is no longer an expected
+      // state -- it means the setting was turned back on, or the response is
+      // not what it looks like.
+      //
+      // It is kept rather than deleted because a driver who hits it deserves a
+      // sentence and not a stack trace, and because the fix is one toggle in the
+      // Supabase dashboard rather than a code change. The wording no longer
+      // promises an email is on its way, because with autoconfirm on it would
+      // not be.
       throw const DriverAuthFailure(
-        'Account created. Confirm the email we sent, then log in.',
+        'Could not start your session. Try again in a moment.',
       );
     }
   }
