@@ -38,7 +38,8 @@ const String kDocumentBucket = 'kyc-documents';
 ///     not their problem when it is -- is a driver who gives up on a photo they
 ///     could have saved.
 DriverAuthFailure documentUploadFailure(StorageException e) {
-  final missingBucket = e.statusCode == '404' ||
+  final missingBucket =
+      e.statusCode == '404' ||
       (e.error?.toLowerCase().contains('not found') ?? false) ||
       e.message.toLowerCase().contains('not found');
   if (missingBucket) {
@@ -60,7 +61,9 @@ DriverAuthFailure documentUploadFailure(StorageException e) {
 /// operations on it all fold a future in rather than a stream, so `expand` and
 /// `asyncMap` cannot flatten one stream of lists into one stream of rows. An
 /// `await for` is the only thing that can.
-Stream<DriverProfile> _profilesOf(Stream<List<Map<String, dynamic>>> events) async* {
+Stream<DriverProfile> _profilesOf(
+  Stream<List<Map<String, dynamic>>> events,
+) async* {
   await for (final rows in events) {
     for (final row in rows) {
       yield DriverProfile.fromJson(row);
@@ -114,6 +117,37 @@ class SupabaseDriverRepository implements DriverRepository {
   }
 
   @override
+  Future<bool> claimDriverRole() async {
+    final uid = _uid;
+    try {
+      // Conditional on `role = 'rider'`, which does two things.
+      //
+      // It makes the write a no-op for an account that is already a driver, so
+      // this is safe to call on every launch rather than needing a local flag
+      // saying "have I claimed yet" -- and a local flag is a second copy of a
+      // fact the server already holds, which is the thing that goes stale.
+      //
+      // And it means a zero-row update is the *expected* answer for a driver who
+      // is already a driver, so it cannot be mistaken for a failure. The write
+      // that matters -- `rider` to `driver` -- is the one that returns a row.
+      final rows = await _client
+          .from('profiles')
+          .update({'role': 'driver'})
+          .eq('id', uid)
+          .eq('role', 'rider')
+          .select('id')
+          .limit(1);
+      return rows.isNotEmpty;
+    } on PostgrestException catch (e) {
+      // A repair, not a step. `guard_profile_update` refuses the reverse
+      // transition, and if it ever refused this one the driver would be stuck
+      // with a screen that cannot be dismissed, so the failure is swallowed and
+      // the driver carries on sending documents.
+      throw DriverAuthFailure(e.message);
+    }
+  }
+
+  @override
   Stream<DriverProfile> watchMe() {
     final user = _client.auth.currentUser;
     // An empty stream rather than a thrown getter: this is read from `build`,
@@ -147,7 +181,9 @@ class SupabaseDriverRepository implements DriverRepository {
             // written so no row is ever missing it, and so a downgrade to an
             // older build loses the full number rather than being unable to show
             // anything at all.
-            'ghana_card_last4': digits.length >= 4 ? digits.substring(0, 4) : null,
+            'ghana_card_last4': digits.length >= 4
+                ? digits.substring(0, 4)
+                : null,
             'ghana_card_number': cardNumber.trim(),
             'ghana_card_dob': dob.trim(),
             'ghana_card_sex': sex.trim(),
@@ -205,7 +241,9 @@ class SupabaseDriverRepository implements DriverRepository {
     // nothing; this tells them the photo was not there, which is the truth and
     // is actionable.
     if (!file.existsSync()) {
-      throw DriverAuthFailure('That ${kind.label.toLowerCase()} could not be read');
+      throw DriverAuthFailure(
+        'That ${kind.label.toLowerCase()} could not be read',
+      );
     }
 
     // The object path carries the driver's own uid as its first folder, because
@@ -214,17 +252,20 @@ class SupabaseDriverRepository implements DriverRepository {
     // place the object name exists. The timestamp means a re-upload never
     // overwrites in place: Storage has no UPDATE, so an in-place write would
     // either fail or leave the old object reachable.
-    final objectPath = '$uid/${kind.wire}/${DateTime.now().toUtc().millisecondsSinceEpoch}.jpg';
+    final objectPath =
+        '$uid/${kind.wire}/${DateTime.now().toUtc().millisecondsSinceEpoch}.jpg';
 
     try {
-      await _client.storage.from(kDocumentBucket).upload(
-        objectPath,
-        file,
-        fileOptions: const FileOptions(
-          contentType: 'image/jpeg',
-          upsert: false,
-        ),
-      );
+      await _client.storage
+          .from(kDocumentBucket)
+          .upload(
+            objectPath,
+            file,
+            fileOptions: const FileOptions(
+              contentType: 'image/jpeg',
+              upsert: false,
+            ),
+          );
     } on StorageException catch (e) {
       throw documentUploadFailure(e);
     } on PostgrestException catch (e) {
@@ -249,15 +290,12 @@ class SupabaseDriverRepository implements DriverRepository {
       // The old storage object is left alone rather than deleted, because a
       // delete that failed after a successful upload would lose the new photo
       // over tidying up the old one.
-      await _client.from('driver_documents').upsert(
-        {
-          'driver_id': uid,
-          'kind': kind.wire,
-          'path': objectPath,
-          'created_at': DateTime.now().toIso8601String(),
-        },
-        onConflict: 'driver_id,kind',
-      );
+      await _client.from('driver_documents').upsert({
+        'driver_id': uid,
+        'kind': kind.wire,
+        'path': objectPath,
+        'created_at': DateTime.now().toIso8601String(),
+      }, onConflict: 'driver_id,kind');
     } on PostgrestException catch (e) {
       throw DriverAuthFailure(e.message);
     }
@@ -324,7 +362,11 @@ class SupabaseDriverRepository implements DriverRepository {
     final PostgrestList saved;
     try {
       if (current == null) {
-        saved = await _client.from('vehicles').insert(payload).select('id').limit(1);
+        saved = await _client
+            .from('vehicles')
+            .insert(payload)
+            .select('id')
+            .limit(1);
       } else {
         saved = await _client
             .from('vehicles')
@@ -548,9 +590,8 @@ class SupabaseDriverRepository implements DriverRepository {
   /// The database's refusal is `illegal trip transition matched -> completed`;
   /// a driver reading that learns nothing about what to press next.
   String _readableTransition(String message) {
-    final match = RegExp(
-      r'illegal trip transition (\w+) -> (\w+)',
-    ).firstMatch(message);
+    final match = RegExp(r'illegal trip transition (\w+) -> (\w+)')
+        .firstMatch(message);
     if (match == null) return message;
     return 'This trip moved from ${match.group(1)} to ${match.group(2)} '
         'without you. Pull the latest trip state before trying again.';

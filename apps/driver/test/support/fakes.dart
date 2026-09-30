@@ -71,6 +71,22 @@ class StubDriverRepository implements DriverRepository {
     return profile;
   }
 
+  /// How many times the app asked to be stored as a driver, and whether that
+  /// works. Both settable, because the interesting cases are a driver who is
+  /// already one, a rider who needs repairing, and a repair that fails.
+  int driverRoleClaims = 0;
+  bool driverRoleClaimFails = false;
+  bool driverRoleClaimReturnsTrue = true;
+
+  @override
+  Future<bool> claimDriverRole() async {
+    driverRoleClaims++;
+    if (driverRoleClaimFails) {
+      throw const DriverAuthFailure('role claim refused');
+    }
+    return driverRoleClaimReturnsTrue;
+  }
+
   @override
   Stream<DriverProfile> watchMe() {
     // Answers the same question [me] does, including its refusal. A fake whose
@@ -142,7 +158,11 @@ class StubDriverRepository implements DriverRepository {
     uploaded.add(kind);
     documents = [
       ...documents.where((d) => d.kind != kind),
-      DriverDocument(kind: kind, path: filePath, createdAt: DateTime(2026, 9, 29)),
+      DriverDocument(
+        kind: kind,
+        path: filePath,
+        createdAt: DateTime(2026, 9, 29),
+      ),
     ];
   }
 
@@ -229,7 +249,9 @@ class StubDriverRepository implements DriverRepository {
   @override
   Future<Vehicle?> myVehicle() async {
     myVehicleCalls++;
-    if (myVehicleFails) throw const DriverAuthFailure('could not read your car');
+    if (myVehicleFails) {
+      throw const DriverAuthFailure('could not read your car');
+    }
     return vehicle;
   }
 
@@ -433,4 +455,3 @@ class StubLocationReader implements LocationReader {
     return heading;
   }
 }
-

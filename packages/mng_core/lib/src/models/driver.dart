@@ -7,6 +7,7 @@ enum KycStatus { notStarted, pending, approved, rejected }
 class DriverProfile {
   const DriverProfile({
     required this.id,
+    this.role = 'rider',
     required this.fullName,
     required this.phone,
     required this.rating,
@@ -25,40 +26,57 @@ class DriverProfile {
   });
 
   factory DriverProfile.fromJson(Map<String, dynamic> json) => DriverProfile(
-        id: json['id'] as String,
-        fullName: (json['full_name'] as String?) ?? '',
-        phone: (json['phone'] as String?) ?? '',
-        photoUrl: (json['photo_url'] as String?) ?? '',
-        rating: ((json['rating'] as num?) ?? 5.0).toDouble(),
-        tripCount: (json['trip_count'] as num?)?.toInt() ?? 0,
-        kyc: KycStatus.values
-            .byName((json['kyc_status'] as String?) ?? 'notStarted'),
-        availability: DriverAvailability.values
-            .byName((json['availability'] as String?) ?? 'offline'),
-        vehicleId: json['vehicle_id'] as String?,
-        // Falls back to `ghana_card_last4` for rows written before
-        // `20260930000003_ghana_card_fields.sql`, so a driver who submitted on an
-        // older build does not show an empty number on the review screen.
-        // `last4` holds the *first* four digits -- the app writes
-        // `digits.substring(0, 4)` -- and the admin page says so where it shows
-        // one, rather than presenting four digits as the whole number.
-        cardNumber: (json['ghana_card_number'] as String?) ??
-            (json['ghana_card_last4'] as String?) ??
-            '',
-        cardDob: (json['ghana_card_dob'] as String?) ?? '',
-        cardSex: (json['ghana_card_sex'] as String?) ?? '',
-        cardNationality: (json['ghana_card_nationality'] as String?) ?? '',
-        cardIssued: (json['ghana_card_issued'] as String?) ?? '',
-        cardExpiry: (json['ghana_card_expiry'] as String?) ?? '',
-        location: json['lat'] == null
-            ? null
-            : GeoPoint(
-                (json['lat'] as num).toDouble(),
-                (json['lng'] as num).toDouble(),
-              ),
-      );
+    id: json['id'] as String,
+    role: (json['role'] as String?) ?? 'rider',
+    fullName: (json['full_name'] as String?) ?? '',
+    phone: (json['phone'] as String?) ?? '',
+    photoUrl: (json['photo_url'] as String?) ?? '',
+    rating: ((json['rating'] as num?) ?? 5.0).toDouble(),
+    tripCount: (json['trip_count'] as num?)?.toInt() ?? 0,
+    kyc: KycStatus.values.byName(
+      (json['kyc_status'] as String?) ?? 'notStarted',
+    ),
+    availability: DriverAvailability.values.byName(
+      (json['availability'] as String?) ?? 'offline',
+    ),
+    vehicleId: json['vehicle_id'] as String?,
+    // Falls back to `ghana_card_last4` for rows written before
+    // `20260930000003_ghana_card_fields.sql`, so a driver who submitted on an
+    // older build does not show an empty number on the review screen.
+    // `last4` holds the *first* four digits -- the app writes
+    // `digits.substring(0, 4)` -- and the admin page says so where it shows
+    // one, rather than presenting four digits as the whole number.
+    cardNumber:
+        (json['ghana_card_number'] as String?) ??
+        (json['ghana_card_last4'] as String?) ??
+        '',
+    cardDob: (json['ghana_card_dob'] as String?) ?? '',
+    cardSex: (json['ghana_card_sex'] as String?) ?? '',
+    cardNationality: (json['ghana_card_nationality'] as String?) ?? '',
+    cardIssued: (json['ghana_card_issued'] as String?) ?? '',
+    cardExpiry: (json['ghana_card_expiry'] as String?) ?? '',
+    location: json['lat'] == null
+        ? null
+        : GeoPoint(
+            (json['lat'] as num).toDouble(),
+            (json['lng'] as num).toDouble(),
+          ),
+  );
 
   final String id;
+
+  /// `rider` or `driver`, as the server has it.
+  ///
+  /// Read, never inferred. This was missing until a driver reported that the app
+  /// said "Waiting for review" while the approval queue showed nothing: the
+  /// queue filters on `role = 'driver'` and the app only ever looked at
+  /// `kyc_status`, so a profile stored as a rider said "waiting" forever and
+  /// nothing explained why. Without the role on the model the app could not even
+  /// know it was in that state, let alone get out of it.
+  final String role;
+
+  bool get isDriver => role == 'driver';
+
   final String fullName;
   final String phone;
   final String photoUrl;
@@ -112,45 +130,51 @@ class DriverProfile {
     KycStatus? kyc,
     GeoPoint? location,
     String? vehicleId,
-  }) =>
-      DriverProfile(
-        id: id,
-        fullName: fullName,
-        phone: phone,
-        photoUrl: photoUrl,
-        rating: rating,
-        tripCount: tripCount,
-        kyc: kyc ?? this.kyc,
-        availability: availability ?? this.availability,
-        vehicleId: vehicleId ?? this.vehicleId,
-        location: location ?? this.location,
-        cardNumber: cardNumber,
-        cardDob: cardDob,
-        cardSex: cardSex,
-        cardNationality: cardNationality,
-        cardIssued: cardIssued,
-        cardExpiry: cardExpiry,
-      );
+    String? role,
+  }) => DriverProfile(
+    id: id,
+    fullName: fullName,
+    // `?? this.role`, not a bare `role`: the parameter shadows the field and is
+    // nullable, so passing it straight through would hand null to a non-nullable
+    // field on every `copyWith` that did not mention the role -- which is most
+    // of them.
+    role: role ?? this.role,
+    phone: phone,
+    photoUrl: photoUrl,
+    rating: rating,
+    tripCount: tripCount,
+    kyc: kyc ?? this.kyc,
+    availability: availability ?? this.availability,
+    vehicleId: vehicleId ?? this.vehicleId,
+    location: location ?? this.location,
+    cardNumber: cardNumber,
+    cardDob: cardDob,
+    cardSex: cardSex,
+    cardNationality: cardNationality,
+    cardIssued: cardIssued,
+    cardExpiry: cardExpiry,
+  );
 
   Map<String, dynamic> toJson() => {
-        'id': id,
-        'full_name': fullName,
-        'phone': phone,
-        'photo_url': photoUrl,
-        'rating': rating,
-        'trip_count': tripCount,
-        'kyc_status': kyc.name,
-        'availability': availability.name,
-        'vehicle_id': vehicleId,
-        if (location != null) 'lat': location!.lat,
-        if (location != null) 'lng': location!.lng,
-        'ghana_card_number': cardNumber,
-        'ghana_card_dob': cardDob,
-        'ghana_card_sex': cardSex,
-        'ghana_card_nationality': cardNationality,
-        'ghana_card_issued': cardIssued,
-        'ghana_card_expiry': cardExpiry,
-      };
+    'id': id,
+    'role': role,
+    'full_name': fullName,
+    'phone': phone,
+    'photo_url': photoUrl,
+    'rating': rating,
+    'trip_count': tripCount,
+    'kyc_status': kyc.name,
+    'availability': availability.name,
+    'vehicle_id': vehicleId,
+    if (location != null) 'lat': location!.lat,
+    if (location != null) 'lng': location!.lng,
+    'ghana_card_number': cardNumber,
+    'ghana_card_dob': cardDob,
+    'ghana_card_sex': cardSex,
+    'ghana_card_nationality': cardNationality,
+    'ghana_card_issued': cardIssued,
+    'ghana_card_expiry': cardExpiry,
+  };
 }
 
 /// Whole years from [raw] to today, or null when [raw] is not a readable date.
@@ -164,7 +188,8 @@ int? ageFromGhanaCardDate(String raw, {DateTime? asOf}) {
   if (parsed == null) return null;
   final now = asOf ?? DateTime.now();
   var years = now.year - parsed.year;
-  final hadBirthday = now.month > parsed.month ||
+  final hadBirthday =
+      now.month > parsed.month ||
       (now.month == parsed.month && now.day >= parsed.day);
   if (!hadBirthday) years -= 1;
   return years < 0 ? null : years;
@@ -189,10 +214,10 @@ DateTime? parseGhanaCardExpiry(String raw) {
   if (text.isEmpty) return null;
 
   // A full date first, so `31/01/2031` and `11/31/2031` both work.
-  final full = RegExp(
-    r'^(\d{1,2})\s*[/\-.]\s*(\d{1,2})\s*[/\-.]\s*(\d{4})$',
-  ).firstMatch(text);
-  if (full != null) return _expiry(int.parse(full.group(2)!), int.parse(full.group(3)!));
+  final full = RegExp(r'^(\d{1,2})\s*[/\-.]\s*(\d{1,2})\s*[/\-.]\s*(\d{4})$')
+      .firstMatch(text);
+  if (full != null)
+    return _expiry(int.parse(full.group(2)!), int.parse(full.group(3)!));
 
   final my = RegExp(r'^(\d{1,2})\s*[/\-.]\s*(\d{2,4})$').firstMatch(text);
   if (my == null) return null;
@@ -207,9 +232,7 @@ DateTime? parseGhanaCardExpiry(String raw) {
   // can be shown after it expired, and `99` should read as 1999 rather than
   // 2099. An expiry more than 20 years out is a mistyped year, not a card.
   final now = DateTime.now().year;
-  final resolved = year >= 100
-      ? year
-      : _nearestCentury(year, now);
+  final resolved = year >= 100 ? year : _nearestCentury(year, now);
   return _expiry(int.parse(my.group(1)!), resolved);
 }
 
@@ -254,11 +277,15 @@ DateTime? parseGhanaCardDate(String raw) {
   // as day 1994, which is not a date.
   final iso = RegExp(r'^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})$').firstMatch(text);
   if (iso != null) {
-    return _date(int.parse(iso.group(1)!,), int.parse(iso.group(2)!),
-        int.parse(iso.group(3)!));
+    return _date(
+      int.parse(iso.group(1)!),
+      int.parse(iso.group(2)!),
+      int.parse(iso.group(3)!),
+    );
   }
 
-  final dmy = RegExp(r'^(\d{1,2})[-/.](\d{1,2})[-/.](\d{2,4})$').firstMatch(text);
+  final dmy = RegExp(r'^(\d{1,2})[-/.](\d{1,2})[-/.](\d{2,4})$')
+      .firstMatch(text);
   if (dmy == null) return null;
   final day = int.parse(dmy.group(1)!);
   final month = int.parse(dmy.group(2)!);

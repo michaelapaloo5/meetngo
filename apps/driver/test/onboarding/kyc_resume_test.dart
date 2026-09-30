@@ -171,6 +171,63 @@ void main() {
       expect(c.step, KycStep.approved);
     });
 
+    test('a driver stored as a rider claims the role on resume', () async {
+      // The bug that was reported twice, and it is worth being precise about the
+      // shape of it: the app said "Waiting for review" and the approval queue
+      // showed nothing, with no error anywhere.
+      //
+      // `handle_new_user` reads the role from signup metadata exactly once, so an
+      // account made before the driver app sent `role: 'driver'` -- or by
+      // somebody who installed the rider app first -- is a rider forever. The app
+      // reads `kyc_status` and so says waiting; the queue filters on `role` as
+      // well and so does not list them. The only cure was a person running SQL.
+      final repo = sentAllSix(
+        profileWith(KycStatus.approved, vehicleId: 'v1'),
+        vehicle: aVehicle(),
+      );
+      // The one thing that makes this a rider rather than a driver. The model
+      // defaults to `rider`, which is why a fixture that does not say otherwise
+      // is one -- and that default is itself worth knowing about.
+      expect(repo.profile?.isDriver, isFalse, reason: 'the fixture is a rider');
+      final c = KycController(repo);
+
+      await c.resumeFromServer();
+
+      expect(repo.driverRoleClaims, 1, reason: 'the rider should have claimed');
+    });
+
+    test('a driver already stored as a driver does not claim', () async {
+      // Claiming is safe to do every launch precisely because the write is
+      // conditional on the role being `rider`, so this is a no-op rather than an
+      // error -- and the app must not spend a write on every cold start.
+      final repo = sentAllSix(
+        profileWith(KycStatus.approved, vehicleId: 'v1'),
+        vehicle: aVehicle(),
+      );
+      repo.profile = repo.profile?.copyWith(role: 'driver');
+      final c = KycController(repo);
+
+      await c.resumeFromServer();
+
+      expect(repo.driverRoleClaims, 0);
+    });
+
+    test('a failed claim does not stop the driver carrying on', () async {
+      // The claim is a repair, not a step. If it throws and the resume gives up,
+      // a driver is stuck behind an error with no way past it -- and the thing
+      // being repaired is only a queue listing, not their ability to work.
+      final repo = sentAllSix(
+        profileWith(KycStatus.pending, vehicleId: 'v1'),
+        vehicle: aVehicle(),
+      )..driverRoleClaimFails = true;
+      final c = KycController(repo);
+
+      await c.resumeFromServer();
+
+      expect(c.step, KycStep.underReview, reason: 'onboarding still resolved');
+      expect(c.error, isNull, reason: 'and nothing was said to the driver');
+    });
+
     test('a resumed review has the vehicle details filled in', () async {
       // The review step shows what was submitted. Empty fields there would tell
       // the driver their vehicle is blank when it is not.
@@ -429,7 +486,8 @@ void main() {
       expect(
         c.step,
         KycStep.underReview,
-        reason: 'a resume with all six documents and a vehicle is already '
+        reason:
+            'a resume with all six documents and a vehicle is already '
             'submitted, and submit() writes nothing to the server',
       );
       c.step = KycStep.review;

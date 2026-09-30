@@ -41,6 +41,37 @@ abstract class DriverRepository {
   /// Live updates to the same row [me] reads.
   Stream<DriverProfile> watchMe();
 
+  /// Asks the server to store this account as a driver, if it is not already.
+  ///
+  /// ## Why the app is allowed to do this
+  ///
+  /// Because `role` is a category and not a capability. Reaching a paying
+  /// passenger needs `kyc_status = 'approved'` and `vehicles.approved`, and both
+  /// are service-role writes a client cannot make -- `guard_profile_update`
+  /// raises on any `kyc_status` other than `pending`, and the vehicles policies
+  /// pin `approved = false`. The most this can do is put somebody in the approval
+  /// queue, which is where a driver has to be anyway.
+  ///
+  /// `guard_profile_update` allows exactly this one transition, `rider` to
+  /// `driver`, and refuses the reverse, so a driver cannot shed their obligations
+  /// mid-trip.
+  ///
+  /// ## Why the app does it at all
+  ///
+  /// Because it otherwise has no way out. `handle_new_user` reads the role from
+  /// signup metadata exactly once, so an account made before the driver app sent
+  /// `role: 'driver'` -- or by somebody who installed the *rider* app first --
+  /// is a rider forever. The database has permitted the repair since
+  /// `20260930000002_driver_role.sql`, and until this call existed nothing
+  /// invoked it: the app said "Waiting for review" (it reads `kyc_status`), the
+  /// approval queue showed nothing (it also filters on `role = 'driver'`), and
+  /// the only cure was a person running SQL by hand. That happened twice.
+  ///
+  /// Returns whether the write happened, so a caller can say so rather than
+  /// assume. A failure is not an error: this is a repair, and a driver who cannot
+  /// be repaired should still be able to carry on sending documents.
+  Future<bool> claimDriverRole();
+
   /// Writes the Ghana Card details and moves `kyc_status` to `pending`.
   ///
   /// `pending` is the only value a client may write: `guard_profile_update`

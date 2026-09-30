@@ -197,7 +197,8 @@ class GhanaCardParser {
     // not than a card that genuinely has only an expiry, and turning a date of
     // birth into `14/94` is the exact mistake this parser spent its life
     // avoiding. Refusing leaves the field blank, which the driver fills in.
-    final expiryRaw = labelled['expiry'] ??
+    final expiryRaw =
+        labelled['expiry'] ??
         _bareMonthYearLine(rawText) ??
         (dates.length > 1 ? _asMonthYear(dates, last: true) : null);
     if (expiryRaw == null) {
@@ -219,10 +220,12 @@ class GhanaCardParser {
     // photograph, and it is also what `ageFromGhanaCardDate` has to make sense
     // of. Falls back to the raw text when it is not a full date, so an unusual
     // but readable value is kept rather than dropped.
-    final dob = _asDayMonthYear(labelled['dob'] ?? '') ??
+    final dob =
+        _asDayMonthYear(labelled['dob'] ?? '') ??
         labelled['dob'] ??
         (rest.isNotEmpty ? _asDayMonthYear(rest.first) : null);
-    final issued = _asDayMonthYear(labelled['issued'] ?? '') ??
+    final issued =
+        _asDayMonthYear(labelled['issued'] ?? '') ??
         labelled['issued'] ??
         (rest.length > 1 ? _asDayMonthYear(rest[rest.length - 1]) : null);
 
@@ -238,10 +241,8 @@ class GhanaCardParser {
   }
 
   /// Every `dd/mm/yyyy` in the text, in the order they appear.
-  static List<String> _allDates(String rawText) => _date
-      .allMatches(rawText)
-      .map((m) => m.group(0)!)
-      .toList(growable: false);
+  static List<String> _allDates(String rawText) =>
+      _date.allMatches(rawText).map((m) => m.group(0)!).toList(growable: false);
 
   /// [dates] with [expiryRaw] taken out of it, if it was one of them.
   ///
@@ -281,7 +282,8 @@ class GhanaCardParser {
   static (int, int)? _monthAndYear(String raw) {
     final m = _date.firstMatch(raw);
     if (m != null) return (int.parse(m.group(2)!), int.parse(m.group(3)!));
-    final my = RegExp(r'^(\d{1,2})\s*[/\-.]\s*(\d{2,4})$').firstMatch(raw.trim());
+    final my = RegExp(r'^(\d{1,2})\s*[/\-.]\s*(\d{2,4})$')
+        .firstMatch(raw.trim());
     if (my == null) return null;
     var year = int.parse(my.group(2)!);
     if (year < 100) year += year <= 30 ? 2000 : 1900;
@@ -383,8 +385,7 @@ class GhanaCardParser {
   }
 
   static bool _isLabelLine(String line) =>
-      _labels.values.any((r) => r.hasMatch(line)) ||
-      _cardNumber.hasMatch(line);
+      _labels.values.any((r) => r.hasMatch(line)) || _cardNumber.hasMatch(line);
 
   /// Whether a fragment is a value rather than more of a label.
   static bool _isValue(String text) {
@@ -413,9 +414,8 @@ class GhanaCardParser {
   }
 
   static String? _nationalityOf(String rawText) {
-    final m = RegExp(
-      r'\bNATIONALITY\b\s*[:\-–—]?\s*([A-Za-z ]+)',
-    ).firstMatch(rawText);
+    final m = RegExp(r'\bNATIONALITY\b\s*[:\-–—]?\s*([A-Za-z ]+)')
+        .firstMatch(rawText);
     final value = m?.group(1)?.trim();
     if (value != null && value.isNotEmpty) return value;
     // Every Ghanaian carries `GHANAIAN` somewhere on the card, and on a Ghana
@@ -868,6 +868,31 @@ class KycController extends ChangeNotifier {
       return;
     }
 
+    // The repair, before anything reads the role.
+    //
+    // `handle_new_user` reads the role from signup metadata once, so an account
+    // made before the driver app sent `role: 'driver'` -- or by somebody who
+    // installed the rider app first -- is a rider forever. The approval queue
+    // filters on `role = 'driver'` as well as on `kyc_status`, so such a driver
+    // appears in the app as "Waiting for review" and in no queue at all, and
+    // nothing on either screen says why.
+    //
+    // Claiming it here rather than at signup is what makes the signup fix cover
+    // accounts that already existed, and the database permits exactly this one
+    // transition. It grants nothing: `kyc_status = 'approved'` and
+    // `vehicles.approved` are both service-role writes, so the worst this can do
+    // is put somebody in the queue, which is where they need to be.
+    if (profile != null && !profile.isDriver) {
+      try {
+        await _repo.claimDriverRole();
+      } on Object {
+        // Swallowed on purpose. If the claim fails the driver can still upload
+        // every document and an employee can still see them, and a driver stuck
+        // behind an error dialog is a worse outcome than one who has to ask why
+        // they are not in the queue.
+      }
+    }
+
     // The vehicle read is separate on purpose. A driver whose profile is
     // readable has at least sent their card, so the flow can continue past the
     // card step even when the vehicle read is refused -- and refusing to
@@ -995,7 +1020,8 @@ class KycController extends ChangeNotifier {
       // is accurate in every way that matters -- an employee can see them, read
       // their documents and approve them -- because the button had no server-side
       // effect to miss.
-      KycStatus.pending => vehicle != null ? KycStep.underReview : KycStep.selfie,
+      KycStatus.pending =>
+        vehicle != null ? KycStep.underReview : KycStep.selfie,
       // A rejection sends the driver back to the beginning on purpose: the
       // card is the document that was refused, so re-entering the name and
       // scanning a new card is the honest retry rather than carrying on past
