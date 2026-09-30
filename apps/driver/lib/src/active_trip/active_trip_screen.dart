@@ -3,6 +3,8 @@ import 'package:flutter_screenutil/flutter_screenutil.dart';
 import 'package:mng_core/mng_core.dart';
 import 'package:provider/provider.dart';
 
+import '../contact/contact_controller.dart';
+import '../contact/contact_sheet.dart';
 import '../location/location_banner.dart';
 import '../location/location_controller.dart';
 import '../map/driver_map_panel.dart';
@@ -14,6 +16,7 @@ class ActiveTripScreen extends StatelessWidget {
     super.key,
     required this.onFinished,
     required this.location,
+    required this.contact,
   });
 
   /// Called when the driver presses the button on a finished trip.
@@ -23,6 +26,14 @@ class ActiveTripScreen extends StatelessWidget {
   /// provider read, and the body is wrapped in a `ListenableBuilder` over it,
   /// because a fix that arrives after the first frame has to move the pin.
   final LocationController location;
+
+  /// The other party on this trip, for the call sheet.
+  ///
+  /// An argument rather than a provider read, matching [location] and for the
+  /// same reason: this screen must be renderable in a test with no network and
+  /// no Supabase client. The controller is read through a `ListenableBuilder`
+  /// below, so a number that arrives after the first frame reaches the button.
+  final ContactController contact;
 
   /// What the two buttons the plan put on this screen cannot do yet.
   ///
@@ -34,9 +45,6 @@ class ActiveTripScreen extends StatelessWidget {
   /// navigate, which is the honest replacement.
   static const _notInThisBuild =
       'Turn-by-turn navigation is not part of this build. Follow the map above.';
-
-  static const _callNotInThisBuild =
-      'Calling from the app is not part of this build.';
 
   @override
   Widget build(BuildContext context) {
@@ -173,26 +181,52 @@ class ActiveTripScreen extends StatelessWidget {
             padding: EdgeInsets.fromLTRB(20.w, 12.h, 20.w, 20.h),
             child: Column(
               children: [
-                Row(
-                  children: [
-                    Expanded(
-                      child: OutlinedButton.icon(
-                        key: const Key('navigateButton'),
-                        onPressed: () => _say(context, _notInThisBuild),
-                        icon: const Icon(Icons.navigation),
-                        label: const Text('Navigate'),
+                // Rebuilt when the contact controller changes, so the button
+                // wakes when the number arrives. Without this the button is
+                // rendered once with no contact, stays disabled for the rest of
+                // the trip, and a driver who presses it concludes calling is
+                // broken -- which is exactly what the button said it was before
+                // this feature existed.
+                ListenableBuilder(
+                  listenable: contact,
+                  builder: (context, _) => Row(
+                    children: [
+                      Expanded(
+                        child: OutlinedButton.icon(
+                          key: const Key('navigateButton'),
+                          onPressed: () => _say(context, _notInThisBuild),
+                          icon: const Icon(Icons.navigation),
+                          label: const Text('Navigate'),
+                        ),
                       ),
-                    ),
-                    SizedBox(width: 12.w),
-                    Expanded(
-                      child: OutlinedButton.icon(
-                        key: const Key('callRiderButton'),
-                        onPressed: () => _say(context, _callNotInThisBuild),
-                        icon: const Icon(Icons.call),
-                        label: const Text('Call'),
+                      SizedBox(width: 12.w),
+                      Expanded(
+                        child: OutlinedButton.icon(
+                          key: const Key('callRiderButton'),
+                          // Opens the contact sheet, which offers the dialler,
+                          // the clipboard and a full-screen read of the number.
+                          // The label says who, once the number has loaded,
+                          // because "Call Michael" and "Call" are different
+                          // levels of reassurance and a driver about to dial a
+                          // stranger's number wants both.
+                          onPressed: contact.contact == null
+                              ? null
+                              : () => ContactSheet.show(context, contact.contact!),
+                          icon: const Icon(Icons.call),
+                          label: Text(
+                            contact.contact?.actionLabel ??
+                                (contact.busy ? 'Loading...' : 'Call'),
+                            key: const Key('callRiderLabel'),
+                            // One line, ellipsised: a name long enough to wrap
+                            // pushes the button's height out of line with
+                            // Navigate beside it.
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
                 SizedBox(height: 12.h),
                 FilledButton(

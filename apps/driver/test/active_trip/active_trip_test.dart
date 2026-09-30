@@ -3,6 +3,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:mng_core/mng_core.dart';
 import 'package:meetngo_driver/src/active_trip/active_trip_controller.dart';
 import 'package:meetngo_driver/src/active_trip/active_trip_screen.dart';
+import 'package:meetngo_driver/src/contact/contact_controller.dart';
 import 'package:meetngo_driver/src/data/driver_repository.dart';
 import 'package:meetngo_driver/src/location/location_controller.dart';
 import 'package:provider/provider.dart';
@@ -14,24 +15,56 @@ import '../support/harness.dart';
 /// [LocationController]. A stub reader with no fix is the case that matters
 /// here: the trip's own stops have to render whether or not the driver has a
 /// position, and a test that supplied a fix would never prove that.
+///
+/// The contact controller is the same idea: a stub repository with **no** number
+/// is the default, because the case that matters for every other assertion in
+/// this file is a trip whose rider has no number on file, and a test that
+/// supplied one would stop exercising the disabled-button path. The contact tests
+/// pass a real one.
 Widget wrap(
   ActiveTripController c, {
   VoidCallback? onFinished,
   LocationController? location,
-}) =>
-    appHarness(
-      ChangeNotifierProvider<ActiveTripController>.value(
-        value: c,
-        child: ActiveTripScreen(
-          onFinished: onFinished ?? () {},
-          location: location ??
-              LocationController(
-                StubLocationReader(pointThrows: 'no fix'),
-                StubDriverRepository(),
-              ),
-        ),
+  ContactRepository? contacts,
+  Contact? contact,
+}) {
+  // One source of truth, not two. `wrap` took both a repository and a contact,
+  // and the controller was built from the repository and then had `contact`
+  // adopted over the top of it -- so a test that passed a repository *and* left
+  // `contact` null had its answer overwritten with null by `adopt`, and the
+  // button stayed disabled with no obvious reason. Only `contact` now seeds it,
+  // and `contacts` is a separate escape hatch for a test that wants the lookup
+  // path rather than the value.
+  final controller = contacts != null
+      ? ContactController(contacts)
+      : ContactController(_NoNumber());
+  if (contacts == null) controller.adopt(contact);
+  return appHarness(
+    ChangeNotifierProvider<ActiveTripController>.value(
+      value: c,
+      child: ActiveTripScreen(
+        onFinished: onFinished ?? () {},
+        location: location ??
+            LocationController(
+              StubLocationReader(pointThrows: 'no fix'),
+              StubDriverRepository(),
+            ),
+        contact: controller,
       ),
-    );
+    ),
+  );
+}
+
+/// A repository that finds nobody. The default for every test here.
+///
+/// Every test in this file seeds the contact with `adopt` rather than through a
+/// repository, because the question these tests answer is what the screen does
+/// with a number, not how the number is fetched -- and the fetching has its own
+/// suite in `test/contact/`.
+class _NoNumber implements ContactRepository {
+  @override
+  Future<Contact?> contactFor(String tripId) async => null;
+}
 
 void main() {
   late StubDriverRepository repo;
@@ -349,7 +382,14 @@ void main() {
   // `google_maps_flutter` and `url_launcher` are not dependencies of this app.
   // The plan's `onPressed: () {}` was a live-looking control that did nothing;
   // what is here says what is missing.
-  testWidgets('the two buttons say what is missing rather than doing nothing',
+  //
+  // This used to be one test covering both buttons, asserting that each said
+  // "not part of this build". It is two now, because the two buttons no longer
+  // share a fate. `url_launcher` is a dependency, the rider's number is fetched
+  // and shown, and Call opens a sheet offering the dialler, the clipboard and a
+  // full-screen read. Navigate still says it is missing, because there is still no
+  // turn-by-turn engine wired into the app.
+  testWidgets('Navigate still says what is missing rather than doing nothing',
       (tester) async {
     useDesignSurface(tester);
     final c = ActiveTripController(repo)..trip = tripIn(TripState.matched);
@@ -358,29 +398,91 @@ void main() {
     await tester.tap(find.byKey(const Key('navigateButton')));
     await tester.pumpAndSettle();
     expect(find.textContaining('not part of this build'), findsOneWidget);
+  });
 
-    // Let the SnackBar finish before the second tap. Both buttons share one
-    // row low on a 390x844 screen, and the SnackBar is laid out over the
-    // bottom of the Scaffold, so while the first message is up it is the thing
-    // under the `Call` button: the tap resolved to an offset inside the
-    // SnackBar and Flutter warned that the hit test missed. The second
-    // message then never appeared and the test failed on an assertion about
-    // the second button rather than about the overlay.
-    //
-    // `pumpAndSettle` is not enough on its own -- it settles the entrance
-    // animation but not the dismiss timer, which is a timer rather than a
-    // frame -- so the duration is advanced explicitly past the default 4s.
-    await tester.pump(const Duration(seconds: 5));
-    await tester.pumpAndSettle();
-    expect(
-      find.byType(SnackBar),
-      findsNothing,
-      reason: 'the first message must be gone before the second button is tapped',
-    );
+  group('the Call button', () {
+    testWidgets('is disabled when the rider has no number on file', (tester) async {
+      useDesignSurface(tester);
+      final c = ActiveTripController(repo)..trip = tripIn(TripState.matched);
+      await tester.pumpWidget(wrap(c));
+      // The default in `wrap` is a repository that finds nobody, which is the
+      // state every driver is in until the rider has a number. Disabled rather
+      // than absent: a driver needs to see that calling exists and be told it
+      // cannot yet, not find a row with one button in it.
+      final button = tester.widget<OutlinedButton>(
+        find.byKey(const Key('callRiderButton')),
+      );
+      expect(button.onPressed, isNull);
+    });
 
-    await tester.tap(find.byKey(const Key('callRiderButton')));
-    await tester.pumpAndSettle();
-    expect(find.textContaining('Calling from the app'), findsOneWidget);
+    testWidgets('opens the contact sheet when there is a number', (tester) async {
+      useDesignSurface(tester);
+      final c = ActiveTripController(repo)..trip = tripIn(TripState.matched);
+      await tester.pumpWidget(wrap(
+        c,
+        contact: Contact(
+          role: ContactRole.rider,
+          phone: '0241234567',
+          callable: true,
+          name: 'Michael Apaloo',
+        ),
+      ));
+
+      // The label names the rider, not just "Call": a driver about to dial a
+      // stranger's number wants to see who.
+      expect(find.text('Call Michael'), findsOneWidget);
+
+      await tester.tap(find.byKey(const Key('callRiderButton')));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('contactNumber')), findsOneWidget);
+      expect(find.text('024 123 4567'), findsOneWidget);
+    });
+
+    testWidgets('wakes when the number arrives after the first frame', (tester) async {
+      // The bug this catches: the button is built once, with no contact, and
+      // stays disabled for the rest of the trip. A driver who presses it then
+      // concludes calling is broken -- which is exactly what the button said
+      // about itself before this feature existed.
+      useDesignSurface(tester);
+      final c = ActiveTripController(repo)..trip = tripIn(TripState.matched);
+      final controller = ContactController(_NoNumber());
+      await tester.pumpWidget(appHarness(
+        ChangeNotifierProvider<ActiveTripController>.value(
+          value: c,
+          child: ActiveTripScreen(
+            onFinished: () {},
+            location: LocationController(
+              StubLocationReader(pointThrows: 'no fix'),
+              repo,
+            ),
+            contact: controller,
+          ),
+        ),
+      ));
+      expect(
+        tester
+            .widget<OutlinedButton>(find.byKey(const Key('callRiderButton')))
+            .onPressed,
+        isNull,
+      );
+
+      // The answer arrives after the first build, as it always will.
+      controller.adopt(Contact(
+        role: ContactRole.rider,
+        phone: '0241234567',
+        callable: true,
+        name: 'Michael Apaloo',
+      ));
+      await tester.pumpAndSettle();
+
+      expect(
+        tester
+            .widget<OutlinedButton>(find.byKey(const Key('callRiderButton')))
+            .onPressed,
+        isNotNull,
+      );
+      expect(find.text('Call Michael'), findsOneWidget);
+    });
   });
 }
 

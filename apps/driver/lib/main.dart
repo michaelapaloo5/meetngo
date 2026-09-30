@@ -9,6 +9,7 @@ import 'src/app/driver_flow.dart';
 import 'src/app/driver_shell.dart';
 import 'src/auth/driver_auth_controller.dart';
 import 'src/auth/driver_login_screen.dart';
+import 'src/contact/contact_controller.dart';
 import 'src/data/driver_auth_repository.dart';
 import 'src/data/driver_repository.dart';
 import 'src/data/supabase_driver_repository.dart';
@@ -37,6 +38,14 @@ class DriverNGoApp extends StatelessWidget {
             Provider<EarningsRepository>(
               create: (_) => SupabaseEarningsRepository(client),
             ),
+            // The other party's phone number, through the `contact` Edge
+            // Function. A provider of its own for the same reason as the other
+            // two: a driver cannot read another user's profile, so this is the one
+            // read that has to be a function call, and it belongs beside the
+            // repositories rather than being constructed inside a widget.
+            Provider<ContactRepository>(
+              create: (_) => SupabaseContactRepository(client),
+            ),
             ChangeNotifierProvider<DriverAuthController>(
               create: (c) => DriverAuthController(
                 c.read<DriverAuthRepository>(),
@@ -46,6 +55,7 @@ class DriverNGoApp extends StatelessWidget {
               create: (c) => DriverFlow(
                 drivers: c.read<DriverRepository>(),
                 earnings: c.read<EarningsRepository>(),
+                contacts: c.read<ContactRepository>(),
               ),
             ),
           ],

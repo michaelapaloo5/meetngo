@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:mng_core/mng_core.dart';
 
 import '../active_trip/active_trip_controller.dart';
+import '../contact/contact_controller.dart';
 import '../data/driver_repository.dart';
 import '../earnings/earnings_repository.dart';
 import '../location/location_controller.dart';
@@ -38,11 +39,29 @@ class DriverFlow extends ChangeNotifier {
   DriverFlow({
     required this.drivers,
     required this.earnings,
+    ContactRepository? contacts,
     LocationReader? locationReader,
-  }) : _locationReader = locationReader ?? GeolocatorLocationReader();
+  })  : contacts = contacts ?? const NoContactRepository(),
+        _locationReader = locationReader ?? GeolocatorLocationReader();
 
   final DriverRepository drivers;
   final EarningsRepository earnings;
+
+  /// The one place the other party's phone number is fetched from.
+  ///
+  /// Injected, like [drivers] and [earnings], rather than constructed here:
+  /// `SupabaseContactRepository` needs the Supabase client, and the repositories
+  /// are provided from `main.dart` on purpose. It is also what makes the trip
+  /// screen renderable in a test with a stub and no network.
+  ///
+  /// Optional with a "there is no way to ask" default rather than required,
+  /// because the twenty-odd `DriverFlow(...)` calls in the test suite are about
+  /// offers and earnings and location, not about contact. Making it required
+  /// would have meant a fake contact in every one of them, and a fake in twenty
+  /// places is twenty places to forget to update. The default answers null, which
+  /// is the truth: a flow with no contact repository cannot produce a number.
+  final ContactRepository contacts;
+
   final LocationReader _locationReader;
 
   DriverProfile? profile;

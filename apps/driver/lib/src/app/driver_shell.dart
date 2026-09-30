@@ -6,6 +6,7 @@ import 'package:mng_core/mng_core.dart';
 import 'package:provider/provider.dart';
 
 import '../active_trip/active_trip_controller.dart';
+import '../contact/contact_controller.dart';
 import '../active_trip/active_trip_screen.dart';
 import '../auth/driver_auth_controller.dart';
 import '../data/driver_auth_repository.dart';
@@ -62,6 +63,13 @@ class _DriverShellState extends State<DriverShell> {
   TripsController? _trips;
   Vehicle? _vehicle;
 
+  /// The other party's phone number for the live trip. Null until the trip
+  /// stage first builds, and deliberately not cleared between trips by hand --
+  /// `_tick` calls `load(tripId)` with the new id, and the controller supersedes
+  /// a late answer from the previous one rather than showing a previous rider's
+  /// number.
+  ContactController? _contact;
+
   @override
   void initState() {
     super.initState();
@@ -112,6 +120,21 @@ class _DriverShellState extends State<DriverShell> {
     );
   }
 
+  /// The contact controller for the live trip, created once and reused.
+  ///
+  /// Built here rather than in `DriverFlow` because it is the only consumer, and
+  /// because it has to be *the same instance* every time the trip screen is
+  /// rebuilt -- a new controller per build would show a number that then vanishes
+  /// and reappears as "Loading" on every frame the parent rebuilt.
+  ///
+  /// The lookup is fired against the trip the shell already knows about, in
+  /// `_tick`, and this only hands the controller over. Splitting it that way
+  /// means the screen is a pure function of its arguments and a test can render
+  /// it with a stub repository.
+  ContactController _contactFor(DriverFlow flow) {
+    return _contact ??= ContactController(flow.contacts);
+  }
+
   void _startPolling() {
     _poll?.cancel();
     _poll = Timer.periodic(const Duration(seconds: 3), (_) => _tick());
@@ -130,6 +153,12 @@ class _DriverShellState extends State<DriverShell> {
       });
       _startPolling();
     }
+    // The contact lookup rides along with the poll rather than being fired from
+    // the trip screen's `initState`, for one reason: the trip id is the input, and
+    // the poll is the only place that reliably has the *current* one. A screen
+    // that looked its own id up could fire against the trip the driver has just
+    // finished.
+    unawaited(_contactFor(flow).load(live.id));
   }
 
   /// The driver won the offer, so they are off the queue and the trip is live.
@@ -207,6 +236,7 @@ class _DriverShellState extends State<DriverShell> {
         child: ActiveTripScreen(
           onFinished: _finishTrip,
           location: flow.location,
+          contact: _contactFor(flow),
         ),
       );
     }

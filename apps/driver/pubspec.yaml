@@ -42,15 +42,30 @@ dependencies:
   # exists in 5.x. The real 2.x trap: .sm is deprecated, use .spMin.
   # See the "Screenutil is pinned to 5.x" section of README.md.
   flutter_screenutil: ^5.9.3
-  # Auth, Realtime and Edge Functions. `google_maps_flutter` and `url_launcher`
-  # are not dependencies of this app: nothing imports them, and the two buttons
-  # that would have used `url_launcher` (`navigateButton`, `callRiderButton`)
-  # say so on the screen instead of opening a dead link. `image_picker` is the
-  # only capture seam; see `lib/src/onboarding/document_scanner_stub.dart`.
+  # Auth, Realtime and Edge Functions. `google_maps_flutter` is still not a
+  # dependency: it needs a Maps SDK key, which is billed to a card.
+  # `image_picker` is the only capture seam; see
+  # `lib/src/onboarding/document_scanner_stub.dart`.
   supabase_flutter: ^2.4.0
   geolocator: ^13.0.1
   image_picker: ^1.1.2
   provider: ^6.1.2
+  # Hands a `tel:` number to whatever dialler the phone has, for "Call rider".
+  #
+  # It was deliberately absent before, with the `callRiderButton` saying on the
+  # screen that calling was not part of the build rather than opening a dead
+  # link. That was the right call *then*, because there was no number to call:
+  # `profiles.phone` was never written by anything.
+  #
+  # It is worth being precise about what this package does and does not solve.
+  # `launchUrl` returns false when a `tel:` intent fires and no app handles it,
+  # and throws on some platforms rather than returning false, so "the dialler
+  # opened" is not something this app can promise on a handset with no dialler
+  # configured, no SIM, or a restricted profile. That is why
+  # `ContactSheet` shows the digits on screen unconditionally and offers copy and
+  # a full-screen read as peers of the call button rather than hiding them behind
+  # an error state. A driver who can read the number is never stuck.
+  url_launcher: ^6.3.1
   # The map, on purpose OpenStreetMap raster tiles and not Google Maps.
   # `google_maps_flutter` needs an API key, and an API key with Maps SDK for
   # Android enabled is billed to a card. OSM's public tile servers need no key,
