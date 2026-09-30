@@ -131,6 +131,7 @@ class DriverProfile {
     GeoPoint? location,
     String? vehicleId,
     String? role,
+    String? phone,
   }) => DriverProfile(
     id: id,
     fullName: fullName,
@@ -139,7 +140,18 @@ class DriverProfile {
     // field on every `copyWith` that did not mention the role -- which is most
     // of them.
     role: role ?? this.role,
-    phone: phone,
+    // Same rule as `role`, for the same reason, and for one more: `phone` is the
+    // one field on this profile that changes after the profile is built. The
+    // phone gate asks a driver for a number once their documents are already
+    // approved, which is a change to a profile that otherwise never moves again.
+    // Without this parameter the gate had to construct a whole new profile to
+    // record a single column, which is how the two copies drift apart.
+    //
+    // `?? this.phone` and not a bare pass-through. Note this also means a phone
+    // cannot be *cleared* with `copyWith(phone: null)`; clearing it is done by
+    // passing `''`, which is what the column holds for a driver who has never
+    // given one.
+    phone: phone ?? this.phone,
     photoUrl: photoUrl,
     rating: rating,
     tripCount: tripCount,

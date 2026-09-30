@@ -224,6 +224,51 @@ class SupabaseDriverRepository implements DriverRepository {
   }
 
   @override
+  Future<void> savePhone(String phone) async {
+    final uid = _uid;
+    final normalised = normaliseGhanaPhone(phone);
+    if (normalised == null) {
+      // Thrown rather than written. The screen validates first, so reaching here
+      // means something bypassed the form -- and writing an undiallable number
+      // would leave a driver permanently unreachable with the app showing them a
+      // Call button that never works.
+      throw DriverAuthFailure(
+        'That is not a Ghanaian phone number. Nothing was saved.',
+      );
+    }
+    try {
+      // `.select('id')` is what makes this measurable. Without it, an update
+      // answers `data = null, error = null` whether it wrote a row or matched
+      // none, and those are a success and a failure. With it, an empty list is a
+      // zero-row match.
+      //
+      // The shape is the one every other write in this file uses: `.select()`
+      // resolves to a `PostgrestList` rather than to a response envelope, so
+      // there is no `.error` to read here. A thrown `PostgrestException` is how a
+      // write failure arrives, and the outer `catch` turns it into a
+      // `DriverAuthFailure` with a message a driver can act on.
+      final rows = await _client
+          .from('profiles')
+          .update({'phone': normalised})
+          .eq('id', uid)
+          .select('id')
+          .limit(1);
+      if (rows.isEmpty) {
+        throw DriverAuthFailure('Could not save your number. Try again.');
+      }
+      // The cache is NOT written here. `watchProfile` is a realtime stream on
+      // `profiles` keyed by `id`, so this update arrives on its own and the gate
+      // clears on the next frame. Hand-updating the cached profile as well would
+      // be a second source of truth for the same row, and the two could disagree
+      // if the stream lost the event.
+    } on DriverAuthFailure {
+      rethrow;
+    } catch (e) {
+      throw DriverAuthFailure('Could not save your number. Try again.');
+    }
+  }
+
+  @override
   Future<void> submitSelfie(String path) async {
     // There is no `kyc` storage bucket. `20260927000001_init.sql` creates ten
     // tables and no bucket, and `supabase/config.toml` has every

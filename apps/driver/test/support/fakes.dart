@@ -145,6 +145,34 @@ class StubDriverRepository implements DriverRepository {
   /// against a controller handing an un-normalised number straight through.
   String phone = '';
 
+  /// Set to make [savePhone] fail, so a test can exercise the gate's own error
+  /// path rather than only its happy one.
+  Object? savePhoneError;
+
+  @override
+  Future<void> savePhone(String value) async {
+    final error = savePhoneError;
+    if (error != null) throw error;
+    // Normalised the same way the real repository does, so a test asserting on
+    // what was stored sees what would actually be written rather than what the
+    // caller passed in.
+    final normalised = normaliseGhanaPhone(value);
+    if (normalised == null) {
+      throw const DriverAuthFailure('That is not a Ghanaian phone number.');
+    }
+    phone = normalised;
+    // And the in-memory profile moves with it.
+    //
+    // This is what makes the fake faithful rather than merely convenient. The
+    // real write lands on the `profiles` row, the realtime stream reports it,
+    // and the next profile read returns the number. A fake that stored the
+    // number somewhere the shell never reads would report the phone gate as
+    // "impossible to leave" -- which would be an artefact of the test double and
+    // not a fact about the app.
+    final current = profile;
+    if (current != null) profile = current.copyWith(phone: normalised);
+  }
+
   @override
   Future<void> submitSelfie(String path) async => selfiePath = path;
 

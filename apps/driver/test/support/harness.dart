@@ -52,16 +52,23 @@ Widget appHarness(Widget child, {Key? key}) => ScreenUtilInit(
 );
 
 /// A profile the tests can vary one field of at a time.
+///
+/// [phone] defaults to a valid number because the shell gates on it: a profile
+/// with no number gets the phone gate instead of the home screen, so a test
+/// that means to reach the home screen and forgets to pass one would be stopped
+/// at the gate and report a confusing failure. Passing `''` is the deliberate
+/// way to ask for the gate.
 DriverProfile driverProfile({
   String id = 'd1',
   String fullName = 'Jane Cooper',
   KycStatus kyc = KycStatus.approved,
   DriverAvailability availability = DriverAvailability.offline,
   String? vehicleId = 'v1',
+  String phone = '+233200000000',
 }) => DriverProfile(
   id: id,
   fullName: fullName,
-  phone: '+233200000000',
+  phone: phone,
   rating: 4.9,
   tripCount: 12,
   kyc: kyc,

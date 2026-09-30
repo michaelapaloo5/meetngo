@@ -97,6 +97,23 @@ abstract class DriverRepository {
   /// Records the selfie the driver captured on this device.
   Future<void> submitSelfie(String path);
 
+  /// Writes the driver's own phone number, and nothing else.
+  ///
+  /// Separate from [submitGhanaCard] because the gate a driver hits when they
+  /// have no number is *after* approval: their documents are already accepted and
+  /// asking them to re-send them to add one field is how you lose a verified
+  /// driver. This writes one column and leaves `kyc_status` alone, so it cannot
+  /// approve anybody and cannot un-approve anybody.
+  ///
+  /// [phone] is normalised by the implementation, so every caller gets the same
+  /// rule and the column never holds two spellings of one number.
+  ///
+  /// Refuses a value that is not a Ghanaian number by throwing, rather than
+  /// writing it. The screen validates first, so a throw here means a caller
+  /// bypassed the form, and writing an undiallable number would leave the driver
+  /// permanently unreachable with no way for the app to tell them.
+  Future<void> savePhone(String phone);
+
   /// Uploads one document and records it, replacing any previous one of the same
   /// kind.
   ///

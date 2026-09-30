@@ -71,6 +71,19 @@ class DriverFlow extends ChangeNotifier {
   /// Whether the driver may go online, and therefore see the offer queue.
   bool get kycApproved => profile?.isApproved ?? false;
 
+  /// Whether this driver can be reached by a rider, and therefore may carry one.
+  ///
+  /// Distinct from [kycApproved] rather than part of it, because the two fail for
+  /// different reasons and a driver needs to be told which one is wrong. Folding
+  /// the phone into the KYC gate would send an approved driver back through
+  /// onboarding to fix a field they have already given.
+  ///
+  /// Null profile is false: while loading, the answer is "not yet", and the shell
+  /// shows the gate for a frame before the profile arrives. That is a spinner
+  /// behind a spinner rather than a flash of the wrong screen, because the shell
+  /// checks `flow.loading && flow.profile == null` first.
+  bool get hasCallablePhone => isCallableGhanaPhone(profile?.phone);
+
   StreamSubscription<DriverProfile>? _profileWatch;
 
   /// Whether [load] has completed without throwing. Gates [startProfileWatch].

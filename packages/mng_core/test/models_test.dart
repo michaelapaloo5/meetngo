@@ -141,16 +141,55 @@ void main() {
     DriverProfile build({
       KycStatus kyc = KycStatus.approved,
       DriverAvailability availability = DriverAvailability.online,
+      String phone = '0240000000',
     }) => DriverProfile(
       id: 'd1',
       fullName: 'Jane Cooper',
-      phone: '0240000000',
+      phone: phone,
       photoUrl: '',
       rating: 4.8,
       tripCount: 148,
       kyc: kyc,
       availability: availability,
     );
+
+    test('copyWith records a new phone and changes nothing else', () {
+      // The phone is the one field that changes after the profile is built: the
+      // gate asks for it once the documents are already approved, so the profile
+      // the driver was approved on and the profile they carry are not the same
+      // object. Getting this wrong corrupts their approval state, so the other
+      // fields are asserted rather than assumed.
+      final before = build();
+      final after = before.copyWith(phone: '0551234567');
+
+      expect(after.phone, '0551234567');
+      expect(before.phone, '0240000000', reason: 'the original must not be mutated');
+      expect(after.id, before.id);
+      expect(after.fullName, before.fullName);
+      expect(after.rating, before.rating);
+      expect(after.tripCount, before.tripCount);
+      expect(after.kyc, before.kyc);
+      expect(after.availability, before.availability);
+    });
+
+    test('copyWith without a phone leaves the one it has', () {
+      // The shadowing bug `copyWith` already documents for `role`, applied to
+      // `phone`: a bare pass-through of the nullable parameter would hand null to
+      // a non-nullable field on every call that did not mention the phone, which
+      // is every call except the gate's.
+      expect(build().copyWith(kyc: KycStatus.rejected).phone, '0240000000');
+    });
+
+    test('a phone can be cleared by passing an empty string, not by null', () {
+      // `phone: null` means "do not change" in a `copyWith`, so the only way to
+      // express "this driver has no number" is an explicit empty string -- which
+      // is exactly what the column holds for a driver who never gave one, and
+      // what `isCallableGhanaPhone` reads.
+      final cleared = build().copyWith(phone: '');
+      expect(cleared.phone, isEmpty);
+      expect(isCallableGhanaPhone(cleared.phone), isFalse);
+      expect(build().copyWith(phone: '').copyWith(phone: null).phone, isEmpty);
+    });
 
     test('approved online driver can accept offers', () {
       expect(build().isApproved, isTrue);

@@ -420,6 +420,94 @@ void main() {
       expect(find.byKey(const Key('lifetimeEarnings')), findsOneWidget);
     });
 
+    // The phone gate. These three exist because a measurement prompted them: at
+    // the point they were written, 2 of the 3 driver profiles in the live
+    // database had `phone = ''`, and every one of those drivers would have gone
+    // online, taken rides, and been unreachable by every rider on them with
+    // nothing on any screen saying so.
+    testWidgets('an approved driver with no number is stopped at the gate', (
+      tester,
+    ) async {
+      useDesignSurface(tester);
+      await pumpShell(
+        tester,
+        StubDriverRepository(profile: driverProfile(phone: '')),
+      );
+
+      // The gate, and *not* the queue. Reaching the toggle with no number is
+      // the failure: the driver goes online, a trip is matched, and the rider
+      // has a Call button that rings nobody.
+      expect(find.byKey(const Key('phoneGateField')), findsOneWidget);
+      expect(find.byKey(const Key('onlineToggle')), findsNothing);
+    });
+
+    testWidgets('a driver with a number is not stopped at all', (tester) async {
+      useDesignSurface(tester);
+      // The gate has to be worth removing for a driver who does not need it.
+      // This is the case where it would be a regression to ask again.
+      await pumpShell(
+        tester,
+        StubDriverRepository(profile: driverProfile(phone: '0241234567')),
+      );
+
+      expect(find.byKey(const Key('phoneGateField')), findsNothing);
+      expect(find.byKey(const Key('onlineToggle')), findsOneWidget);
+    });
+
+    testWidgets('the gate lets the driver through once the number is written', (
+      tester,
+    ) async {
+      useDesignSurface(tester);
+      final repo = StubDriverRepository(profile: driverProfile(phone: ''));
+      await pumpShell(tester, repo);
+      expect(find.byKey(const Key('phoneGateField')), findsOneWidget);
+
+      await tester.enterText(find.byKey(const Key('phoneGateField')), '024 123 4567');
+      await tester.tap(find.byKey(const Key('phoneGateSaveButton')));
+      await settle(tester);
+
+      // A gate the driver cannot leave is worse than no gate at all. The end of
+      // this test is the whole contract: the number is stored, and the driver is
+      // in the app.
+      expect(repo.phone, '0241234567');
+      expect(find.byKey(const Key('phoneGateField')), findsNothing);
+      expect(find.byKey(const Key('onlineToggle')), findsOneWidget);
+    });
+
+    testWidgets('an unapproved driver is asked for documents, not a number', (
+      tester,
+    ) async {
+      useDesignSurface(tester);
+      // Ordering is the decision. A driver who has not been approved has not
+      // finished signing up, so their number is asked for *during* onboarding,
+      // once, on the identity step -- not after, as a second interruption. If
+      // this test fails, the gate has moved ahead of KYC and every new driver
+      // will type their number twice.
+      await pumpShell(
+        tester,
+        StubDriverRepository(profile: driverProfile(kyc: KycStatus.pending, phone: '')),
+      );
+
+      expect(find.byKey(const Key('phoneGateField')), findsNothing);
+      expect(find.byKey(const Key('documentChecklist')), findsOneWidget);
+    });
+
+    testWidgets('a driver with an undiallable number is still stopped', (
+      tester,
+    ) async {
+      useDesignSurface(tester);
+      // Ten digits that Ghana does not issue. Storing it would be the same
+      // failure as storing nothing at all -- a Call button that rings nobody --
+      // so `isCallableGhanaPhone` is asked rather than "is it empty".
+      await pumpShell(
+        tester,
+        StubDriverRepository(profile: driverProfile(phone: '0191234567')),
+      );
+
+      expect(find.byKey(const Key('phoneGateField')), findsOneWidget);
+      expect(find.byKey(const Key('onlineToggle')), findsNothing);
+    });
+
     testWidgets('Trips is the second tab and opens the trip history', (
       tester,
     ) async {

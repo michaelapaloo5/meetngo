@@ -15,6 +15,7 @@ import '../earnings/earnings_controller.dart';
 import '../earnings/wallet_screen.dart';
 import '../onboarding/kyc_controller.dart';
 import '../onboarding/kyc_screen.dart';
+import '../onboarding/phone_gate_screen.dart';
 import '../offers/driver_home_screen.dart';
 import '../profile/driver_profile_screen.dart';
 import '../trips/trips_controller.dart';
@@ -228,6 +229,30 @@ class _DriverShellState extends State<DriverShell> {
         value: kyc,
         child: KycScreen(controller: kyc, onContinue: _recheckKyc),
       );
+    }
+
+    // A driver who is approved but has no phone number.
+    //
+    // Placed *after* the KYC gate and *before* everything else, and that
+    // ordering is the whole decision. Every driver registered before the phone
+    // field existed has `phone = ''`, so without this they would open the app
+    // fully approved, take rides, and be unreachable by every rider on them --
+    // and nothing on any screen would tell them or the rider.
+    //
+    // After KYC, because their documents are already accepted and sending them
+    // back through six uploads to add one field is how you lose a verified
+    // driver. Before the home screen, because a driver who cannot be called
+    // cannot take a passenger, so the app has nothing to offer them.
+    //
+    // The profile is refreshed rather than cached on the shell: `watchProfile`
+    // is a realtime stream on `profiles`, so this update arrives by itself and
+    // the gate clears on the next frame without the shell keeping a second copy
+    // of the profile.
+    if (!flow.hasCallablePhone) {
+      return PhoneGateScreen(onSaved: (phone) async {
+        await flow.drivers.savePhone(phone);
+        await flow.load();
+      });
     }
 
     if (_stage == _Stage.trip) {
