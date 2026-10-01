@@ -41,8 +41,8 @@ class DriverFlow extends ChangeNotifier {
     required this.earnings,
     ContactRepository? contacts,
     LocationReader? locationReader,
-  })  : contacts = contacts ?? const NoContactRepository(),
-        _locationReader = locationReader ?? GeolocatorLocationReader();
+  }) : contacts = contacts ?? const NoContactRepository(),
+       _locationReader = locationReader ?? GeolocatorLocationReader();
 
   final DriverRepository drivers;
   final EarningsRepository earnings;
@@ -111,6 +111,13 @@ class DriverFlow extends ChangeNotifier {
   /// make, and deliberately not awaited by the caller: a phone that takes
   /// twenty seconds to find a satellite must not hold the first frame.
   Future<void> refreshLocation() => location.refresh();
+
+  /// Follow the driver's position continuously, not just once.
+  ///
+  /// Separate from [refreshLocation] on purpose: one is a question ("where am I
+  /// right now") and the other is a subscription ("keep telling me"), and a
+  /// caller that wants the second should say so.
+  void watchLocation() => location.watch();
 
   /// Reads the profile, seeds the availability toggle, and reconciles a stored
   /// `onTrip` that no longer has a trip behind it.

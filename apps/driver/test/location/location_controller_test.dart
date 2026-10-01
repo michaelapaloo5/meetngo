@@ -61,14 +61,17 @@ void main() {
       expect(controller.message, contains('Permissions'));
     });
 
-    test('a permitted device with no fix tells the driver to wait or move', () async {
-      reader.pointThrows = TimeoutException('no satellite');
-      await controller.refresh();
+    test(
+      'a permitted device with no fix tells the driver to wait or move',
+      () async {
+        reader.pointThrows = TimeoutException('no satellite');
+        await controller.refresh();
 
-      expect(controller.status, DriverLocationStatus.noFix);
-      expect(controller.message, contains('Still looking'));
-      expect(controller.message, contains('Step outside'));
-    });
+        expect(controller.status, DriverLocationStatus.noFix);
+        expect(controller.message, contains('Still looking'));
+        expect(controller.message, contains('Step outside'));
+      },
+    );
 
     test('an outright failure is not dressed up as a wait', () async {
       // Different advice from a timeout: a timeout means the phone is still
@@ -125,12 +128,15 @@ void main() {
       expect(controller.hasFix, isTrue);
     });
 
-    test('a device that will not say is treated as a refusal, not as unknown', () async {
-      reader.permission = LocationPermission.unableToDetermine;
-      await controller.refresh();
+    test(
+      'a device that will not say is treated as a refusal, not as unknown',
+      () async {
+        reader.permission = LocationPermission.unableToDetermine;
+        await controller.refresh();
 
-      expect(controller.status, DriverLocationStatus.denied);
-    });
+        expect(controller.status, DriverLocationStatus.denied);
+      },
+    );
 
     test('a permanent refusal never asks for a fix', () async {
       reader.permission = LocationPermission.deniedForever;
@@ -219,47 +225,56 @@ void main() {
       expect(drivers.lastLocation, isNotNull);
     });
 
-    test('a heading of -1 means "no compass", not "one degree past north"', () async {
-      // The plugin's own "I have no compass" value. Taken at face value it
-      // would rotate a car to 359 degrees, which looks like the car is
-      // reversing down the road it is driving along.
-      reader.heading = -1;
-      await controller.refresh();
+    test(
+      'a heading of -1 means "no compass", not "one degree past north"',
+      () async {
+        // The plugin's own "I have no compass" value. Taken at face value it
+        // would rotate a car to 359 degrees, which looks like the car is
+        // reversing down the road it is driving along.
+        reader.heading = -1;
+        await controller.refresh();
 
-      expect(controller.heading, isNull);
-      expect(drivers.lastHeading, isNull);
-    });
+        expect(controller.heading, isNull);
+        expect(drivers.lastHeading, isNull);
+      },
+    );
 
-    test('the heading is refreshed on every read, not only the first', () async {
-      // A driver stopped at lights turns on the spot. A controller that kept
-      // the first heading would leave their rider watching a car pointing the
-      // way it was facing when it arrived.
-      reader.heading = 0;
-      await controller.refresh();
-      expect(drivers.lastHeading, 0);
+    test(
+      'the heading is refreshed on every read, not only the first',
+      () async {
+        // A driver stopped at lights turns on the spot. A controller that kept
+        // the first heading would leave their rider watching a car pointing the
+        // way it was facing when it arrived.
+        reader.heading = 0;
+        await controller.refresh();
+        expect(drivers.lastHeading, 0);
 
-      reader.heading = 270;
-      await controller.refresh();
+        reader.heading = 270;
+        await controller.refresh();
 
-      expect(controller.heading, 270);
-      expect(drivers.lastHeading, 270);
-    });
+        expect(controller.heading, 270);
+        expect(drivers.lastHeading, 270);
+      },
+    );
 
-    test('a refresh that never reaches a fix leaves the heading alone', () async {
-      reader.heading = 45;
-      await controller.refresh();
-      expect(controller.heading, 45);
+    test(
+      'a refresh that never reaches a fix leaves the heading alone',
+      () async {
+        reader.heading = 45;
+        await controller.refresh();
+        expect(controller.heading, 45);
 
-      // The next attempt fails to get a position, so there is nothing to
-      // publish and no reason to believe a stale heading is still current --
-      // but it is still the best answer available, and blanking it would make
-      // the car spin to north on the rider's map for no stated reason.
-      reader.pointThrows = StateError('no fix');
-      await controller.refresh();
+        // The next attempt fails to get a position, so there is nothing to
+        // publish and no reason to believe a stale heading is still current --
+        // but it is still the best answer available, and blanking it would make
+        // the car spin to north on the rider's map for no stated reason.
+        reader.pointThrows = StateError('no fix');
+        await controller.refresh();
 
-      expect(controller.status, DriverLocationStatus.noFix);
-      expect(controller.heading, 45);
-    });
+        expect(controller.status, DriverLocationStatus.noFix);
+        expect(controller.heading, 45);
+      },
+    );
   });
 
   group('what the driver is told about the permission they hold', () {
@@ -315,17 +330,165 @@ void main() {
   });
 
   group('listeners', () {
-    test('a refresh notifies as the state changes, not only at the end', () async {
-      // A screen that only rebuilds at the end shows a stale banner for the
-      // whole chain; one that rebuilds on every notify can show "Finding your
-      // location" honestly.
-      var notifications = 0;
-      controller.addListener(() => notifications++);
+    test(
+      'a refresh notifies as the state changes, not only at the end',
+      () async {
+        // A screen that only rebuilds at the end shows a stale banner for the
+        // whole chain; one that rebuilds on every notify can show "Finding your
+        // location" honestly.
+        var notifications = 0;
+        controller.addListener(() => notifications++);
 
-      await controller.refresh();
+        await controller.refresh();
 
-      expect(notifications, greaterThan(1),
-          reason: 'asking, ready, and the final notify');
+        expect(
+          notifications,
+          greaterThan(1),
+          reason: 'asking, ready, and the final notify',
+        );
+      },
+    );
+  });
+
+  // The bug this whole group is about. `refresh()` takes one reading, so a
+  // driver who opened the app and then drove spent the trip watching their own
+  // dot sit where they started -- and `DriverMapPanel` was already written to
+  // follow a moving dot, comparing `driverPoint` on every rebuild, waiting for a
+  // stream that did not exist.
+  group('following the driver', () {
+    test('a fix off the stream moves the point the map is drawn from', () async {
+      controller.watch();
+      expect(controller.watching, isTrue);
+
+      reader.emit(const GeoPoint(5.6037, -0.1870));
+      await pumpEventQueue();
+      expect(controller.point, const GeoPoint(5.6037, -0.1870));
+
+      // The driver has moved. This is the assertion the bug would have failed.
+      reader.emit(const GeoPoint(5.6111, -0.1911));
+      await pumpEventQueue();
+      expect(controller.point, const GeoPoint(5.6111, -0.1911));
+    });
+
+    test('a fix with no heading still moves the point', () async {
+      // A phone on a dashboard has no compass reading, and that must not cost
+      // the driver their position -- which it did when the marker was only drawn
+      // when a heading was present.
+      controller.watch();
+      reader.emit(const GeoPoint(5.6200, -0.1800), heading: null);
+      await pumpEventQueue();
+      expect(controller.point, const GeoPoint(5.6200, -0.1800));
+      expect(controller.heading, isNull);
+      expect(controller.hasFix, isTrue);
+    });
+
+    test('watching twice is still one subscription', () async {
+      controller.watch();
+      controller.watch();
+      controller.watch();
+      await pumpEventQueue();
+      expect(
+        reader.liveSubscriptions,
+        1,
+        reason: 'three watches must not deliver every fix three times',
+      );
+    });
+
+    test('unwatching lets go, so a later watch can start again', () async {
+      controller.watch();
+      await pumpEventQueue();
+      expect(controller.watching, isTrue);
+
+      await controller.unwatch();
+      expect(controller.watching, isFalse);
+      expect(reader.liveSubscriptions, 0);
+
+      controller.watch();
+      await pumpEventQueue();
+      expect(controller.watching, isTrue);
+      expect(reader.liveSubscriptions, 1);
+    });
+
+    test(
+      'publishing is throttled, so a moving driver is not a write per fix',
+      () async {
+        // Fifteen seconds is the contract the matcher has to live with; without it
+        // a driver moving generates a write every second or two for a whole shift.
+        var now = DateTime(2026, 10, 1, 12);
+        controller.useClock(() => now);
+
+        controller.watch();
+        for (var i = 0; i < 5; i++) {
+          now = now.add(const Duration(seconds: 2));
+          reader.emit(GeoPoint(5.6037 + i * 0.0001, -0.1870));
+          await pumpEventQueue();
+        }
+        expect(
+          drivers.updateLocationCalls,
+          1,
+          reason: 'ten seconds of movement is inside one publish window',
+        );
+
+        now = now.add(const Duration(seconds: 20));
+        reader.emit(const GeoPoint(5.6100, -0.1870));
+        await pumpEventQueue();
+        expect(
+          drivers.updateLocationCalls,
+          2,
+          reason: 'and a later fix does get through',
+        );
+      },
+    );
+
+    test('a stream error stops claiming the position is good', () async {
+      // The permission was withdrawn mid-trip. Holding the last point would keep
+      // drawing the driver somewhere they have left.
+      controller.watch();
+      reader.emit(const GeoPoint(5.6037, -0.1870));
+      await pumpEventQueue();
+      expect(controller.hasFix, isTrue);
+
+      reader.emitError(StateError('permission revoked'));
+      await pumpEventQueue();
+      expect(controller.status, DriverLocationStatus.failed);
+      expect(controller.hasFix, isFalse);
+      expect(
+        controller.message,
+        isNotNull,
+        reason:
+            'the driver is told something rather than left with a stale dot',
+      );
+    });
+
+    test('a closed stream can be watched again', () async {
+      // The OS switching location off closes the stream. Holding the handle to a
+      // closed stream would leave `watching` true and refuse every future
+      // attempt -- the app would never recover when the driver turned location
+      // back on.
+      controller.watch();
+      await pumpEventQueue();
+      reader.endStream();
+      await pumpEventQueue();
+      expect(controller.watching, isFalse);
+
+      controller.watch();
+      await pumpEventQueue();
+      expect(controller.watching, isTrue);
+    });
+
+    test('disposing releases the subscription', () async {
+      controller.watch();
+      await pumpEventQueue();
+      expect(reader.liveSubscriptions, 1);
+
+      controller.dispose();
+      await pumpEventQueue();
+      expect(
+        reader.liveSubscriptions,
+        0,
+        reason:
+            'a subscription outliving the controller would notify a dead one',
+      );
     });
   });
 }

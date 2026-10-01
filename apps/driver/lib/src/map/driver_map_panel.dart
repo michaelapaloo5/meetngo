@@ -56,7 +56,7 @@ class DriverMapPanel extends StatefulWidget {
     this.dropoff,
     this.height = 220,
     this.drawRoute = true,
-        this.routeGeometry,
+    this.routeGeometry,
   });
 
   /// Where the driver is, or null when there is no fix.
@@ -203,10 +203,7 @@ class _DriverMapPanelState extends State<DriverMapPanel> {
     if (controller == null) return;
     final route = _route;
     if (route != null && route.length >= 2) {
-      await controller.setGeoJsonSource(
-        'route-src-$_uid',
-        _lineGeoJson(route),
-      );
+      await controller.setGeoJsonSource('route-src-$_uid', _lineGeoJson(route));
     }
     await controller.setGeoJsonSource('pins-src-$_uid', _pinsGeoJson(_points));
     await _pushVehicle(controller);
@@ -218,10 +215,10 @@ class _DriverMapPanelState extends State<DriverMapPanel> {
   /// not tagged with a `role` and so is not drawn as a circle -- see
   /// [_pushVehicle], which draws it as a rotated car instead.
   List<GeoPoint> get _points => [
-        if (widget.driverPoint != null) widget.driverPoint!,
-        if (widget.pickup != null) widget.pickup!,
-        if (widget.dropoff != null) widget.dropoff!,
-      ];
+    if (widget.driverPoint != null) widget.driverPoint!,
+    if (widget.pickup != null) widget.pickup!,
+    if (widget.dropoff != null) widget.dropoff!,
+  ];
 
   /// The line to draw, if there is one worth drawing.
   ///
@@ -263,11 +260,7 @@ class _DriverMapPanelState extends State<DriverMapPanel> {
                           ? const _MapStandIn()
                           : _buildMap(points),
                     ),
-                    const Positioned(
-                      left: 0,
-                      bottom: 0,
-                      child: _Attribution(),
-                    ),
+                    const Positioned(left: 0, bottom: 0, child: _Attribution()),
                   ],
                 ),
         ),
@@ -313,10 +306,19 @@ class _DriverMapPanelState extends State<DriverMapPanel> {
   /// `bearing` draws the car pointing north, which on the driver's own map
   /// would be a vehicle apparently driving the wrong way up their own street;
   /// no car is the honest alternative to that.
+  ///
+  /// That reasoning was about the *rider's* map, where a car graphic pointing the
+  /// wrong way is actively misleading. It does not hold for this panel, which
+  /// only the driver ever sees, and it was the reason the driver's own position
+  /// sometimes did not appear on the map at all: geolocator hands back no heading
+  /// whenever the phone has no fix on a magnetometer -- a flat dashboard, a table,
+  /// indoors -- and a driver in exactly those places was left with no marker while
+  /// their trip ran. A north-pointing car the driver can see themselves inside is
+  /// worth more than no car, so the heading is optional here and 0 when absent.
   Future<void> _pushVehicle(MapLibreMapController controller) async {
     final point = widget.driverPoint;
-    final bearing = widget.driverHeading;
-    if (point == null || bearing == null) return;
+    if (point == null) return;
+    final bearing = widget.driverHeading ?? 0;
     await controller.addImage(kCarTopdownIconName, carTopdownPng());
     await controller.addGeoJsonSource(kVehicleSourceId, {
       'type': 'FeatureCollection',
@@ -333,7 +335,10 @@ class _DriverMapPanelState extends State<DriverMapPanel> {
     });
   }
 
-  Future<void> _addOverlays(List<GeoPoint> points, List<GeoPoint>? route) async {
+  Future<void> _addOverlays(
+    List<GeoPoint> points,
+    List<GeoPoint>? route,
+  ) async {
     final controller = _controller;
     if (controller == null) return;
 
@@ -389,36 +394,36 @@ class _DriverMapPanelState extends State<DriverMapPanel> {
 
   /// The colour each role is drawn in, matching what the 2D map used.
   static Color _roleColor(String role) => switch (role) {
-        'driver' => MngColors.info,
-        'pickup' => MngColors.primary,
-        _ => MngColors.success,
-      };
+    'driver' => MngColors.info,
+    'pickup' => MngColors.primary,
+    _ => MngColors.success,
+  };
 
   Map<String, dynamic> _lineGeoJson(List<GeoPoint> points) => {
-        'type': 'Feature',
-        'properties': <String, dynamic>{},
-        'geometry': {
-          'type': 'LineString',
-          'coordinates': [
-            for (final p in points) [p.lng, p.lat],
-          ],
-        },
-      };
+    'type': 'Feature',
+    'properties': <String, dynamic>{},
+    'geometry': {
+      'type': 'LineString',
+      'coordinates': [
+        for (final p in points) [p.lng, p.lat],
+      ],
+    },
+  };
 
   Map<String, dynamic> _pinsGeoJson(List<GeoPoint> points) => {
-        'type': 'FeatureCollection',
-        'features': [
-          for (final entry in _roles(points).entries)
-            {
-              'type': 'Feature',
-              'properties': {'role': entry.key},
-              'geometry': {
-                'type': 'Point',
-                'coordinates': [entry.value.lng, entry.value.lat],
-              },
-            },
-        ],
-      };
+    'type': 'FeatureCollection',
+    'features': [
+      for (final entry in _roles(points).entries)
+        {
+          'type': 'Feature',
+          'properties': {'role': entry.key},
+          'geometry': {
+            'type': 'Point',
+            'coordinates': [entry.value.lng, entry.value.lat],
+          },
+        },
+    ],
+  };
 
   /// Which point is which, in draw order.
   ///
@@ -437,7 +442,11 @@ class _DriverMapPanelState extends State<DriverMapPanel> {
   /// A style filter matching features whose `role` is [role]. The plugin types
   /// `filter` as `dynamic` and has no helper for it, so the expression is built
   /// once here rather than hand-written at each call site.
-  static List<dynamic> _roleIs(String role) => ['==', ['get', 'role'], role];
+  static List<dynamic> _roleIs(String role) => [
+    '==',
+    ['get', 'role'],
+    role,
+  ];
 
   /// MapLibre takes CSS colour strings rather than `Color`.
   static String _css(Color c) =>
@@ -457,10 +466,8 @@ class _MapStandIn extends StatelessWidget {
   const _MapStandIn();
 
   @override
-  Widget build(BuildContext context) => const ColoredBox(
-        key: Key('driverMapStandIn'),
-        color: MngColors.muted,
-      );
+  Widget build(BuildContext context) =>
+      const ColoredBox(key: Key('driverMapStandIn'), color: MngColors.muted);
 }
 
 /// The visible OpenStreetMap credit the tile usage policy requires.

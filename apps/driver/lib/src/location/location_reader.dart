@@ -31,6 +31,21 @@ abstract class LocationReader {
   /// faults with different sentences, and a null cannot tell them apart.
   Future<GeoPoint> currentPoint();
 
+  /// Live positions, for as long as the caller listens.
+  ///
+  /// [currentPoint] is a single reading, and one reading is not a location: a
+  /// driver who opened the app at a junction and then drove to a pickup would
+  /// have spent the whole trip watching their own dot sit at the junction. The
+  /// map panel was already written to follow a moving dot -- it compares
+  /// `driverPoint` on every rebuild precisely because it expected this stream to
+  /// exist -- so the gap was never in the map.
+  ///
+  /// Errors are delivered as stream errors rather than thrown here, so that a
+  /// permission revoked mid-trip surfaces as a sentence instead of an unhandled
+  /// async error. The caller decides what a denial means; this method only says
+  /// that it happened.
+  Stream<GeoFix> positionStream();
+
   /// Which way the device is facing, degrees clockwise from north, or null.
   ///
   /// A separate method rather than a second return from [currentPoint], because
@@ -40,6 +55,21 @@ abstract class LocationReader {
   /// missing fix, and a driver unable to go online because their phone has no
   /// magnetometer is a real and very bad outcome.
   Future<double?> currentHeading();
+}
+
+/// One position update and the heading that arrived with it.
+///
+/// Bundled because a stream event carries both and splitting them would mean
+/// holding a heading that belonged to a different fix -- a driver turning left at
+/// a junction would briefly be drawn facing along the street they just left.
+class GeoFix {
+  const GeoFix(this.point, this.heading);
+
+  final GeoPoint point;
+
+  /// Null when the device has no compass reading to offer, which is ordinary:
+  /// a phone flat on a seat, a tablet indoors.
+  final double? heading;
 }
 
 /// The real one, over `geolocator`.
@@ -99,4 +129,26 @@ class GeolocatorLocationReader implements LocationReader {
     // place where a heading becomes a number.
     return normaliseBearing(heading);
   }
+
+  @override
+  Stream<GeoFix> positionStream() =>
+      Geolocator.getPositionStream(
+        locationSettings: const LocationSettings(
+          // `high` rather than `best`, because `best` asks the GPS chip for raw
+          // satellite fixes: minutes to converge, and unusable for the first fix
+          // in a cold start. `high` is network-assisted and lands in a second or
+          // two, which is what a map that has to look live actually needs.
+          accuracy: LocationAccuracy.high,
+          // 5 m rather than geolocator's default of 0, so a phone sitting on a
+          // dashboard does not wake Dart every second to report that it has not
+          // moved. Publishing is throttled separately; this is about not doing
+          // work at all.
+          distanceFilter: 5,
+        ),
+      ).map(
+        (p) => GeoFix(
+          GeoPoint(p.latitude, p.longitude),
+          normaliseBearing(p.heading),
+        ),
+      );
 }

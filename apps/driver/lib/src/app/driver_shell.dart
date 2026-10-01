@@ -91,6 +91,12 @@ class _DriverShellState extends State<DriverShell> {
     // a satellite. Awaiting it here would hold the first frame for twenty
     // seconds on a spinner.
     unawaited(flow.refreshLocation());
+    // Then follow. `refreshLocation` is one reading and answers "where am I" --
+    // enough to put a dot on the map and to be found by the matcher. A driver who
+    // then drives to a pickup would watch that dot sit at the kerb for the rest of
+    // the trip, because nothing ever asked again. The stream is what makes the
+    // position on the driver's own map actually his.
+    flow.watchLocation();
     await flow.load();
     if (!mounted) return;
     flow.startProfileWatch();
@@ -338,10 +344,12 @@ class _DriverShellState extends State<DriverShell> {
     // the gate clears on the next frame without the shell keeping a second copy
     // of the profile.
     if (!flow.hasCallablePhone) {
-      return PhoneGateScreen(onSaved: (phone) async {
-        await flow.drivers.savePhone(phone);
-        await flow.load();
-      });
+      return PhoneGateScreen(
+        onSaved: (phone) async {
+          await flow.drivers.savePhone(phone);
+          await flow.load();
+        },
+      );
     }
 
     if (_stage == _Stage.trip) {

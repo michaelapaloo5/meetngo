@@ -92,23 +92,23 @@ class LocationController extends ChangeNotifier {
   /// A getter rather than a stored string so the wording lives in one place and
   /// a test asserting on a message cannot pass against a stale copy of it.
   String? get message => switch (_status) {
-        DriverLocationStatus.idle => null,
-        DriverLocationStatus.asking => 'Finding your location',
-        DriverLocationStatus.ready => null,
-        DriverLocationStatus.serviceOff =>
-          'Location is switched off on this phone. Turn it on to be shown on '
-              'the map and to receive ride requests.',
-        DriverLocationStatus.denied =>
-          'Meet \'N Go Driver was not allowed to use your location. Allow it in '
-              'Settings to be shown on the map and to receive ride requests.',
-        DriverLocationStatus.deniedForever =>
-          'Location permission is blocked for Meet \'N Go Driver. Turn it on in '
-              'Settings, Apps, Meet \'N Go Driver, Permissions.',
-        DriverLocationStatus.noFix =>
-          'Still looking for your location. Step outside or turn location on, '
-              'then try again.',
-        DriverLocationStatus.failed => _failure ?? 'Your location is not available',
-      };
+    DriverLocationStatus.idle => null,
+    DriverLocationStatus.asking => 'Finding your location',
+    DriverLocationStatus.ready => null,
+    DriverLocationStatus.serviceOff =>
+      'Location is switched off on this phone. Turn it on to be shown on '
+          'the map and to receive ride requests.',
+    DriverLocationStatus.denied =>
+      'Meet \'N Go Driver was not allowed to use your location. Allow it in '
+          'Settings to be shown on the map and to receive ride requests.',
+    DriverLocationStatus.deniedForever =>
+      'Location permission is blocked for Meet \'N Go Driver. Turn it on in '
+          'Settings, Apps, Meet \'N Go Driver, Permissions.',
+    DriverLocationStatus.noFix =>
+      'Still looking for your location. Step outside or turn location on, '
+          'then try again.',
+    DriverLocationStatus.failed => _failure ?? 'Your location is not available',
+  };
 
   /// What the held permission means, for the driver's own benefit.
   ///
@@ -116,12 +116,12 @@ class LocationController extends ChangeNotifier {
   /// refusal, and without this the one case where the app is deliberately
   /// holding a position in the background without saying so is invisible.
   String? get permissionNote => switch (_permission) {
-        LocationPermission.whileInUse =>
-          'Your location is shared only while Meet \'N Go Driver is open.',
-        LocationPermission.always =>
-          'Your location is shared with Meet \'N Go Driver at all times.',
-        _ => null,
-      };
+    LocationPermission.whileInUse =>
+      'Your location is shared only while Meet \'N Go Driver is open.',
+    LocationPermission.always =>
+      'Your location is shared with Meet \'N Go Driver at all times.',
+    _ => null,
+  };
 
   /// Runs the four checks, in order, and ends at the first refusal.
   Future<void> refresh() async {
@@ -188,6 +188,9 @@ class LocationController extends ChangeNotifier {
       }
       _set(DriverLocationStatus.ready);
       await _publish(point);
+      // Counted as a publish, so the first fix off the stream does not write the
+      // same position again a second later.
+      _lastPublishedAt = _clock();
     } on Object catch (e) {
       _failure = 'Your location is not available: $e';
       _set(DriverLocationStatus.failed);
@@ -228,7 +231,8 @@ class LocationController extends ChangeNotifier {
     try {
       await _drivers.updateLocation(point, bearing: _heading);
     } on DriverAuthFailure catch (e) {
-      _failure = 'Your location could not be published, so ride requests cannot '
+      _failure =
+          'Your location could not be published, so ride requests cannot '
           'reach you: ${e.message}';
     }
   }
@@ -236,5 +240,104 @@ class LocationController extends ChangeNotifier {
   void _set(DriverLocationStatus next) {
     _status = next;
     notifyListeners();
+  }
+
+  // ---------------------------------------------------------------- live fixes
+
+  StreamSubscription<GeoFix>? _watching;
+
+  /// Whether [watch] is running.
+  bool get watching => _watching != null;
+
+  /// Follow the driver's position from here on.
+  ///
+  /// Idempotent, because the shell calls it on boot and again whenever it moves
+  /// between stages, and two subscriptions would deliver every fix twice.
+  ///
+  /// This is what makes the dot on the driver's own map *their* location rather
+  /// than the location they happened to be at when the app opened. [refresh]
+  /// takes a single reading, which is the right answer to "where am I" and the
+  /// wrong answer to a question a driver asks continuously for the length of a
+  /// trip.
+  void watch() {
+    if (_watching != null) return;
+    _watching = _reader.positionStream().listen(
+      _onFix,
+      onError: _onWatchError,
+      // The plugin closes the stream when location is switched off at the OS
+      // level. Dropping the handle means a later [watch] can start again;
+      // holding a subscription to a closed stream would leave `watching` true and
+      // silently refuse every future attempt.
+      onDone: () => _watching = null,
+      cancelOnError: false,
+    );
+  }
+
+  /// Stop following, and release the platform subscription.
+  Future<void> unwatch() async {
+    final sub = _watching;
+    _watching = null;
+    await sub?.cancel();
+  }
+
+  void _onFix(GeoFix fix) {
+    // A permission revoked while the app was open arrives here as an error, and
+    // the last position we hold is now a lie the driver is looking at. Held
+    // until the next successful fix would keep drawing them somewhere they have
+    // left.
+    _point = fix.point;
+    _heading = fix.heading;
+    if (_status != DriverLocationStatus.ready) {
+      _status = DriverLocationStatus.ready;
+    }
+    notifyListeners();
+    unawaited(_publishThrottled(fix.point));
+  }
+
+  void _onWatchError(Object error) {
+    // The stream itself carries no distinction between "permission withdrawn",
+    // "location switched off" and "the plugin died", so this reports the same
+    // failure the one-shot read does rather than inventing a diagnosis. What it
+    // does do is stop claiming to be ready: the driver must not be told their
+    // position is good while it is minutes old.
+    _failure = 'Your location is not available: $error';
+    _set(DriverLocationStatus.failed);
+  }
+
+  DateTime? _lastPublishedAt;
+
+  /// How stale a published position may get before another one is sent.
+  ///
+  /// Fifteen seconds. The matcher needs to know roughly where a driver is to
+  /// decide whether to offer them a trip, and a car in Accra covers a lot of
+  /// ground in fifteen seconds; publishing every fix instead would mean a write
+  /// every second or two for the whole shift, against a free tier, to keep a
+  /// number that does not change the answer.
+  static const publishInterval = Duration(seconds: 15);
+
+  Future<void> _publishThrottled(GeoPoint point) async {
+    final last = _lastPublishedAt;
+    final now = _clock();
+    if (last != null && now.difference(last) < publishInterval) return;
+    _lastPublishedAt = now;
+    await _publish(point);
+  }
+
+  /// The clock, injected so the throttle is a unit test rather than a wait.
+  ///
+  /// Defaults to the wall clock; the tests pass their own so "fifteen seconds"
+  /// can be crossed by advancing a variable.
+  DateTime Function() _clock = DateTime.now;
+
+  /// Overrides the clock used by the publish throttle.
+  void useClock(DateTime Function() clock) => _clock = clock;
+
+  @override
+  void dispose() {
+    // The subscription outlives the widget otherwise, and Dart's stream would
+    // keep calling `notifyListeners` on a disposed controller.
+    unawaited(_watching?.cancel());
+    _watching = null;
+    super.dispose();
   }
 }

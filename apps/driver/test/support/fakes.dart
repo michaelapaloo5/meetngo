@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:geolocator/geolocator.dart';
 import 'package:mng_core/mng_core.dart';
 import 'package:meetngo_driver/src/data/driver_auth_repository.dart';
@@ -494,4 +496,47 @@ class StubLocationReader implements LocationReader {
     if (headingThrows != null) throw headingThrows!;
     return heading;
   }
+
+  /// The live stream, driven by a test rather than by a satellite.
+  ///
+  /// A new controller per subscription, because that is what the platform does:
+  /// asking for positions again after the OS closed the last stream yields a new
+  /// stream, not a dead one. A single shared controller makes "can the app recover
+  /// after location is switched off and back on" untestable, because re-listening
+  /// to a closed controller completes immediately and tells you nothing.
+  final _fixes = <StreamController<GeoFix>>[];
+
+  @override
+  Stream<GeoFix> positionStream() {
+    final c = StreamController<GeoFix>.broadcast();
+    _fixes.add(c);
+    return c.stream;
+  }
+
+  /// Delivers one fix to whatever is watching.
+  void emit(GeoPoint at, {double? heading}) {
+    final fix = GeoFix(at, heading);
+    for (final c in _fixes) {
+      if (!c.isClosed) c.add(fix);
+    }
+  }
+
+  /// Fails whatever is watching, for the "permission pulled mid-trip" path.
+  void emitError(Object error) {
+    for (final c in _fixes) {
+      if (!c.isClosed) c.addError(error);
+    }
+  }
+
+  /// Closes the stream, for the "the OS switched location off" path.
+  void endStream() {
+    for (final c in _fixes) {
+      if (!c.isClosed) c.close();
+    }
+  }
+
+  /// How many live subscriptions exist, so a test can prove `watch` is idempotent
+  /// and that `unwatch` really let go.
+  int get liveSubscriptions =>
+      _fixes.where((c) => !c.isClosed && c.hasListener).length;
 }
