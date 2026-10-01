@@ -353,33 +353,62 @@ class _DriverShellState extends State<DriverShell> {
     }
 
     if (_stage == _Stage.trip) {
-      return ChangeNotifierProvider<ActiveTripController>.value(
-        value: flow.activeTrip,
-        child: ActiveTripScreen(
-          onFinished: _finishTrip,
-          location: flow.location,
-          contact: _contactFor(flow),
-          // Read from the provider rather than built here, so the shell does not
-          // need the Supabase client and the wiring test can leave both out.
-          //
-          // `read`, not `watch`: neither repository changes while a trip is live,
-          // and a `watch` would rebuild the trip screen on every provider change
-          // for no gain.
-          //
-          // The profile id decides which chat bubbles are the driver's own. It is
-          // null only before the first profile read, and the shell renders a
-          // spinner until that resolves, so by the time the trip screen exists
-          // there is a profile.
-          chatRepository: context.read<ChatRepository>(),
-          leftItemRepository: context.read<LeftItemRepository>(),
-          leaveTripRepository: context.read<LeaveTripRepository>(),
-          navigationHost: _navigationFor(),
-          onTripLeft: _onTripLeft,
-          driverId: flow.profile?.id,
-        ),
+      // Rebuilt on every position fix, and this is load-bearing rather than
+      // tidy. `ActiveTripScreen` reads `location.point` off the argument it was
+      // handed, so without something listening to the controller the screen keeps
+      // whatever position the shell first built it with -- which on a cold start
+      // is nothing at all.
+      //
+      // The symptom was precise and had nothing to do with the map: pressing
+      // "Navigate" did nothing, because `_startNavigation` bails with "Waiting for
+      // your location" on a null point. Opening "Something left behind" and
+      // dismissing its sheet made Navigate start working every time, because
+      // popping a modal route re-activates the one underneath and Flutter rebuilds
+      // it. The driver dot never moved either, for the same reason: `didUpdateWidget`
+      // is what pushes a new point into the map's source, and it never ran.
+      //
+      // `ListenableBuilder` rather than making `DriverFlow` forward the
+      // notification, so the dependency is stated where the value is consumed
+      // rather than spread through a second notifier that has to remember to
+      // relay it.
+      return ListenableBuilder(
+        listenable: flow.location,
+        builder: (context, _) =>
+            ChangeNotifierProvider<ActiveTripController>.value(
+              value: flow.activeTrip,
+              child: ActiveTripScreen(
+                onFinished: _finishTrip,
+                location: flow.location,
+                contact: _contactFor(flow),
+                // Read from the provider rather than built here, so the shell does not
+                // need the Supabase client and the wiring test can leave both out.
+                //
+                // `read`, not `watch`: neither repository changes while a trip is live,
+                // and a `watch` would rebuild the trip screen on every provider change
+                // for no gain.
+                //
+                // The profile id decides which chat bubbles are the driver's own. It is
+                // null only before the first profile read, and the shell renders a
+                // spinner until that resolves, so by the time the trip screen exists
+                // there is a profile.
+                chatRepository: context.read<ChatRepository>(),
+                leftItemRepository: context.read<LeftItemRepository>(),
+                leaveTripRepository: context.read<LeaveTripRepository>(),
+                navigationHost: _navigationFor(),
+                onTripLeft: _onTripLeft,
+                driverId: flow.profile?.id,
+              ),
+            ),
       );
     }
 
+    return ListenableBuilder(
+      listenable: flow.location,
+      builder: (context, _) => _homeScaffold(context, flow),
+    );
+  }
+
+  Widget _homeScaffold(BuildContext context, DriverFlow flow) {
     return Scaffold(
       body: SafeArea(
         bottom: false,

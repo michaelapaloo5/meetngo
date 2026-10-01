@@ -57,6 +57,7 @@ class DriverMapPanel extends StatefulWidget {
     this.height = 220,
     this.drawRoute = true,
     this.routeGeometry,
+    this.startFollowing,
   });
 
   /// Where the driver is, or null when there is no fix.
@@ -91,6 +92,17 @@ class DriverMapPanel extends StatefulWidget {
   /// nothing, so this is the whole of what "navigate" means visually.
   final List<GeoPoint>? routeGeometry;
 
+  /// Seeds whether the camera starts out following the driver.
+  ///
+  /// Test-only, and null in every real call so the behaviour is simply "follow".
+  /// It exists because the thing that *stops* following is `onCameraIdle`, and
+  /// MapLibre draws through a native view: under `flutter test` there is no
+  /// platform view, so that callback can never fire and the recentre button could
+  /// never be rendered by a test at all. Null means "not specified", which is not
+  /// the same as true.
+  @visibleForTesting
+  final bool? startFollowing;
+
   /// Replaces the live map engine with an inert stand-in, under test.
   ///
   /// A test seam, and static rather than an argument because `ActiveTripScreen`
@@ -101,6 +113,28 @@ class DriverMapPanel extends StatefulWidget {
   /// so swapping the tile source was enough. MapLibre draws through a native
   /// view, and under `flutter test` there is no platform view to create, so the
   /// widget cannot be built at all.
+  /// Whether a camera that has come to rest at [cameraTarget] is still framing the
+  /// driver at [driver].
+  ///
+  /// Static and public rather than private state, because MapLibre draws through a
+  /// native view and `onCameraIdle` can therefore never fire under `flutter test`.
+  /// The rule this decides -- does the app take the camera away from a driver who
+  /// deliberately moved it -- is the whole behaviour, and it was untestable while
+  /// it lived on the State.
+  ///
+  /// The threshold is the distance the camera may settle from the driver and still
+  /// count as following: generous enough that GPS noise and a pinch while
+  /// stationary do not switch it off, small enough that a deliberate pan does. At
+  /// the zoom this panel opens at, 150 m is about a sixth of the way across the
+  /// screen, so the driver is still comfortably in frame that far out -- losing
+  /// follow at that distance means somebody meant to move it.
+  static const double followSlackKm = 0.15;
+
+  static bool stillFollowing({
+    required GeoPoint cameraTarget,
+    required GeoPoint driver,
+  }) => cameraTarget.distanceKmTo(driver) <= followSlackKm;
+
   static bool disabledForTest = false;
 
   @override
@@ -126,6 +160,7 @@ class _DriverMapPanelState extends State<DriverMapPanel> {
   @override
   void initState() {
     super.initState();
+    if (widget.startFollowing == false) _following = false;
     if (_styleText == null) {
       // A failure leaves `_styleText` null and the build below shows the
       // "no location yet" panel rather than a silently blank rectangle.
@@ -207,6 +242,10 @@ class _DriverMapPanelState extends State<DriverMapPanel> {
     }
     await controller.setGeoJsonSource('pins-src-$_uid', _pinsGeoJson(_points));
     await _pushVehicle(controller);
+    // Follow, if still following. This is the whole reason the camera moves: a
+    // marker that walks off the top of a fixed frame is a map with no driver on
+    // it, which is the thing this was all for.
+    if (_following) _cameraOnDriver();
   }
 
   /// Every point worth placing the camera over, in order.
@@ -242,6 +281,69 @@ class _DriverMapPanelState extends State<DriverMapPanel> {
     return null;
   }
 
+  /// Whether the camera is following the driver.
+  ///
+  /// True until the driver moves the camera themselves, and the driver can put it
+  /// back with the recentre button.
+  ///
+  /// The choice asked for explicitly: following while navigating and stopping the
+  /// moment the driver looks somewhere else. A camera that keeps yanking back is
+  /// worse than one that stays put, and "where am I" is only useful if there is a
+  /// way to answer it after deliberately looking away.
+  ///
+  /// "Touched the map" is worked out from where the camera came to rest rather than
+  /// from a gesture callback: MapLibre 0.27 exposes no public gesture-start event,
+  /// and its `onCameraMove` fires for the panel's own animations too, so
+  /// distinguishing the two would mean inferring intent from timing. If the camera
+  /// settles somewhere that is not framing the driver, the driver moved it.
+  bool _following = true;
+
+  bool get following => _following;
+
+
+  /// Re-centre on the driver and resume following.
+  void recentre() {
+    setState(() => _following = true);
+    _cameraOnDriver();
+  }
+
+  /// Puts the camera on the driver, keeping whatever zoom, tilt and bearing they
+  /// have chosen.
+  ///
+  /// Zoom, tilt and bearing are read back rather than set to constants, so
+  /// following does not undo a driver who has pitched the map or spun it round.
+  void _cameraOnDriver() {
+    final controller = _controller;
+    final point = widget.driverPoint;
+    if (controller == null || point == null) return;
+    final current = controller.cameraPosition;
+    // `newLatLngZoom` rather than a full camera position: an update that names
+    // a target and a zoom leaves bearing and tilt untouched, so following cannot
+    // undo a driver who has pitched the map or spun it round.
+    controller.animateCamera(
+      CameraUpdate.newLatLngZoom(_ll(point), current?.zoom ?? 14),
+      // Short enough to read as the map keeping up rather than as a flight. A
+      // driver watching for their next turn should not have to wait out a long
+      // easing every time the GPS reports a metre.
+      duration: const Duration(milliseconds: 600),
+    );
+  }
+
+  /// Called when the camera comes to rest: if it is no longer framing the driver,
+  /// the driver moved it, so stop following until they ask to be picked up again.
+  void _onCameraIdle() {
+    if (!_following) return;
+    final point = widget.driverPoint;
+    final current = _controller?.cameraPosition;
+    if (point == null || current == null) return;
+    if (!DriverMapPanel.stillFollowing(
+      cameraTarget: GeoPoint(current.target.latitude, current.target.longitude),
+      driver: point,
+    )) {
+      setState(() => _following = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final points = _points;
@@ -261,6 +363,33 @@ class _DriverMapPanelState extends State<DriverMapPanel> {
                           : _buildMap(points),
                     ),
                     const Positioned(left: 0, bottom: 0, child: _Attribution()),
+                    // The recentre button, over the map and only while following
+                    // is off.
+                    //
+                    // No `IgnorePointer` over the map underneath, deliberately, so a
+                    // tap that misses the button still pans the map as the driver
+                    // expects. Top-right, opposite the compass MapLibre draws,
+                    // because the bottom of this panel is where the pickup and
+                    // drop-off sit.
+                    if (!_following)
+                      Positioned(
+                        top: 8,
+                        right: 8,
+                        child: Material(
+                          color: MngColors.surface,
+                          shape: const CircleBorder(),
+                          elevation: 2,
+                          child: InkWell(
+                            key: const Key('recentreMapButton'),
+                            customBorder: const CircleBorder(),
+                            onTap: recentre,
+                            child: const Padding(
+                              padding: EdgeInsets.all(10),
+                              child: Icon(Icons.my_location, size: 20),
+                            ),
+                          ),
+                        ),
+                      ),
                   ],
                 ),
         ),
@@ -292,6 +421,7 @@ class _DriverMapPanelState extends State<DriverMapPanel> {
       // No Mapbox logo: the data is OpenStreetMap's, drawn by MapLibre.
       logoEnabled: false,
       onMapCreated: (controller) => _controller = controller,
+      onCameraIdle: _onCameraIdle,
       onStyleLoadedCallback: () => _addOverlays(points, route),
     );
   }

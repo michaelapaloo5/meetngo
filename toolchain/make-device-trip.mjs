@@ -33,6 +33,14 @@ const MARK = 'device-check';
 const PASSWORD = 'DeviceCheck-123!';
 const PHONE = '0200000001';
 
+// The rider gets a number too. `profiles.phone` is NOT NULL, so a rider made by
+// this script without one has `phone = ''`, the `contact` function answers with an
+// empty phone and `callable: false`, and the driver's Call button is greyed for the
+// whole trip. That is the right behaviour for a rider with no number and the wrong
+// thing to hand somebody testing whether Call works -- it cost a round trip to
+// tell the two apart.
+const RIDER_PHONE = '0244321967';
+
 const sql = async (query) => {
   const res = await fetch(
     'https://api.supabase.com/v1/projects/' + admin.SUPABASE_PROJECT_REF + '/database/query',
@@ -158,7 +166,10 @@ if (AS_EMAIL) {
 }
 
 const rider = await signupAs('rider');
-await sql(`update profiles set role = 'rider', full_name = '${MARK} rider' where id = '${rider.id}'`);
+await sql(
+  `update profiles set role = 'rider', full_name = '${MARK} rider', phone = '${RIDER_PHONE}'
+    where id = '${rider.id}'`,
+);
 
 // Osu -> Kotoka. About 6km of real road, so the turn banner gets real steps and
 // not the degenerate two-point route a trip to where you already are returns.
