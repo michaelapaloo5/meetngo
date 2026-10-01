@@ -15,10 +15,23 @@ import 'chat_controller.dart';
 /// not a bug here; it is a read that returns nothing and a write that returns 403,
 /// which is the database saying no in the only terms it has.
 class SupabaseChatRepository implements ChatRepository {
-  SupabaseChatRepository(this._client, {required this.myId});
+  SupabaseChatRepository(this._client, {String? myId}) : _overrideMyId = myId;
 
   final SupabaseClient _client;
-  final String myId;
+
+  /// Only for a test that needs a fixed identity. Production reads
+  /// [SupabaseClient.auth], because at the point `main.dart` registers this the
+  /// user may not be signed in yet and a repository built from an id captured
+  /// then would send messages as nobody.
+  final String? _overrideMyId;
+
+  /// The signed-in driver's own id.
+  ///
+  /// Empty rather than throwing when there is no session: an empty `sender_id`
+  /// fails the insert policy's `sender_id = auth.uid()`, which is the database
+  /// refusing a message that was never really sent. Throwing here would put the
+  /// failure somewhere it cannot be explained to the driver.
+  String get myId => _overrideMyId ?? _client.auth.currentUser?.id ?? '';
 
   @override
   Stream<List<ChatMessage>> messages(String tripId) {
