@@ -321,22 +321,39 @@ void main() {
       },
     );
 
-    test('every POI layer is capped at the zoom the tiles carry POIs to', () async {
+    test('no POI layer caps out, which used to hide every restaurant', () async {
       final s = await style();
-      // The `poi` source-layer in OpenFreeMap's tiles stops at zoom 14. A layer
-      // with no `maxzoom` would ask for data that is not there at 16, draw
-      // nothing, and read as "this map has no restaurants near you" -- which is
-      // false, and is worse than showing nothing deliberately. The cap is the
-      // honest statement of where the data ends.
+      // This rule used to be the opposite. It asserted that every POI layer carries
+      // a `maxzoom` of 14 or less, on the reasoning that "the `poi` source-layer in
+      // OpenFreeMap's tiles stops at zoom 14. A layer with no `maxzoom` would ask
+      // for data that is not there at 16, draw nothing, and read as 'this map has no
+      // restaurants near you'."
+      //
+      // That reasoning is wrong about MapLibre, and it was costing the map its
+      // single most useful layer. With a `maxzoom` of 14 the layer is switched off
+      // the instant the camera passes 14 -- which is where a driver actually is
+      // while navigating -- so all 92 restaurants, 41 fast-food places and 34 bars
+      // that OpenFreeMap publishes for one z14 tile of Osu vanished at exactly the
+      // moment they were wanted. A `maxzoom` does not ask for absent data and draw
+      // nothing; MapLibre overzooms, so the z14 tile keeps rendering, magnified.
+      //
+      // Measured on an A06 at the same camera, before and after: with the cap the
+      // view of King Hassan Road had no POI icon of any kind on it; with the cap
+      // removed the same view is covered in them.
+      //
+      // The style already knew this. `place-label` carried `maxzoom: 12` and was
+      // uncapped for exactly the same reason -- see 'a district name survives
+      // zooming in, which it used not to'. POIs are the same case with more at
+      // stake: a district name tells a driver where they are, a restaurant tells
+      // them what is on the corner they are being sent to.
       for (final l in layersOf(s).where((l) => l['source-layer'] == 'poi')) {
         expect(
           l['maxzoom'],
-          isNotNull,
+          isNull,
           reason:
-              '${l['id']} has no maxzoom, so it asks for POIs above the '
-              'zoom the tiles stop at and silently draws nothing',
+              '${l['id']} caps out, so every POI it carries disappears at the '
+              'zoom a driver is navigating at',
         );
-        expect(l['maxzoom'], lessThanOrEqualTo(14), reason: '${l['id']}');
       }
     });
 
@@ -567,6 +584,12 @@ void main() {
             'road-name',
             'poi-label',
             'poi-icon-minor',
+            // The classes OpenFreeMap publishes for Accra that no earlier layer
+            // matched -- beer, clothing_store, butcher, ice_cream, town_hall,
+            // monument, castle, information and the rest. `office` is deliberately
+            // NOT here: it has 204 features in a single z14 tile of Osu, so it is
+            // icon-only in `poi-office-block` and carries no name.
+            'poi-icon-extra',
           ),
         ),
         reason: 'an unexpected text layer appeared: $textLayers',

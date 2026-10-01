@@ -155,6 +155,38 @@
       }
     },
     {
+      "id": "building-fill",
+      "type": "fill",
+      "source": "openfreemap",
+      "source-layer": "building",
+      "minzoom": 14,
+      "filter": [
+        "!=",
+        [
+          "get",
+          "hide_3d"
+        ],
+        true
+      ],
+      "paint": {
+        "fill-color": "#E5E7EB",
+        "fill-outline-color": "#E0E0E5",
+        "fill-opacity": [
+          "interpolate",
+          [
+            "linear"
+          ],
+          [
+            "zoom"
+          ],
+          14,
+          0.35,
+          17,
+          0.85
+        ]
+      }
+    },
+    {
       "id": "building-3d",
       "type": "fill-extrusion",
       "source": "openfreemap",
@@ -583,7 +615,6 @@
       "source": "openfreemap",
       "source-layer": "poi",
       "minzoom": 13,
-      "maxzoom": 14,
       "filter": [
         "all",
         [
@@ -723,7 +754,6 @@
       "source": "openfreemap",
       "source-layer": "poi",
       "minzoom": 14,
-      "maxzoom": 14,
       "filter": [
         "all",
         [
@@ -941,6 +971,191 @@
         "text-color": "#6E6E73",
         "text-halo-color": "#F4F4F6",
         "text-halo-width": 1.2
+      }
+    },
+    {
+      "id": "poi-icon-extra",
+      "type": "symbol",
+      "source": "openfreemap",
+      "source-layer": "poi",
+      "minzoom": 14,
+      "filter": [
+          "all",
+          [
+            "in",
+            [
+              "get",
+              "class"
+            ],
+            [
+              "literal",
+              [
+                "beer",
+                "alcohol_shop",
+                "clothing_store",
+                "butcher",
+                "ice_cream",
+                "town_hall",
+                "monument",
+                "castle",
+                "information",
+                "golf",
+                "aquarium",
+                "hackerspace",
+                "recycling"
+              ]
+            ]
+          ],
+          [
+            "<=",
+            [
+              "to-number",
+              [
+                "coalesce",
+                [
+                  "get",
+                  "rank"
+                ],
+                30
+              ]
+            ],
+            30
+          ]
+        ],
+      "layout": {
+        "icon-image": [
+          "match",
+          [
+            "get",
+            "class"
+          ],
+          [
+            "beer",
+            "alcohol_shop"
+          ],
+          "beer",
+          [
+            "town_hall"
+          ],
+          "town_hall",
+          [
+            "monument",
+            "castle"
+          ],
+          "monument",
+          [
+            "recycling"
+          ],
+          "waste_basket",
+          [
+            "hackerspace"
+          ],
+          "commercial",
+          [
+            "get",
+            "class"
+          ]
+        ],
+        "icon-size": [
+          "interpolate",
+          [
+            "linear"
+          ],
+          [
+            "zoom"
+          ],
+          14,
+          0.6,
+          17,
+          0.95
+        ],
+        "icon-allow-overlap": false,
+        "text-field": [
+          "coalesce",
+          [
+            "get",
+            "name_en"
+          ],
+          [
+            "get",
+            "name"
+          ]
+        ],
+        "text-font": [
+          "Noto Sans Regular"
+        ],
+        "text-size": 11,
+        "text-anchor": "top",
+        "text-offset": [
+          0,
+          0.8
+        ],
+        "text-optional": true,
+        "text-allow-overlap": false
+      },
+      "paint": {
+        "text-color": "#6E6E73",
+        "text-halo-color": "#F4F4F6",
+        "text-halo-width": 1.2
+      }
+    },
+    {
+      "id": "poi-office-block",
+      "type": "symbol",
+      "source": "openfreemap",
+      "source-layer": "poi",
+      "minzoom": 14,
+      "filter": [
+          "all",
+          [
+            "in",
+            [
+              "get",
+              "class"
+            ],
+            [
+              "literal",
+              [
+                "office"
+              ]
+            ]
+          ],
+          [
+            "<=",
+            [
+              "to-number",
+              [
+                "coalesce",
+                [
+                  "get",
+                  "rank"
+                ],
+                30
+              ]
+            ],
+            30
+          ]
+        ],
+      "layout": {
+        "icon-image": [
+          "match",
+          [
+            "get",
+            "class"
+          ],
+          [
+            "office"
+          ],
+          "commercial",
+          [
+            "get",
+            "class"
+          ]
+        ],
+        "icon-size": 0.55,
+        "icon-allow-overlap": false,
+        "icon-ignore-placement": false,
+        "text-optional": true
       }
     },
     {
