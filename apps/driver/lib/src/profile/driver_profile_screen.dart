@@ -232,20 +232,31 @@ class _Vehicle extends StatelessWidget {
         style: text.bodySmall,
       );
     }
+    // The card, not the two-line summary this replaced.
+    //
+    // The summary said "Toyota Corolla · 4 seats · Standard" in grey text, which
+    // tells a driver what they typed and shows them nothing. The card is the
+    // same information with the car's own paint in the ride category's colour,
+    // which is the thing a rider recognises at a pick-up point -- a grey line of
+    // text does not help anybody find a silver Corolla among four white ones.
+    //
+    // Seats and tier stay as a line underneath, because the card deliberately
+    // shows one thing well and `4 seats` is information a driver needs and a
+    // rider cannot see from outside the car.
     return Column(
       key: const Key('profileVehicle'),
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text('Your vehicle', style: text.bodySmall),
-        SizedBox(height: 4.h),
-        Text(
-          v.displayName,
-          key: const Key('profileVehicleName'),
-          style: text.titleMedium,
+        CarCard(
+          make: v.make,
+          model: v.model,
+          plate: v.plate,
+          tier: v.rideCategory,
+          category: v.category.name,
         ),
-        SizedBox(height: 2.h),
+        SizedBox(height: 6.h),
         Text(
-          '${v.plate}  ·  ${v.seats} seats  ·  ${v.rideCategory.label}',
+          '${v.seats} seats  ·  ${v.rideCategory.label}  ·  ${v.rideCategory.perKmGhs.toStringAsFixed(2)} per km',
           key: const Key('profileVehicleDetail'),
           style: text.bodySmall,
         ),

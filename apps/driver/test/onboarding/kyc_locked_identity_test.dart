@@ -1,7 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:mng_core/mng_core.dart';
-import 'package:meetngo_driver/src/data/driver_repository.dart';
 import 'package:meetngo_driver/src/onboarding/document_scanner_stub.dart';
 import 'package:meetngo_driver/src/onboarding/kyc_controller.dart';
 import 'package:meetngo_driver/src/onboarding/kyc_screen.dart';

@@ -181,14 +181,16 @@ Vehicle driverVehicle({
   String model = 'Corolla',
   String plate = 'GR-1234-25',
   int seats = 4,
+  RideCategory rideCategory = RideCategory.standard,
+  VehicleCategory category = VehicleCategory.sedan,
 }) => Vehicle(
   id: 'v1',
   ownerId: 'd1',
-  category: VehicleCategory.sedan,
+  category: category,
   make: make,
   model: model,
   plate: plate,
   seats: seats,
   photoUrl: '',
-  rideCategory: RideCategory.standard,
+  rideCategory: rideCategory,
 );
