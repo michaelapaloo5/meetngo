@@ -4,7 +4,9 @@ import 'package:mng_core/mng_core.dart';
 import 'package:meetngo_driver/main.dart';
 import 'package:meetngo_driver/src/app/driver_config.dart';
 import 'package:meetngo_driver/src/app/driver_flow.dart';
+import 'package:meetngo_driver/src/chat/chat_controller.dart';
 import 'package:meetngo_driver/src/app/driver_shell.dart';
+import 'package:meetngo_driver/src/report/left_item_controller.dart';
 import 'package:meetngo_driver/src/auth/driver_auth_controller.dart';
 import 'package:meetngo_driver/src/auth/driver_login_screen.dart';
 import 'package:meetngo_driver/src/data/driver_auth_repository.dart';
@@ -326,6 +328,13 @@ void main() {
               Provider<DriverAuthRepository>.value(
                 value: auth ?? StubDriverAuthRepository(),
               ),
+              // The two the live trip screen reads for chat and left-item reports.
+              // Registered here because `main.dart` registers them, and the trip
+              // screen does `context.read` on both -- so a harness that omits them
+              // is not a stricter test, it is a different app. Stubs, because
+              // these tests are about the shell and not about either feature.
+              Provider<ChatRepository>.value(value: NoChatRepository()),
+              Provider<LeftItemRepository>.value(value: NoLeftItemRepository()),
               ChangeNotifierProvider<DriverAuthController>(
                 create: (c) => DriverAuthController(c.read<DriverAuthRepository>()),
               ),

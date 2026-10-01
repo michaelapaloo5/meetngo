@@ -13,6 +13,10 @@ import 'src/contact/contact_controller.dart';
 import 'src/data/driver_auth_repository.dart';
 import 'src/data/driver_repository.dart';
 import 'src/data/supabase_driver_repository.dart';
+import 'src/chat/chat_controller.dart';
+import 'src/chat/supabase_chat_repository.dart';
+import 'src/report/left_item_controller.dart';
+import 'src/report/supabase_left_item_repository.dart';
 import 'src/earnings/earnings_repository.dart';
 
 class DriverNGoApp extends StatelessWidget {
@@ -45,6 +49,19 @@ class DriverNGoApp extends StatelessWidget {
             // repositories rather than being constructed inside a widget.
             Provider<ContactRepository>(
               create: (_) => SupabaseContactRepository(client),
+            ),
+            // Chat and left-item reports, for the same reason as the contact
+            // repository above: both read and write rows a driver has to be
+            // authorised for, and both belong beside the repositories rather
+            // than being constructed inside a widget.
+            //
+            // Neither takes an id here. This runs before there is necessarily a
+            // session, so both read `client.auth.currentUser` at the moment they
+            // use it -- an id captured at registration time would send messages
+            // and file reports as nobody.
+            Provider<ChatRepository>(create: (_) => SupabaseChatRepository(client)),
+            Provider<LeftItemRepository>(
+              create: (_) => SupabaseLeftItemRepository(client),
             ),
             ChangeNotifierProvider<DriverAuthController>(
               create: (c) => DriverAuthController(

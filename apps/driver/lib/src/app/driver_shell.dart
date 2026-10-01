@@ -6,9 +6,10 @@ import 'package:mng_core/mng_core.dart';
 import 'package:provider/provider.dart';
 
 import '../active_trip/active_trip_controller.dart';
-import '../contact/contact_controller.dart';
 import '../active_trip/active_trip_screen.dart';
 import '../auth/driver_auth_controller.dart';
+import '../chat/chat_controller.dart';
+import '../contact/contact_controller.dart';
 import '../data/driver_auth_repository.dart';
 import '../data/driver_repository.dart';
 import '../earnings/earnings_controller.dart';
@@ -18,6 +19,7 @@ import '../onboarding/kyc_screen.dart';
 import '../onboarding/phone_gate_screen.dart';
 import '../offers/driver_home_screen.dart';
 import '../profile/driver_profile_screen.dart';
+import '../report/left_item_controller.dart';
 import '../trips/trips_controller.dart';
 import '../trips/trips_screen.dart';
 import 'driver_flow.dart';
@@ -262,6 +264,20 @@ class _DriverShellState extends State<DriverShell> {
           onFinished: _finishTrip,
           location: flow.location,
           contact: _contactFor(flow),
+          // Read from the provider rather than built here, so the shell does not
+          // need the Supabase client and the wiring test can leave both out.
+          //
+          // `read`, not `watch`: neither repository changes while a trip is live,
+          // and a `watch` would rebuild the trip screen on every provider change
+          // for no gain.
+          //
+          // The profile id decides which chat bubbles are the driver's own. It is
+          // null only before the first profile read, and the shell renders a
+          // spinner until that resolves, so by the time the trip screen exists
+          // there is a profile.
+          chatRepository: context.read<ChatRepository>(),
+          leftItemRepository: context.read<LeftItemRepository>(),
+          driverId: flow.profile?.id,
         ),
       );
     }

@@ -223,6 +223,29 @@ abstract class ChatRepository {
   Future<void> send({required String tripId, required String body});
 }
 
+/// The default when no [ChatRepository] was provided.
+///
+/// Answers an empty thread rather than throwing, for the same reason
+/// `NoContactRepository` answers null: the `DriverFlow(...)` calls in the test
+/// suite are about offers, earnings and location, and a repository that refused
+/// to be constructed would turn an absent optional dependency into a crash on a
+/// screen that does not use it.
+///
+/// Public because `driver_shell.dart` and the wiring test are the ones that need
+/// to name it, and a private class in this file is not usable from there.
+class NoChatRepository implements ChatRepository {
+  const NoChatRepository();
+
+  @override
+  Stream<List<ChatMessage>> messages(String tripId) =>
+      Stream<List<ChatMessage>>.value(const []);
+
+  @override
+  Future<void> send({required String tripId, required String body}) async {
+    throw const ChatFailure('Chat is not available right now.');
+  }
+}
+
 /// A send that failed in a way a driver can be told about.
 class ChatFailure implements Exception {
   const ChatFailure(this.message);
