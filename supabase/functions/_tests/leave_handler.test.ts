@@ -37,6 +37,8 @@ interface Options {
   writeRow?: LeaveTripRow | null;
   writeError?: string | null;
   withdrawalError?: string | null;
+  priorWithdrawal?: boolean;
+  withdrawalLookupError?: string | null;
 }
 
 const row = (over: Partial<LeaveTripRow> = {}): LeaveTripRow => ({
@@ -80,6 +82,10 @@ function fake(o: Options = {}): { deps: LeaveDeps; log: Recorder } {
       log.withdrawals.push({ tripId, driverId, reason });
       return { error: o.withdrawalError ?? null };
     },
+    hasWithdrawn: async () => ({
+      row: o.priorWithdrawal ?? false,
+      error: o.withdrawalLookupError ?? null,
+    }),
     releaseDriver: async (driverId) => {
       log.releasedDrivers.push(driverId);
       return { error: null };
@@ -193,6 +199,51 @@ Deno.test('the rider cannot use this to cancel', async () => {
   const res = await handleLeave(post({ tripId: TRIP }), deps);
   assertEquals(await status(res), 403);
   assertEquals(log.withdrawals, []);
+});
+
+Deno.test('a second press is a success, not "not your trip"', async () => {
+  // The trip after a successful withdrawal: the driver has been cleared, so the
+  // ownership check would refuse a driver standing on the very screen that cleared
+  // them. The end state they asked for is the state the row is already in.
+  const { deps, log } = fake({
+    row: row({ driver_id: null, state: 'requested' }),
+    priorWithdrawal: true,
+  });
+  const res = await handleLeave(post({ tripId: TRIP }), deps);
+  assertEquals(await status(res), 200);
+  const body = await res.json();
+  assertEquals(body.alreadyLeft, true);
+  // Nothing was written twice.
+  assertEquals(log.withdrawals, []);
+  assertEquals(log.returns, []);
+});
+
+Deno.test('a released trip is still refused to a stranger', async () => {
+  // The exemption above is for a driver who withdrew. It must not become a way for
+  // anybody else to walk away with a 200 on somebody else's trip.
+  const { deps, log } = fake({
+    row: row({ driver_id: null, state: 'requested' }),
+    userId: 'stranger',
+    priorWithdrawal: false,
+  });
+  const res = await handleLeave(post({ tripId: TRIP }), deps);
+  assertEquals(await status(res), 403);
+  assertEquals(log.withdrawals, []);
+});
+
+Deno.test('a half-finished withdrawal is not treated as a second press', async () => {
+  // The withdrawal is recorded before the state moves. A row with the driver still
+  // assigned means a previous attempt got that far and failed -- this driver is
+  // still driving to the pickup and must be allowed to try again, not told they
+  // already left.
+  const { deps, log } = fake({
+    row: row({ state: 'arriving' }),
+    priorWithdrawal: true,
+  });
+  const res = await handleLeave(post({ tripId: TRIP, reason: 'rider_absent' }), deps);
+  assertEquals(await status(res), 200);
+  assertEquals(log.withdrawals.length, 1);
+  assertEquals(log.returns.length, 1);
 });
 
 Deno.test('an unauthenticated call is refused before anything is read', async () => {

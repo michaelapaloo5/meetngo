@@ -42,6 +42,15 @@ export interface LeaveDeps {
   /// the condition, exactly one update matches a row and the other matches none
   /// and reads back null, which the handler reports as a conflict rather than as a
   /// success.
+  ///
+  /// `driver_id` is cleared here, and that is load-bearing rather than tidy.
+  /// `activeTrip` in the driver app selects `driver_id = me and state in
+  /// ('requested','matched','arriving','ongoing')` -- so a trip returned to
+  /// `requested` with the driver still on it comes straight back as that driver's
+  /// active trip. The Leave button would appear to do nothing, the sheet would
+  /// stay up, and the second press would answer "You do not have this trip yet.
+  /// Decline the offer instead." -- which is what it did, live, before this line
+  /// existed. The trip is not in the pool until it has nobody on it.
   returnToRequested(
     tripId: string,
     fromState: string,
@@ -59,6 +68,23 @@ export interface LeaveDeps {
     driverId: string,
     reason: string,
   ): Promise<{ error: string | null }>;
+
+  /// Whether this driver has already withdrawn from this trip.
+  ///
+  /// Exists for one case: the driver pressed the button twice. The first press
+  /// released the trip and cleared `driver_id`, so the second press arrives at a
+  /// trip that is no longer theirs -- and the ownership check would answer 403
+  /// "not your trip" to a driver standing on the screen they just left. This is
+  /// what tells those two apart.
+  ///
+  /// Recorded *before* the state moves, so it can be true while the trip is still
+  /// `arriving` and still assigned to this driver, if a previous attempt recorded
+  /// the withdrawal and then failed to release. The handler therefore only trusts
+  /// it together with ownership that has actually been given up.
+  hasWithdrawn(
+    tripId: string,
+    driverId: string,
+  ): Promise<{ row: boolean; error: string | null }>;
 
   /// The driver goes back on the road.
   ///
@@ -99,7 +125,7 @@ export function buildDeps(service: SupabaseClient): LeaveDeps {
         // like it had been waiting on this driver for however long they took to
         // leave -- which is exactly the sort of number somebody would use to argue
         // the driver wasted the rider's time.
-        .update({ state: 'requested', matched_at: null })
+        .update({ state: 'requested', driver_id: null, matched_at: null })
         .eq('id', tripId)
         .eq('state', fromState)
         .select('*');
@@ -112,6 +138,19 @@ export function buildDeps(service: SupabaseClient): LeaveDeps {
         { onConflict: 'trip_id,driver_id' },
       );
       return { error: ok(error) };
+    },
+
+    hasWithdrawn: async (tripId, driverId) => {
+      // `limit(1)` rather than fetching the row: all this needs to know is
+      // whether it exists. `count: 'exact'` would be a second full count the
+      // caller has no use for.
+      const { data, error } = await service
+        .from('trip_withdrawals')
+        .select('trip_id')
+        .eq('trip_id', tripId)
+        .eq('driver_id', driverId)
+        .limit(1);
+      return { row: !!(data && data.length > 0), error: ok(error) };
     },
 
     releaseDriver: async (driverId) => {

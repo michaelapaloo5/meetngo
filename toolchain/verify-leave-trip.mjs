@@ -99,16 +99,25 @@ await sql(
    values ('${driver.id}', st_makepoint(5.6037, -0.1870), 0)`,
 );
 
+// `requested` is the state a trip is in *before* anybody has it, so those rows get
+// no driver. Assigning one made the "the driver has no active trip left" check
+// count this script's own fixtures -- two `requested` trips carrying the driver,
+// which is not a state the app can produce, and which the check then read as a
+// failed withdrawal. A fixture that cannot happen is worse than no fixture.
+// `point` inside each stop is not decoration. `TripStop.fromJson` reads
+// `json['point'] as Map<String, dynamic>` and the app always writes it, so a
+// fixture without one is not a trip the app could ever produce -- and a script
+// that builds impossible rows stops being evidence about the real thing.
 const makeTrip = async (state) =>
   (
     await sql(
       `insert into trips (rider_id, driver_id, category, state, pickup, dropoff,
                           pickup_point, dropoff_point, distance_km, fare_ghs, is_demo, matched_at)
-       values ('${rider.id}', '${driver.id}', 'standard', '${state}',
-               '{"label":"Osu","address":"Osu"}'::jsonb,
-               '{"label":"Airport","address":"Airport"}'::jsonb,
+       values ('${rider.id}', ${state === 'requested' ? 'null' : `'${driver.id}'`}, 'standard', '${state}',
+               '{"label":"Osu","point":{"lat":5.6037,"lng":-0.187},"address":"Osu"}'::jsonb,
+               '{"label":"Airport","point":{"lat":5.6200,"lng":-0.187},"address":"Airport"}'::jsonb,
                st_makepoint(5.6037, -0.1870), st_makepoint(5.6200, -0.1870),
-               2.02, 12.50, true, now())
+               2.02, 12.50, true, ${state === 'requested' ? 'null' : 'now()'})
        returning id`,
     )
   )[0].id;
@@ -159,6 +168,21 @@ if (r1.status === 404 && /not found/i.test(JSON.stringify(r1.body))) {
   const tripRow = (await sql(`select state, matched_at from trips where id = '${arriving}'`))[0];
   check('  the trip goes back to requested', tripRow.state, 'requested', 'the rider still wants a ride');
   check('  and matched_at is cleared', tripRow.matched_at, null, 'it recorded when this driver was given it');
+
+  // The two that would have caught the bug this verifier missed the first time.
+  // `activeTrip` in the driver app is
+  //   select * from trips where driver_id = me and state in ('requested','matched','arriving','ongoing')
+  // so a trip returned to `requested` with the driver still on it *is* still that
+  // driver's active trip, and Leave looks like it did nothing. Asserted as the
+  // query the app actually runs, not as a restatement of the intent.
+  const stillActive = await sql(
+    `select count(*)::int as n from trips
+      where driver_id = '${driver.id}'
+        and state in ('requested','matched','arriving','ongoing')`,
+  );
+  check('  and the driver has no active trip left', stillActive[0].n, 0, 'the exact query activeTrip runs');
+  const onTrip = (await sql(`select driver_id is null as cleared from trips where id = '${arriving}'`))[0];
+  check('  and nobody is on it', onTrip.cleared, true, 'a trip in the pool still carrying a driver is not in the pool');
   const wd = await sql(`select * from trip_withdrawals where trip_id = '${arriving}'`);
   check('  the withdrawal is recorded', wd.length, 1, 'so the matcher can forget');
   const drv = (await sql(`select availability from profiles where id = '${driver.id}'`))[0];
@@ -178,10 +202,49 @@ if (r1.status === 404 && /not found/i.test(JSON.stringify(r1.body))) {
   const r4 = await callLeave(arriving, stranger);
   check('somebody not on the trip cannot', r4.status, 403, '');
 
-  // A second press. The unique constraint and the conditional update have to make
-  // this a no-op rather than an error, because the driver tapped the button twice.
+  // A second press. This is not a 500, and the reason it is not is worth stating:
+  // the first press cleared `driver_id`, so by the time the second request arrives
+  // the trip is not this driver's any more, and a naive ownership check answers 403
+  // "not your trip" -- on a screen the driver is looking at precisely because it
+  // *was* their trip. The end state they asked for already holds, so this is a 200
+  // with `alreadyLeft`.
   const r5 = await callLeave(arriving, driver);
-  check('a second press is not an error', r5.status, 409, 'the trip is already back in the pool');
+  check('a second press is not an error', r5.status, 200, 'the trip is already back in the pool');
+  check('  and says the trip was already left', r5.body.alreadyLeft, true, 'so the app can close without apologising');
+
+  // ---------------------------------------------------------------------------
+  console.log('\n=== 3. the guard is still a guard ===\n');
+
+  // Migration 20260930000010 widened `enforce_trip_transition` by exactly one pair,
+  // because the function could not work without it. A widened guard is only
+  // trustworthy if what it used to refuse is still refused, so the widening is
+  // pinned here against the live database rather than assumed.
+  //
+  // Each pair is tried on a real row and the answer is whether Postgres *refused*,
+  // not whether a function returned a verdict about it.
+  const guarded = async (from, to) => {
+    const id = await makeTrip(from);
+    let refused = false;
+    try {
+      await sql(`update trips set state = '${to}' where id = '${id}'`);
+    } catch (e) {
+      if (/illegal trip transition/i.test(String(e.message ?? e))) refused = true;
+      else throw e;
+    }
+    const after = (await sql(`select state from trips where id = '${id}'`))[0];
+    await sql(`delete from trips where id = '${id}'`);
+    return { refused, state: after?.state };
+  };
+
+  check('arriving -> requested is allowed', (await guarded('arriving', 'requested')).refused, false, 'the feature needs this');
+  check('arriving -> ongoing is still allowed', (await guarded('arriving', 'ongoing')).refused, false, 'the normal happy path');
+  check('matched -> requested is still refused', (await guarded('matched', 'requested')).refused, true, 'declining goes through offers/decline');
+  check('arriving -> completed is still refused', (await guarded('arriving', 'completed')).refused, true, 'a trip cannot be completed from the kerb');
+  check('ongoing -> requested is still refused', (await guarded('ongoing', 'requested')).refused, true, 'the rider is in the car');
+  check('completed -> anything is still refused', (await guarded('completed', 'ongoing')).refused, true, 'completed is terminal');
+  check('cancelled -> anything is still refused', (await guarded('cancelled', 'requested')).refused, true, 'cancelled is terminal');
+  const selfTrans = await guarded('arriving', 'arriving');
+  check('a no-op state update still raises', selfTrans.refused, true, 'the comment in the trigger says so, so it is checked');
 }
 
 // ---------------------------------------------------------------------------

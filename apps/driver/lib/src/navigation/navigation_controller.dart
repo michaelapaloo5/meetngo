@@ -90,14 +90,25 @@ class NavigationController extends ChangeNotifier {
   NavigationController({
     required this.from,
     required GeoPoint to,
-    RouteRepository? repository,
+    this._repository,
     SpeechPort? speech,
     DateTime Function()? clock,
     this.speakInstructions = false,
-  })  : to_ = to,
-        _repository = repository,
-        _speech = speech ?? const SilentSpeech(),
-        _clock = clock ?? DateTime.now;
+  }) : to_ = to,
+       // `speech` and `clock` stay assignable parameters rather than becoming
+       // initialising formals (`this._speech`), because both fields are `final`
+       // and both parameters are nullable with a fallback: `speech ?? const
+       // SilentSpeech()` and `clock ?? DateTime.now`. An initialising formal
+       // cannot carry a default expression, and moving the fallback into the
+       // fields would push `?? const SilentSpeech()` into every one of the three
+       // places `_speech` is read. That is a worse trade than one ignored lint
+       // per line. `_repository` above is mutable and needs no default, so it is
+       // a proper initialising formal.
+       // ignore: prefer_initializing_formals
+       // ignore: prefer_initializing_formals
+       _speech = speech ?? const SilentSpeech(),
+       // ignore: prefer_initializing_formals
+       _clock = clock ?? DateTime.now;
 
   /// Where the route starts, and where every *refetch* starts from too.
   ///
@@ -130,6 +141,13 @@ class NavigationController extends ChangeNotifier {
   /// A flag rather than unconditional because it is the setting a driver turns off
   /// after one loud bus, and a navigator that cannot be silenced gets uninstalled.
   bool speakInstructions;
+
+  /// True while a route fetch is open.
+  ///
+  /// Set for the whole of `start`, including the failure paths, and checked at the
+  /// top. Without it the shell's poll can open a second fetch while the first is
+  /// still running -- see the comment on `start`.
+  bool _fetching = false;
 
   RouteRepository? _repository;
   final SpeechPort _speech;
@@ -184,16 +202,34 @@ class NavigationController extends ChangeNotifier {
 
   /// Fetch a route, or fetch it again, and start following it from [at].
   ///
-  /// [at] rather than [from] on the refetch path: on the first call the driver is
+  /// [at] rather than [from` on the refetch path: on the first call the driver is
   /// where they said they were and on every later call they are not.
+  ///
+  /// ## Why a second fetch is refused rather than queued
+  ///
+  /// The shell feeds this from a three-second poll, and a re-route is asked for
+  /// whenever the driver is more than [kOffRouteM] from the line. A phone parked
+  /// indoors drifts: watched on an A06, a stationary driver sat 60 m-plus from the
+  /// fetched line and every poll asked again. With nothing stopping a second call
+  /// while the first was still open, those requests overlapped -- the last response
+  /// to land won, so the line on screen could be the one for a position the driver
+  /// had already left -- and the banner sat on "Finding a new route" for minutes,
+  /// which is the one thing a driver cannot be shown while they are driving.
+  ///
+  /// Refusing the overlapping call is safe precisely because the poll is faster
+  /// than the fetch: the next tick three seconds later asks again from the newer
+  /// position, so the freshest request is always the one that gets made.
   Future<void> start({GeoPoint? at}) async {
     final repo = _repository;
     if (repo == null) {
-      _failure = const NavigationFailure('Directions are not available right now.');
+      _failure = const NavigationFailure(
+        'Directions are not available right now.',
+      );
       _loading = false;
       notifyListeners();
       return;
     }
+    if (_fetching) return;
     final origin = at ?? from;
     final hadRoute = _route != null;
     if (hadRoute) {
@@ -201,6 +237,7 @@ class NavigationController extends ChangeNotifier {
     } else {
       _loading = true;
     }
+    _fetching = true;
     notifyListeners();
 
     try {
@@ -243,8 +280,11 @@ class NavigationController extends ChangeNotifier {
       // is refused a new one is better off on a stale line than with no line.
       _failure = e;
     } catch (_) {
-      _failure = const NavigationFailure('Could not find a route to that address.');
+      _failure = const NavigationFailure(
+        'Could not find a route to that address.',
+      );
     } finally {
+      _fetching = false;
       _loading = false;
       _recalculating = false;
       notifyListeners();

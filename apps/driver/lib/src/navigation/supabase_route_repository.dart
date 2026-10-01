@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:mng_core/mng_core.dart';
 
 import 'navigation_controller.dart';
@@ -19,13 +21,24 @@ class SupabaseRouteRepository implements RouteRepository {
 
   final dynamic _client;
 
+  /// How long a routing call may take before it is treated as failed.
+  ///
+  /// A live call to the deployed function answers in about a second. Fifteen
+  /// seconds is several times that, so this is not a threshold a healthy request
+  /// ever approaches -- it exists because without it a call that never answers
+  /// leaves the banner on "Finding a new route" indefinitely, which is the one
+  /// thing a driver cannot be shown while they are driving. The in-flight guard in
+  /// `NavigationController` stops requests piling up, but it cannot rescue a single
+  /// call that hangs; only a deadline can, and a deadline has to produce a message
+  /// the driver can act on rather than silence.
+  static const Duration timeout = Duration(seconds: 15);
+
   @override
   Future<TripRoute> route(GeoPoint from, GeoPoint to) async {
     try {
-      final res = await _client.functions.invoke(
-        'route',
-        body: {'from': from.toJson(), 'to': to.toJson()},
-      );
+      final res = await _client.functions
+          .invoke('route', body: {'from': from.toJson(), 'to': to.toJson()})
+          .timeout(timeout);
       final data = res.data;
       if (data is! Map) {
         // A 200 with something that is not a route object. Worth distinguishing
@@ -47,6 +60,13 @@ class SupabaseRouteRepository implements RouteRepository {
   }
 
   static String _readFailure(Object e) {
+    // Checked before the duck-typed reads below, because `TimeoutException` has no
+    // `details` and `status` and probing for them throws -- which the `catch` at
+    // the bottom would turn into the generic sentence, losing the one fact the
+    // driver can act on.
+    if (e is TimeoutException) {
+      return 'Directions took too long. Try again in a moment.';
+    }
     try {
       final details = (e as dynamic).details;
       if (details is Map) {

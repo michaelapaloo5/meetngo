@@ -25,10 +25,7 @@ import 'navigation_controller.dart';
 /// banner changes a few times per minute; sharing one notifier would put the
 /// hundred-per-minute rebuild on the banner too.
 class NavigationHost extends ChangeNotifier {
-  NavigationHost({RouteRepository? repository, SpeechPort? speech, DateTime Function()? clock})
-    : _repository = repository,
-      _speech = speech,
-      _clock = clock;
+  NavigationHost({this._repository, this._speech, this._clock});
 
   RouteRepository? _repository;
   final SpeechPort? _speech;
@@ -48,7 +45,10 @@ class NavigationHost extends ChangeNotifier {
   /// Reuses the existing controller when there is one, so the driver's voice
   /// setting survives a re-route and the banner does not flicker back to "working
   /// out the route".
-  Future<void> start({required GeoPoint at, required GeoPoint destination}) async {
+  Future<void> start({
+    required GeoPoint at,
+    required GeoPoint destination,
+  }) async {
     final repo = _repository;
     if (repo == null) return;
     final existing = _controller;

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mng_core/mng_core.dart';
@@ -23,7 +25,11 @@ import '../support/harness.dart';
 /// Realistic enough for every rule here and far easier to reason about than a real
 /// OSRM geometry: 0.001 degrees of latitude is about 111 m, so each leg is about
 /// 111 m and the whole route is about 444 m.
-TripRoute straightRoute({double legDegrees = 0.001, int legs = 4, double stepM = 111}) {
+TripRoute straightRoute({
+  double legDegrees = 0.001,
+  int legs = 4,
+  double stepM = 111,
+}) {
   final geometry = <List<double>>[];
   for (var i = 0; i <= legs; i++) {
     geometry.add([-0.1870, 5.6037 + i * legDegrees]);
@@ -34,10 +40,30 @@ TripRoute straightRoute({double legDegrees = 0.001, int legs = 4, double stepM =
     durationFreeFlowS: 220,
     geometry: geometry,
     steps: [
-      RouteStep(instruction: 'Head north on Boundary Road', distanceM: stepM, maneuver: 'depart', name: 'Boundary Road'),
-      RouteStep(instruction: 'Turn right onto Ring Road West', distanceM: stepM, maneuver: 'turn', name: 'Ring Road West'),
-      RouteStep(instruction: 'Turn left onto Airport Road', distanceM: stepM, maneuver: 'turn', name: 'Airport Road'),
-      RouteStep(instruction: 'You have arrived', distanceM: stepM, maneuver: 'arrive', name: ''),
+      RouteStep(
+        instruction: 'Head north on Boundary Road',
+        distanceM: stepM,
+        maneuver: 'depart',
+        name: 'Boundary Road',
+      ),
+      RouteStep(
+        instruction: 'Turn right onto Ring Road West',
+        distanceM: stepM,
+        maneuver: 'turn',
+        name: 'Ring Road West',
+      ),
+      RouteStep(
+        instruction: 'Turn left onto Airport Road',
+        distanceM: stepM,
+        maneuver: 'turn',
+        name: 'Airport Road',
+      ),
+      RouteStep(
+        instruction: 'You have arrived',
+        distanceM: stepM,
+        maneuver: 'arrive',
+        name: '',
+      ),
     ],
     engine: 'osrm',
     degraded: false,
@@ -73,6 +99,30 @@ class StubRoute implements RouteRepository {
   }
 }
 
+/// Never answers, so a test can drive the poll while a fetch is still open.
+///
+/// The completers are exposed rather than the futures so a test can decide when the
+/// world moves, which is the only way to pin behaviour about overlapping requests.
+class HangingRoute implements RouteRepository {
+  final List<GeoPoint> asked = [];
+  final List<Completer<TripRoute>> pending = [];
+
+  @override
+  Future<TripRoute> route(GeoPoint from, GeoPoint to) {
+    asked.add(from);
+    final c = Completer<TripRoute>();
+    pending.add(c);
+    return c.future;
+  }
+
+  /// Answers every open request with [answer].
+  void release(TripRoute answer) {
+    for (final c in pending) {
+      if (!c.isCompleted) c.complete(answer);
+    }
+  }
+}
+
 void main() {
   const start = GeoPoint(5.6037, -0.1870);
   const end = GeoPoint(5.6057, -0.1870);
@@ -93,9 +143,9 @@ void main() {
         durationFreeFlowS: 30,
         geometry: [
           [-0.1870, 5.6037],
-          [-0.1870],        // too short
+          [-0.1870], // too short
           [double.nan, 5.6], // not finite
-          [400.0, 91.0],    // out of range
+          [400.0, 91.0], // out of range
           [-0.1870, 5.6057],
         ],
         steps: const [],
@@ -138,8 +188,18 @@ void main() {
           [-0.172147, 5.55692],
         ],
         steps: const [
-          RouteStep(instruction: 'Head out on Otswe Street', distanceM: 0, maneuver: 'depart', name: 'Otswe Street'),
-          RouteStep(instruction: 'You have arrived', distanceM: 0, maneuver: 'arrive', name: 'Otswe Street'),
+          RouteStep(
+            instruction: 'Head out on Otswe Street',
+            distanceM: 0,
+            maneuver: 'depart',
+            name: 'Otswe Street',
+          ),
+          RouteStep(
+            instruction: 'You have arrived',
+            distanceM: 0,
+            maneuver: 'arrive',
+            name: 'Otswe Street',
+          ),
         ],
         engine: 'osrm',
         degraded: true,
@@ -179,7 +239,11 @@ void main() {
     test('at the very start they are in the first step', () {
       final p = progressOn(straightRoute(), start);
       expect(p.stepIndex, 0);
-      expect(p.distanceToStepM, closeTo(111, 3), reason: 'the whole first leg is ahead');
+      expect(
+        p.distanceToStepM,
+        closeTo(111, 3),
+        reason: 'the whole first leg is ahead',
+      );
       expect(p.distanceToRouteM, lessThan(1));
     });
 
@@ -189,7 +253,10 @@ void main() {
       // number has to be past 5.6047 to be in the second, and this is why a
       // hand-written expectation here is worth checking against the geometry
       // rather than guessed.
-      expect(progressOn(straightRoute(), const GeoPoint(5.6044, -0.1870)).stepIndex, 0);
+      expect(
+        progressOn(straightRoute(), const GeoPoint(5.6044, -0.1870)).stepIndex,
+        0,
+      );
       final past = progressOn(straightRoute(), const GeoPoint(5.6048, -0.1870));
       expect(past.stepIndex, 1);
       expect(past.step!.name, 'Ring Road West');
@@ -207,7 +274,11 @@ void main() {
       // nothing.
       final p = progressOn(straightRoute(), const GeoPoint(5.6045, -0.1865));
       expect(p.distanceToRouteM, closeTo(55, 12));
-      expect(p.metresAlong, closeTo(89, 12), reason: 'their progress is unaffected by being beside the road');
+      expect(
+        p.metresAlong,
+        closeTo(89, 12),
+        reason: 'their progress is unaffected by being beside the road',
+      );
     });
 
     test('the final step is the arrival', () {
@@ -218,21 +289,24 @@ void main() {
       expect(p.step!.isArrival, isTrue);
     });
 
-    test('a route with no steps reports no instruction rather than throwing', () {
-      final r = straightRoute();
-      final noSteps = TripRoute(
-        distanceM: r.distanceM,
-        durationS: r.durationS,
-        durationFreeFlowS: r.durationFreeFlowS,
-        geometry: r.geometry,
-        steps: const [],
-        engine: r.engine,
-        degraded: false,
-      );
-      final p = progressOn(noSteps, start);
-      expect(p.step, isNull);
-      expect(p.hasStep, isFalse);
-    });
+    test(
+      'a route with no steps reports no instruction rather than throwing',
+      () {
+        final r = straightRoute();
+        final noSteps = TripRoute(
+          distanceM: r.distanceM,
+          durationS: r.durationS,
+          durationFreeFlowS: r.durationFreeFlowS,
+          geometry: r.geometry,
+          steps: const [],
+          engine: r.engine,
+          degraded: false,
+        );
+        final p = progressOn(noSteps, start);
+        expect(p.step, isNull);
+        expect(p.hasStep, isFalse);
+      },
+    );
   });
 
   group('when to throw the route away', () {
@@ -248,19 +322,31 @@ void main() {
     );
 
     test('a driver beside the route', () {
-      expect(shouldReRoute(onLine(distanceToRoute: 80), secondsWithoutProgress: 0), isTrue);
+      expect(
+        shouldReRoute(onLine(distanceToRoute: 80), secondsWithoutProgress: 0),
+        isTrue,
+      );
     });
 
     test('a driver on it, moving', () {
-      expect(shouldReRoute(onLine(distanceToRoute: 5), secondsWithoutProgress: 0), isFalse);
+      expect(
+        shouldReRoute(onLine(distanceToRoute: 5), secondsWithoutProgress: 0),
+        isFalse,
+      );
     });
 
     test('a driver on it, but stopped in traffic for long enough', () {
       // A driver stopped at a light is not off-route. Re-routing them produces an
       // identical route and a banner that says nothing, four minutes later, while
       // they are still in the queue.
-      expect(shouldReRoute(onLine(distanceToRoute: 5), secondsWithoutProgress: 239), isFalse);
-      expect(shouldReRoute(onLine(distanceToRoute: 5), secondsWithoutProgress: 240), isTrue);
+      expect(
+        shouldReRoute(onLine(distanceToRoute: 5), secondsWithoutProgress: 239),
+        isFalse,
+      );
+      expect(
+        shouldReRoute(onLine(distanceToRoute: 5), secondsWithoutProgress: 240),
+        isTrue,
+      );
     });
 
     test('the threshold is above the noise a phone fix produces', () {
@@ -281,7 +367,11 @@ void main() {
     test('kilometres to one decimal under ten', () {
       expect(formatDistance(1200), '1.2 km');
       expect(formatDistance(9900), '9.9 km');
-      expect(formatDistance(24000), '24 km', reason: 'past ten, a decimal is noise');
+      expect(
+        formatDistance(24000),
+        '24 km',
+        reason: 'past ten, a decimal is noise',
+      );
     });
 
     test('an unusable distance reads as dashes, not "NaN m"', () {
@@ -294,10 +384,13 @@ void main() {
       expect(formatDuration(0), '--');
     });
 
-    test('hours and padded minutes, because a clock is being read against one', () {
-      // "65 min" and "1h 5m" both make the driver do arithmetic. "1 h 05" does not.
-      expect(formatDuration(3900), '1 h 05');
-    });
+    test(
+      'hours and padded minutes, because a clock is being read against one',
+      () {
+        // "65 min" and "1h 5m" both make the driver do arithmetic. "1 h 05" does not.
+        expect(formatDuration(3900), '1 h 05');
+      },
+    );
 
     test('an arrival clock is local and padded', () {
       expect(formatArrivalClock(DateTime(2026, 9, 30, 14, 5), 1800), '14:35');
@@ -349,14 +442,17 @@ void main() {
       expect(speech.said, hasLength(1));
     });
 
-    test('it says the next instruction when the driver crosses into it', () async {
-      final c = make(StubRoute(straightRoute()));
-      await c.start();
-      // Past 111 m, which is where the first leg ends.
-      await c.onMoved(const GeoPoint(5.6048, -0.1870));
-      expect(speech.said.length, greaterThan(1));
-      expect(speech.said.last, contains('Ring Road West'));
-    });
+    test(
+      'it says the next instruction when the driver crosses into it',
+      () async {
+        final c = make(StubRoute(straightRoute()));
+        await c.start();
+        // Past 111 m, which is where the first leg ends.
+        await c.onMoved(const GeoPoint(5.6048, -0.1870));
+        expect(speech.said.length, greaterThan(1));
+        expect(speech.said.last, contains('Ring Road West'));
+      },
+    );
 
     test('a driver who turned the voice off is not spoken to', () async {
       final c = NavigationController(
@@ -381,20 +477,23 @@ void main() {
       expect(speech.said, hasLength(1));
     });
 
-    test('a driver who leaves the line gets a new route from where they are', () async {
-      final repo = StubRoute(straightRoute());
-      final c = make(repo);
-      await c.start();
-      expect(repo.calls, 1);
+    test(
+      'a driver who leaves the line gets a new route from where they are',
+      () async {
+        final repo = StubRoute(straightRoute());
+        final c = make(repo);
+        await c.start();
+        expect(repo.calls, 1);
 
-      // Well off the line, east of the route.
-      final rerouted = await c.onMoved(const GeoPoint(5.6040, -0.1855));
-      expect(rerouted, isTrue);
-      expect(repo.calls, 2);
-      // The new route starts where they are, not where they set off. A route from
-      // the original point is a route to somewhere they left.
-      expect(repo.lastFrom!.lat, closeTo(5.6040, 1e-9));
-    });
+        // Well off the line, east of the route.
+        final rerouted = await c.onMoved(const GeoPoint(5.6040, -0.1855));
+        expect(rerouted, isTrue);
+        expect(repo.calls, 2);
+        // The new route starts where they are, not where they set off. A route from
+        // the original point is a route to somewhere they left.
+        expect(repo.lastFrom!.lat, closeTo(5.6040, 1e-9));
+      },
+    );
 
     test('a driver stopped in traffic is not re-routed', () async {
       final repo = StubRoute(straightRoute());
@@ -405,7 +504,11 @@ void main() {
       // Four minutes pass with no movement along the line.
       now = now.add(const Duration(minutes: 4));
       final rerouted = await c.onMoved(const GeoPoint(5.6040, -0.1870));
-      expect(rerouted, isTrue, reason: 'four minutes in one place is a jam or a detour, and a new route is the right answer');
+      expect(
+        rerouted,
+        isTrue,
+        reason: 'four minutes in one place is a jam or a detour, and a new route is the right answer',
+      );
       expect(repo.calls, 2);
     });
 
@@ -452,7 +555,12 @@ void main() {
           [-0.172147, 5.55692],
         ],
         steps: const [
-          RouteStep(instruction: 'Head out', distanceM: 0, maneuver: 'depart', name: 'Otswe Street'),
+          RouteStep(
+            instruction: 'Head out',
+            distanceM: 0,
+            maneuver: 'depart',
+            name: 'Otswe Street',
+          ),
         ],
         engine: 'osrm',
         degraded: true,
@@ -480,19 +588,25 @@ void main() {
   });
 
   group('the host', () {
-    test('reuses the controller so the voice setting survives a re-route', () async {
-      final repo = StubRoute(straightRoute());
-      final host = NavigationHost(repository: repo, clock: () => DateTime(2026, 9, 30, 14, 5));
-      await host.start(at: start, destination: end);
-      final first = host.controller;
-      host.setSpeaking(true);
+    test(
+      'reuses the controller so the voice setting survives a re-route',
+      () async {
+        final repo = StubRoute(straightRoute());
+        final host = NavigationHost(
+          repository: repo,
+          clock: () => DateTime(2026, 9, 30, 14, 5),
+        );
+        await host.start(at: start, destination: end);
+        final first = host.controller;
+        host.setSpeaking(true);
 
-      await host.start(at: const GeoPoint(5.6040, -0.1870), destination: end);
-      // A fresh controller here would mean the driver has to turn the voice back
-      // on at the pickup after turning it off at the drop-off.
-      expect(identical(host.controller, first), isTrue);
-      expect(host.speakInstructions, isTrue);
-    });
+        await host.start(at: const GeoPoint(5.6040, -0.1870), destination: end);
+        // A fresh controller here would mean the driver has to turn the voice back
+        // on at the pickup after turning it off at the drop-off.
+        expect(identical(host.controller, first), isTrue);
+        expect(host.speakInstructions, isTrue);
+      },
+    );
 
     test('a new destination retargets rather than starting over', () async {
       final repo = StubRoute(straightRoute());
@@ -504,20 +618,26 @@ void main() {
       expect(host.controller!.to_.lat, closeTo(5.6200, 1e-9));
     });
 
-    test('stopping drops the route so the next trip does not inherit it', () async {
-      final host = NavigationHost(repository: StubRoute(straightRoute()));
-      await host.start(at: start, destination: end);
-      expect(host.isRunning, isTrue);
-      host.stop();
-      expect(host.isRunning, isFalse);
-    });
+    test(
+      'stopping drops the route so the next trip does not inherit it',
+      () async {
+        final host = NavigationHost(repository: StubRoute(straightRoute()));
+        await host.start(at: start, destination: end);
+        expect(host.isRunning, isTrue);
+        host.stop();
+        expect(host.isRunning, isFalse);
+      },
+    );
 
-    test('a position with no navigation running is ignored, not a crash', () async {
-      // The shell's poll calls this unconditionally.
-      final host = NavigationHost(repository: StubRoute(straightRoute()));
-      await host.onMoved(start);
-      expect(host.isRunning, isFalse);
-    });
+    test(
+      'a position with no navigation running is ignored, not a crash',
+      () async {
+        // The shell's poll calls this unconditionally.
+        final host = NavigationHost(repository: StubRoute(straightRoute()));
+        await host.onMoved(start);
+        expect(host.isRunning, isFalse);
+      },
+    );
   });
 
   group('the banner', () {
@@ -541,7 +661,9 @@ void main() {
       await tester.pump();
     }
 
-    testWidgets('shows the instruction, the distance and the arrival', (tester) async {
+    testWidgets('shows the instruction, the distance and the arrival', (
+      tester,
+    ) async {
       useDesignSurface(tester);
       final c = withRoute();
       await c.start();
@@ -553,7 +675,9 @@ void main() {
       expect(find.text('14:12'), findsOneWidget);
     });
 
-    testWidgets('names the road, but smaller than the instruction', (tester) async {
+    testWidgets('names the road, but smaller than the instruction', (
+      tester,
+    ) async {
       useDesignSurface(tester);
       final c = withRoute();
       await c.start();
@@ -563,29 +687,43 @@ void main() {
       // is looking at it -- a poor thing to make the biggest thing on screen.
       expect(find.text('Boundary Road'), findsOneWidget);
     });
-    testWidgets('says the failure rather than stale directions', (tester) async {
+    testWidgets('says the failure rather than stale directions', (
+      tester,
+    ) async {
       useDesignSurface(tester);
       final c = withRoute();
       await c.start();
-      c.attach(StubRoute(straightRoute())..error = const NavigationFailure('Could not reach the server.'));
+      c.attach(
+        StubRoute(straightRoute())
+          ..error = const NavigationFailure('Could not reach the server.'),
+      );
       await c.onMoved(const GeoPoint(5.6040, -0.1855));
       await show(tester, c);
 
       // The re-route has resolved by the time the frame is built, so the spinner
       // is not what can be asserted here -- the durable outcome is that the banner
       // stops confidently instructing the driver along a route they have left.
-      expect(c.route, isNotNull, reason: 'a driver off-route is better off on a stale line than with none');
+      expect(
+        c.route,
+        isNotNull,
+        reason:
+            'a driver off-route is better off on a stale line than with none',
+      );
       expect(find.byKey(const Key('turnBannerMessage')), findsOneWidget);
     });
 
     testWidgets('says why when there is no route at all', (tester) async {
       useDesignSurface(tester);
-      final c = NavigationController(
-        from: start,
-        to: end,
-        repository: StubRoute(straightRoute()),
-        clock: () => DateTime(2026, 9, 30, 14, 5),
-      )..attach(StubRoute(straightRoute())..error = const NavigationFailure('Could not reach the server'));
+      final c =
+          NavigationController(
+            from: start,
+            to: end,
+            repository: StubRoute(straightRoute()),
+            clock: () => DateTime(2026, 9, 30, 14, 5),
+          )..attach(
+            StubRoute(straightRoute())
+              ..error = const NavigationFailure('Could not reach the server'),
+          );
       await c.start();
       await show(tester, c);
 
@@ -595,35 +733,121 @@ void main() {
       expect(find.textContaining('Could not reach the server'), findsOneWidget);
     });
 
-    testWidgets('has a mute control only when there is one to have', (tester) async {
+    testWidgets('has a mute control only when there is one to have', (
+      tester,
+    ) async {
       useDesignSurface(tester);
       final c = withRoute();
       await c.start();
 
       await tester.pumpWidget(
-        appHarness(Scaffold(body: TurnBanner(controller: c, onMuteToggle: () {}))),
+        appHarness(
+          Scaffold(
+            body: TurnBanner(controller: c, onMuteToggle: () {}),
+          ),
+        ),
       );
       await tester.pump();
       expect(find.byKey(const Key('turnBannerMute')), findsOneWidget);
 
       // A button that cannot do anything teaches the driver the app is broken.
-      await tester.pumpWidget(appHarness(Scaffold(body: TurnBanner(controller: c))));
+      await tester.pumpWidget(
+        appHarness(Scaffold(body: TurnBanner(controller: c))),
+      );
       await tester.pump();
       expect(find.byKey(const Key('turnBannerMute')), findsNothing);
     });
 
-    testWidgets('muting goes through the controller, not just the icon', (tester) async {
+    testWidgets('muting goes through the controller, not just the icon', (
+      tester,
+    ) async {
       useDesignSurface(tester);
       final c = withRoute();
       await c.start();
       await tester.pumpWidget(
-        appHarness(Scaffold(body: TurnBanner(controller: c, onMuteToggle: () => c.setSpeaking(false)))),
+        appHarness(
+          Scaffold(
+            body: TurnBanner(
+              controller: c,
+              onMuteToggle: () => c.setSpeaking(false),
+            ),
+          ),
+        ),
       );
       await tester.pump();
 
       await tester.tap(find.byKey(const Key('turnBannerMute')));
       await tester.pump();
       expect(c.speakInstructions, isFalse);
+    });
+  });
+
+  // Found on an A06 parked indoors, not reasoned about in advance.
+  group('overlapping fetches', () {
+    NavigationController withHangingRoute(HangingRoute repo) =>
+        NavigationController(from: start, to: end, speech: RecordingSpeech())
+          ..attach(repo);
+
+    test('a poll during an open fetch does not start a second one', () async {
+      final repo = HangingRoute();
+      final c = withHangingRoute(repo);
+
+      // The driver taps Navigate.
+      final first = c.start();
+      // ...and the shell's three-second poll lands before it answers.
+      await c.start();
+      await c.start();
+      await c.start();
+
+      expect(
+        repo.asked.length,
+        1,
+        reason:
+            'three extra polls must not become three extra routing requests',
+      );
+
+      repo.release(straightRoute());
+      await first;
+      expect(c.loading, isFalse);
+    });
+
+    test('the poll asks again once the fetch has landed', () async {
+      // The other half, and the reason refusing the overlap is safe: the poll is
+      // faster than the fetch, so the *next* tick makes a request from the newer
+      // position rather than the stale one being skipped.
+      final repo = HangingRoute();
+      final c = withHangingRoute(repo);
+
+      final first = c.start();
+      repo.release(straightRoute());
+      await first;
+
+      final second = c.start();
+      expect(repo.asked.length, 2, reason: 'a settled controller is not stuck');
+      repo.release(straightRoute());
+      await second;
+      expect(c.loading, isFalse);
+    });
+
+    test('a refused fetch leaves no loading state behind', () async {
+      // A fetch that throws must clear the guard, or the guard outlives the thing
+      // it was guarding and navigation can never start again for this trip.
+      final repo = StubRoute(straightRoute())
+        ..error = NavigationFailure('nope');
+      final c = NavigationController(
+        from: start,
+        to: end,
+        speech: RecordingSpeech(),
+      )..attach(repo);
+
+      await c.start();
+      expect(c.loading, isFalse);
+      expect(c.failure?.message, 'nope');
+
+      // And a second attempt is allowed through rather than silently skipped.
+      repo.error = null;
+      await c.start();
+      expect(repo.calls, 2, reason: 'the guard must not latch after a failure');
     });
   });
 }

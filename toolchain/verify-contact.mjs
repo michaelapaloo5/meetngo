@@ -158,6 +158,24 @@ try {
   check('rider cannot read the driver profile', Array.isArray(rows) ? rows.length : -1, 0);
   console.log('    -> so the number genuinely has to come through this function');
 
+  // Added after watching a real driver on an A06: the Call button was disabled
+  // with a rider whose phone had been set to nothing, and there was no way to tell
+  // from the outside whether the function had failed or whether there was genuinely
+  // nobody to call. Those are different things to a driver and they must not look
+  // the same.
+  console.log('\n=== 8. a rider with no number is an answer, not a failure ===');
+  // `profiles.phone` is NOT NULL, so "no number" is the empty string. Setting null
+  // here fails the not-null constraint and reports a type error several steps later,
+  // a long way from what is being tested.
+  await q(`update profiles set phone = '' where id='${users.rider.uid}'`);
+  const silent = await ask(tripId, users.driver.token);
+  say('HTTP', silent.status);
+  check('not a server error', silent.status === 500, false);
+  check('and not dialable', silent.body.callable, false);
+  check('and no number is invented', silent.body.phone, '');
+  console.log('    -> the driver gets a disabled button, which is the truth');
+  await q(`update profiles set phone = '0241234567' where id='${users.rider.uid}'`);
+
   await q(`delete from trips where id='${tripId}'`);
 } catch (e) {
   ok = false;

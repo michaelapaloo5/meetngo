@@ -121,6 +121,28 @@ export async function handleLeave(req: Request, deps: LeaveDeps): Promise<Respon
   // Not the rider's trip either. This function exists for the driver; a rider who
   // wants out cancels, with different rules and different money attached.
   if (row.driver_id !== userId) {
+    // ...unless this driver is the one who just released it.
+    //
+    // A successful withdrawal clears `driver_id`, so a second press from the same
+    // button finds a trip that is no longer theirs. Answering 403 would put "not
+    // your trip" on a screen the driver is looking at precisely because it *was*
+    // their trip -- and the app shows this sentence verbatim. The end state they
+    // asked for is already the state the row is in, so this is a success with
+    // `alreadyLeft` set, and the app can close the sheet without an apology.
+    //
+    // Both conditions are required together. The withdrawal is recorded before the
+    // state moves, so a row here with the trip still assigned means a previous
+    // attempt half-finished; that driver is still driving towards the pickup and
+    // must be told so, not handed a success for a trip they are still on.
+    const prior = await deps.hasWithdrawn(tripId, userId);
+    if (!prior.error && prior.row) {
+      return json(200, {
+        ok: true,
+        tripId,
+        alreadyLeft: true,
+        availability: 'online',
+      });
+    }
     return json(403, { error: 'not your trip' });
   }
 

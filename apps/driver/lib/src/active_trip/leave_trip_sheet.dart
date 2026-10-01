@@ -30,12 +30,17 @@ class LeaveTripSheet extends StatefulWidget {
   final LeaveTripController controller;
 
   /// Returns true when the driver left, false when they backed out.
-  static Future<bool> show(BuildContext context, LeaveTripController controller) async {
+  static Future<bool> show(
+    BuildContext context,
+    LeaveTripController controller,
+  ) async {
     final left = await showModalBottomSheet<bool>(
       context: context,
       isScrollControlled: true,
       builder: (_) => Padding(
-        padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
+        padding: EdgeInsets.only(
+          bottom: MediaQuery.of(context).viewInsets.bottom,
+        ),
         child: LeaveTripSheet(controller: controller),
       ),
     );
@@ -84,72 +89,86 @@ class _LeaveTripSheetState extends State<LeaveTripSheet> {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-            Text('Why are you leaving?', style: theme.titleLarge),
-            const SizedBox(height: 6),
-            Text(
-              // Says what will happen, before it happens. The rider is put back in
-              // the pool and somebody else is offered the trip -- a driver who does
-              // not know that is being asked to decide twice.
-              'Your rider goes back on the list and we look for another driver.',
-              style: theme.bodySmall?.copyWith(color: MngColors.textSub),
-            ),
-            const SizedBox(height: 16),
-            for (final reason in LeaveReason.values)
-              RadioListTile<LeaveReason>(
-                key: Key('leaveReason_${reason.slug}'),
-                value: reason,
-                // `groupValue`/`onChanged` rather than the newer `RadioGroup`, for
-                // the same reason the rest of this app is on the older API: one
-                // idiom, not two, and the deprecated form still works.
+              Text('Why are you leaving?', style: theme.titleLarge),
+              const SizedBox(height: 6),
+              Text(
+                // Says what will happen, before it happens. The rider is put back in
+                // the pool and somebody else is offered the trip -- a driver who does
+                // not know that is being asked to decide twice.
+                'Your rider goes back on the list and we look for another driver.',
+                style: theme.bodySmall?.copyWith(color: MngColors.textSub),
+              ),
+              const SizedBox(height: 16),
+              // `RadioGroup`, not `groupValue`/`onChanged` on each tile. Flutter
+              // deprecated the per-tile form after 3.32 and it will become a hard
+              // error. The comment that used to be here justified keeping it by saying
+              // "one idiom, not two, and the deprecated form still works" -- but this
+              // sheet was the only `Radio` in the driver app, so there was no second
+              // idiom to be consistent with and nothing to gain. The replacement has
+              // the same `groupValue`/`onChanged` pair one level up.
+              RadioGroup<LeaveReason>(
                 groupValue: _chosen,
                 onChanged: (v) => setState(() => _chosen = v),
-                title: Text(reason.prompt, style: theme.bodyMedium),
-                contentPadding: EdgeInsets.zero,
-                dense: true,
-              ),
-            if (_chosen == LeaveReason.other) ...[
-              const SizedBox(height: 8),
-              TextField(
-                key: const Key('leaveDetailField'),
-                controller: _detail,
-                maxLines: 2,
-                maxLength: 240,
-                textCapitalization: TextCapitalization.sentences,
-                decoration: const InputDecoration(
-                  labelText: 'Tell us what happened',
-                  helperText: 'Optional, but it helps whoever looks at this',
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    for (final reason in LeaveReason.values)
+                      RadioListTile<LeaveReason>(
+                        key: Key('leaveReason_${reason.slug}'),
+                        value: reason,
+                        title: Text(reason.prompt, style: theme.bodyMedium),
+                        contentPadding: EdgeInsets.zero,
+                        dense: true,
+                      ),
+                  ],
                 ),
               ),
-            ],
-            if (widget.controller.problem != null) ...[
-              const SizedBox(height: 4),
-              Text(
-                widget.controller.problem!,
-                key: const Key('leaveProblem'),
-                style: theme.bodySmall?.copyWith(color: MngColors.error),
+              if (_chosen == LeaveReason.other) ...[
+                const SizedBox(height: 8),
+                TextField(
+                  key: const Key('leaveDetailField'),
+                  controller: _detail,
+                  maxLines: 2,
+                  maxLength: 240,
+                  textCapitalization: TextCapitalization.sentences,
+                  decoration: const InputDecoration(
+                    labelText: 'Tell us what happened',
+                    helperText: 'Optional, but it helps whoever looks at this',
+                  ),
+                ),
+              ],
+              if (widget.controller.problem != null) ...[
+                const SizedBox(height: 4),
+                Text(
+                  widget.controller.problem!,
+                  key: const Key('leaveProblem'),
+                  style: theme.bodySmall?.copyWith(color: MngColors.error),
+                ),
+              ],
+              const SizedBox(height: 16),
+              FilledButton(
+                key: const Key('leaveConfirmButton'),
+                onPressed: _chosen == null || widget.controller.busy
+                    ? null
+                    : _leave,
+                style: FilledButton.styleFrom(backgroundColor: MngColors.error),
+                child: widget.controller.busy
+                    ? const SizedBox(
+                        height: 18,
+                        width: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Text('Leave this trip'),
               ),
-            ],
-            const SizedBox(height: 16),
-            FilledButton(
-              key: const Key('leaveConfirmButton'),
-              onPressed: _chosen == null || widget.controller.busy ? null : _leave,
-              style: FilledButton.styleFrom(backgroundColor: MngColors.error),
-              child: widget.controller.busy
-                  ? const SizedBox(
-                      height: 18,
-                      width: 18,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : const Text('Leave this trip'),
-            ),
-            const SizedBox(height: 6),
-            TextButton(
-              key: const Key('leaveCancelButton'),
-              onPressed: widget.controller.busy
-                  ? null
-                  : () => Navigator.of(context).pop(false),
-              child: const Text('Keep driving'),
-            ),
+              const SizedBox(height: 6),
+              TextButton(
+                key: const Key('leaveCancelButton'),
+                onPressed: widget.controller.busy
+                    ? null
+                    : () => Navigator.of(context).pop(false),
+                child: const Text('Keep driving'),
+              ),
             ],
           ),
         ),

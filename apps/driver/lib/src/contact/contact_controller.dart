@@ -1,7 +1,6 @@
 import 'package:flutter/foundation.dart';
 import 'package:mng_core/mng_core.dart';
-import 'package:supabase_flutter/supabase_flutter.dart'
-    show FunctionException;
+import 'package:supabase_flutter/supabase_flutter.dart' show FunctionException;
 
 import '../data/function_failure.dart';
 
@@ -22,25 +21,26 @@ class Contact {
   });
 
   factory Contact.fromJson(Map<String, dynamic> json) => Contact(
-        // `role` is the *other* party, so a driver asking gets `rider`. An
-        // unrecognised value is refused rather than guessed at: showing a
-        // driver's number under the heading "rider" is worse than saying
-        // "contact" and letting the user read the name.
-        role: switch (json['role']) {
-          'rider' => ContactRole.rider,
-          'driver' => ContactRole.driver,
-          _ => throw const FormatException('role must be rider or driver'),
-        },
-        phone: (json['phone'] as String?) ?? '',
-        // Read the server's answer but do not trust it alone: a number that is
-        // present and malformed is not callable, and the server cannot know
-        // whether it is a Ghanaian one. Both checks, so a server that returned
-        // `callable: true` for `+1 555 0100` still does not open a dialler onto a
-        // number that belongs to somebody in Ohio.
-        callable: (json['callable'] as bool? ?? false) &&
-            isCallableGhanaPhone(json['phone'] as String?),
-        name: (json['name'] as String?) ?? '',
-      );
+    // `role` is the *other* party, so a driver asking gets `rider`. An
+    // unrecognised value is refused rather than guessed at: showing a
+    // driver's number under the heading "rider" is worse than saying
+    // "contact" and letting the user read the name.
+    role: switch (json['role']) {
+      'rider' => ContactRole.rider,
+      'driver' => ContactRole.driver,
+      _ => throw const FormatException('role must be rider or driver'),
+    },
+    phone: (json['phone'] as String?) ?? '',
+    // Read the server's answer but do not trust it alone: a number that is
+    // present and malformed is not callable, and the server cannot know
+    // whether it is a Ghanaian one. Both checks, so a server that returned
+    // `callable: true` for `+1 555 0100` still does not open a dialler onto a
+    // number that belongs to somebody in Ohio.
+    callable:
+        (json['callable'] as bool? ?? false) &&
+        isCallableGhanaPhone(json['phone'] as String?),
+    name: (json['name'] as String?) ?? '',
+  );
 
   /// Whether a body from the function is a contact at all.
   ///
@@ -93,9 +93,9 @@ class Contact {
 
   /// The heading for the sheet, which does say who it is: "Rider" or "Driver".
   String get roleLabel => switch (role) {
-        ContactRole.rider => 'Rider',
-        ContactRole.driver => 'Driver',
-      };
+    ContactRole.rider => 'Rider',
+    ContactRole.driver => 'Driver',
+  };
 }
 
 /// Loads the other party on a trip.
@@ -137,7 +137,9 @@ class SupabaseContactRepository implements ContactRepository {
       // misconfiguration rather than a server answer, and treating it as an
       // empty contact would look like "this rider has no number".
       if (response is! Map) {
-        throw ContactFailure('The contact service answered with something unexpected');
+        throw ContactFailure(
+          'The contact service answered with something unexpected',
+        );
       }
       body = response.map((k, v) => MapEntry(k.toString(), v));
     } on FunctionException catch (e) {
@@ -155,7 +157,9 @@ class SupabaseContactRepository implements ContactRepository {
       throw ContactFailure(message);
     }
     if (!Contact.looksLikeContact(body)) {
-      throw ContactFailure('The contact service answered with something unexpected');
+      throw ContactFailure(
+        'The contact service answered with something unexpected',
+      );
     }
     return Contact.fromJson(body);
   }
@@ -208,6 +212,21 @@ class ContactController extends ChangeNotifier {
   bool busy = false;
   String? _tripId;
 
+  /// Whether [_tripId] has been looked up and produced an *answer*.
+  ///
+  /// "Answered with nothing" counts. This flag exists because the obvious guard --
+  /// "if it is the same trip and we already have a contact, stop" -- never trips for
+  /// a rider with no phone: `contact` stays null, so every poll of the shell's
+  /// three-second timer starts the lookup again, flips the Call button to "Loading…",
+  /// and flips it back. Watched on a real handset: the button pulsed about twenty
+  /// times a minute for the whole trip.
+  ///
+  /// A rider without a phone is ordinary, not exceptional, so "no contact" is the
+  /// answer and must not be re-asked for. A lookup that *failed* is different and
+  /// stays retryable: `load` leaves this false when the repository throws, so the
+  /// next poll tries again and a transient network fault recovers on its own.
+  bool _answered = false;
+
   /// Loads the contact for [tripId], or clears it when [tripId] is null.
   ///
   /// A second call for a different trip supersedes the first: the `if` on
@@ -216,15 +235,17 @@ class ContactController extends ChangeNotifier {
   /// one's. A driver who finishes a trip and starts another is exactly the case
   /// where a late response would put the previous rider's number on screen.
   Future<void> load(String? tripId) async {
-    if (_tripId == tripId && contact != null) return;
+    if (_tripId == tripId && _answered) return;
     if (tripId == null) {
       _tripId = null;
+      _answered = false;
       contact = null;
       error = null;
       notifyListeners();
       return;
     }
     _tripId = tripId;
+    _answered = false;
     busy = true;
     error = null;
     notifyListeners();
@@ -236,6 +257,7 @@ class ContactController extends ChangeNotifier {
       if (found == null) {
         error = 'No contact for this trip';
       }
+      _answered = true;
     } on ContactFailure catch (e) {
       if (_tripId != tripId) return;
       error = e.message;
@@ -259,6 +281,10 @@ class ContactController extends ChangeNotifier {
   /// add behaviour.
   void adopt(Contact? value) {
     _tripId = value == null ? null : 'seeded';
+    // Seeded counts as answered, including when it seeds nothing, for the same
+    // reason `load` treats a null answer as one: this is a real answer and the
+    // poll must not start asking again.
+    _answered = value != null;
     contact = value;
     error = value == null ? 'No contact for this trip' : null;
     busy = false;
@@ -267,6 +293,7 @@ class ContactController extends ChangeNotifier {
 
   void clear() {
     _tripId = null;
+    _answered = false;
     contact = null;
     error = null;
     busy = false;

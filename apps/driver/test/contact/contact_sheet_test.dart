@@ -24,20 +24,20 @@ const _rider = Contact(
 );
 
 Widget harness(Contact contact) => ScreenUtilInit(
-      designSize: const Size(390, 844),
-      minTextAdapt: true,
-      builder: (_, _) => MaterialApp(
-        theme: MngTheme.light,
-        home: Scaffold(
-          body: Builder(
-            builder: (context) => ElevatedButton(
-              onPressed: () => ContactSheet.show(context, contact),
-              child: const Text('open'),
-            ),
-          ),
+  designSize: const Size(390, 844),
+  minTextAdapt: true,
+  builder: (_, _) => MaterialApp(
+    theme: MngTheme.light,
+    home: Scaffold(
+      body: Builder(
+        builder: (context) => ElevatedButton(
+          onPressed: () => ContactSheet.show(context, contact),
+          child: const Text('open'),
         ),
       ),
-    );
+    ),
+  ),
+);
 
 Future<void> open(WidgetTester tester, Contact contact) async {
   await tester.pumpWidget(harness(contact));
@@ -47,14 +47,18 @@ Future<void> open(WidgetTester tester, Contact contact) async {
 
 void main() {
   group('the number is readable without the dialler', () {
-    testWidgets('the number is on screen as soon as the sheet opens', (tester) async {
+    testWidgets('the number is on screen as soon as the sheet opens', (
+      tester,
+    ) async {
       await open(tester, _rider);
       // The whole point. A driver whose phone cannot dial still has the digits.
       expect(find.byKey(const Key('contactNumber')), findsOneWidget);
       expect(find.text('024 123 4567'), findsOneWidget);
     });
 
-    testWidgets('the number is selectable, so it can be copied by hand', (tester) async {
+    testWidgets('the number is selectable, so it can be copied by hand', (
+      tester,
+    ) async {
       await open(tester, _rider);
       expect(find.byType(SelectableText), findsWidgets);
     });
@@ -69,7 +73,9 @@ void main() {
   });
 
   group('all three ways to reach them are offered at once', () {
-    testWidgets('call, copy and show are all on screen together', (tester) async {
+    testWidgets('call, copy and show are all on screen together', (
+      tester,
+    ) async {
       await open(tester, _rider);
       // Peers, not a primary with a fallback behind it. A driver who picks the
       // wrong one should be one glance from the right one.
@@ -78,7 +84,9 @@ void main() {
       expect(find.byKey(const Key('contactShowButton')), findsOneWidget);
     });
 
-    testWidgets('copy puts the formatted number on the clipboard', (tester) async {
+    testWidgets('copy puts the formatted number on the clipboard', (
+      tester,
+    ) async {
       // This was an empty test body for a while: it opened the sheet and asserted
       // nothing, and passed. A test that passes without checking anything is
       // worse than no test, because it is counted.
@@ -93,8 +101,10 @@ void main() {
         },
       );
       addTearDown(() {
-        tester.binding.defaultBinaryMessenger
-            .setMockMethodCallHandler(SystemChannels.platform, null);
+        tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          SystemChannels.platform,
+          null,
+        );
       });
 
       await open(tester, _rider);
@@ -110,7 +120,9 @@ void main() {
       expect(find.byKey(const Key('contactMessage')), findsOneWidget);
     });
 
-    testWidgets('show opens a full screen page with the number alone', (tester) async {
+    testWidgets('show opens a full screen page with the number alone', (
+      tester,
+    ) async {
       await open(tester, _rider);
       await tester.tap(find.byKey(const Key('contactShowButton')));
       await tester.pumpAndSettle();
@@ -157,17 +169,28 @@ void main() {
       expect(find.byKey(const Key('contactDialButton')), findsOneWidget);
     });
 
-    testWidgets('copy and show are disabled too, since there is nothing to copy', (tester) async {
-      await open(tester, noNumber);
-      expect(
-        tester.widget<OutlinedButton>(find.byKey(const Key('contactCopyButton'))).onPressed,
-        isNull,
-      );
-      expect(
-        tester.widget<OutlinedButton>(find.byKey(const Key('contactShowButton'))).onPressed,
-        isNull,
-      );
-    });
+    testWidgets(
+      'copy and show are disabled too, since there is nothing to copy',
+      (tester) async {
+        await open(tester, noNumber);
+        expect(
+          tester
+              .widget<OutlinedButton>(
+                find.byKey(const Key('contactCopyButton')),
+              )
+              .onPressed,
+          isNull,
+        );
+        expect(
+          tester
+              .widget<OutlinedButton>(
+                find.byKey(const Key('contactShowButton')),
+              )
+              .onPressed,
+          isNull,
+        );
+      },
+    );
   });
 
   group('a number that is there but cannot be dialled', () {
@@ -186,22 +209,35 @@ void main() {
       name: 'Michael Apaloo',
     );
 
-    testWidgets('the number is still shown even though it cannot be dialled', (tester) async {
+    testWidgets('the number is still shown even though it cannot be dialled', (
+      tester,
+    ) async {
       await open(tester, notCallable);
-      expect(find.byKey(const Key('contactNumber')), findsOneWidget,
-          reason: 'a number this app will not dial is still a number the driver can read');
+      expect(
+        find.byKey(const Key('contactNumber')),
+        findsOneWidget,
+        reason: 'a number this app will not dial is still a number the driver can read',
+      );
       expect(find.text('024 123 4567'), findsOneWidget);
     });
 
-    testWidgets('copy and show still work, because both are about the digits', (tester) async {
+    testWidgets('copy and show still work, because both are about the digits', (
+      tester,
+    ) async {
       await open(tester, notCallable);
       final copy = tester.widget<OutlinedButton>(
         find.byKey(const Key('contactCopyButton')),
       );
-      expect(copy.onPressed, isNotNull,
-          reason: 'copying does not need a dialler, and this is the case it is for');
       expect(
-        tester.widget<OutlinedButton>(find.byKey(const Key('contactShowButton'))).onPressed,
+        copy.onPressed,
+        isNotNull,
+        reason:
+            'copying does not need a dialler, and this is the case it is for',
+      );
+      expect(
+        tester
+            .widget<OutlinedButton>(find.byKey(const Key('contactShowButton')))
+            .onPressed,
         isNotNull,
       );
     });
@@ -209,7 +245,9 @@ void main() {
     testWidgets('only the dial button is disabled', (tester) async {
       await open(tester, notCallable);
       expect(
-        tester.widget<FilledButton>(find.byKey(const Key('contactDialButton'))).onPressed,
+        tester
+            .widget<FilledButton>(find.byKey(const Key('contactDialButton')))
+            .onPressed,
         isNull,
       );
     });
@@ -246,24 +284,31 @@ void main() {
       expect(ohio.telUri, isNull);
     });
 
-    test('a server that claims a foreign number is callable is not believed', () {
-      // The server only knows whether a string is present. The client knows what
-      // a Ghanaian number looks like. Both checks, so a server that answered
-      // `callable: true` for a foreign number still does not open a dialler.
-      final parsed = Contact.fromJson({
-        'role': 'rider',
-        'phone': '+12025550100',
-        'callable': true,
-        'name': 'Someone',
-      });
-      expect(parsed.callable, isFalse);
-    });
+    test(
+      'a server that claims a foreign number is callable is not believed',
+      () {
+        // The server only knows whether a string is present. The client knows what
+        // a Ghanaian number looks like. Both checks, so a server that answered
+        // `callable: true` for a foreign number still does not open a dialler.
+        final parsed = Contact.fromJson({
+          'role': 'rider',
+          'phone': '+12025550100',
+          'callable': true,
+          'name': 'Someone',
+        });
+        expect(parsed.callable, isFalse);
+      },
+    );
 
     test('an unrecognised role is refused rather than guessed', () {
       // Showing a driver's number under the heading "rider" is worse than
       // refusing to parse it.
       expect(
-        () => Contact.fromJson({'role': 'bystander', 'phone': '0241234567', 'callable': true}),
+        () => Contact.fromJson({
+          'role': 'bystander',
+          'phone': '0241234567',
+          'callable': true,
+        }),
         throwsFormatException,
       );
     });
@@ -281,7 +326,11 @@ void main() {
 
     test('looksLikeContact separates a contact from an error body', () {
       expect(
-        Contact.looksLikeContact({'role': 'rider', 'phone': '0241234567', 'callable': true}),
+        Contact.looksLikeContact({
+          'role': 'rider',
+          'phone': '0241234567',
+          'callable': true,
+        }),
         isTrue,
       );
       // An error body has neither, and must not be parsed into a contact with an
@@ -307,14 +356,17 @@ void main() {
       expect(c.error, isNotNull);
     });
 
-    test('a failure is reported and leaves no stale contact on screen', () async {
-      // The dangerous case: a driver finishes a trip and starts another, the
-      // second lookup fails, and the first rider's number is still showing.
-      final c = ContactController(_FailingContactRepository());
-      await c.load('t1');
-      expect(c.contact, isNull);
-      expect(c.error, isNotNull);
-    });
+    test(
+      'a failure is reported and leaves no stale contact on screen',
+      () async {
+        // The dangerous case: a driver finishes a trip and starts another, the
+        // second lookup fails, and the first rider's number is still showing.
+        final c = ContactController(_FailingContactRepository());
+        await c.load('t1');
+        expect(c.contact, isNull);
+        expect(c.error, isNotNull);
+      },
+    );
 
     test('a late answer for an old trip is discarded', () async {
       // A driver who completes one trip and is given the next must never see the
@@ -326,17 +378,62 @@ void main() {
       // The second load supersedes the first before the first answers.
       unawaited(c.load('trip-2'));
       await repo.drain();
-      expect(c.contact?.phone, '0550000000',
-          reason: 'the answer for trip-2, not the one for trip-1');
+      expect(
+        c.contact?.phone,
+        '0550000000',
+        reason: 'the answer for trip-2, not the one for trip-1',
+      );
     });
 
-    test('clearing forgets the trip, so the next load is not skipped', () async {
-      final c = ContactController(_StubContactRepository(_rider));
+    test(
+      'clearing forgets the trip, so the next load is not skipped',
+      () async {
+        final c = ContactController(_StubContactRepository(_rider));
+        await c.load('t1');
+        c.clear();
+        expect(c.contact, isNull);
+        await c.load('t1');
+        expect(
+          c.contact,
+          _rider,
+          reason: 'the early return must not fire on a cleared controller',
+        );
+      },
+    );
+
+    test('a rider with no phone is asked about once, not once a poll', () async {
+      // Found on a real handset: the shell calls `load` from a three-second timer,
+      // and the guard used to be "same trip and we already have a contact". A rider
+      // with no phone leaves `contact` null forever, so every poll re-ran the
+      // lookup and the Call button pulsed between "Loading…" and "Call" for the
+      // whole trip -- roughly twenty times a minute, on a live ride.
+      final repo = _CountingContactRepository(null);
+      final c = ContactController(repo);
       await c.load('t1');
-      c.clear();
-      expect(c.contact, isNull);
+      expect(repo.calls, 1);
+      for (var i = 0; i < 40; i++) {
+        await c.load('t1');
+      }
+      expect(
+        repo.calls,
+        1,
+        reason: '"no contact" is an answer, so the poll must stop asking',
+      );
+      expect(c.busy, isFalse, reason: 'and it must not be left spinning');
+    });
+
+    test('a failed lookup is retried, so a network fault recovers', () async {
+      // The counterpart to the test above, and the reason the fix is not just
+      // "remember the trip id". A lookup that never answered must not be cached
+      // forever, or a driver who loses signal at the pickup never gets the number.
+      final repo = _FlakyContactRepository(_rider);
+      final c = ContactController(repo);
       await c.load('t1');
-      expect(c.contact, _rider, reason: 'the early return must not fire on a cleared controller');
+      expect(c.contact, isNull, reason: 'the first attempt failed');
+      expect(repo.calls, 1);
+      await c.load('t1');
+      expect(repo.calls, 2, reason: 'a failure is not an answer');
+      expect(c.contact, _rider, reason: 'and the retry recovered');
     });
   });
 }
@@ -359,6 +456,43 @@ class _FailingContactRepository implements ContactRepository {
   @override
   Future<Contact?> contactFor(String tripId) async {
     throw ContactFailure('Could not reach the contact service');
+  }
+}
+
+/// Counts its calls, so a test can prove the shell's poll stopped asking.
+///
+/// The count is the whole point. Every other stub here can tell you what the
+/// controller ended up with; only this one can tell you how often it went to the
+/// network to get there, which is the thing that was actually broken.
+class _CountingContactRepository implements ContactRepository {
+  _CountingContactRepository(this.answer);
+
+  final Contact? answer;
+  int calls = 0;
+
+  @override
+  Future<Contact?> contactFor(String tripId) async {
+    calls++;
+    return answer;
+  }
+}
+
+/// Fails once, then answers.
+///
+/// The other half of the "asked once" fix: a lookup that *threw* must stay
+/// retryable, or a driver who loses signal between the match and the pickup never
+/// gets the rider's number for the rest of the trip.
+class _FlakyContactRepository implements ContactRepository {
+  _FlakyContactRepository(this.answer);
+
+  final Contact? answer;
+  int calls = 0;
+
+  @override
+  Future<Contact?> contactFor(String tripId) async {
+    calls++;
+    if (calls == 1) throw ContactFailure('Could not reach the contact service');
+    return answer;
   }
 }
 

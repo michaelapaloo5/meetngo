@@ -41,7 +41,7 @@ void main() {
         ),
       ],
       child: DriverProfileScreen(
-        profile: jane(vehicleId: vehicleId ?? (vehicle == null ? null : vehicle.id)),
+        profile: jane(vehicleId: vehicleId ?? vehicle?.id),
         email: 'jane@example.test',
         vehicle: vehicle,
         onSignOut: () async {},
@@ -54,7 +54,11 @@ void main() {
       useDesignSurface(tester);
       await tester.pumpWidget(
         wrap(
-          vehicle: driverVehicle(make: 'Toyota', model: 'Corolla', plate: 'GR-1234-25'),
+          vehicle: driverVehicle(
+            make: 'Toyota',
+            model: 'Corolla',
+            plate: 'GR-1234-25',
+          ),
         ),
       );
 
@@ -78,11 +82,15 @@ void main() {
       // Deliberately kept off the card: `4 seats` is information a driver needs
       // and a rider cannot see from outside the car, so it has to be on screen
       // somewhere.
-      final detail = tester.widget<Text>(find.byKey(const Key('profileVehicleDetail'))).data!;
+      final detail = tester
+          .widget<Text>(find.byKey(const Key('profileVehicleDetail')))
+          .data!;
       expect(detail, contains('4 seats'));
     });
 
-    testWidgets('the car is painted in that vehicle own tier colour', (tester) async {
+    testWidgets('the car is painted in that vehicle own tier colour', (
+      tester,
+    ) async {
       useDesignSurface(tester);
       await tester.pumpWidget(
         wrap(vehicle: driverVehicle(rideCategory: RideCategory.premium)),

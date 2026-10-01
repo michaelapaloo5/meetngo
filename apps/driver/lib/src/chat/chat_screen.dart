@@ -56,7 +56,9 @@ class _ChatScreenState extends State<ChatScreen> {
     super.initState();
     // Started from the screen rather than the constructor, so a controller handed
     // in by a test is already listening and a second `load` does not double it.
-    WidgetsBinding.instance.addPostFrameCallback((_) => widget.controller.load());
+    WidgetsBinding.instance.addPostFrameCallback(
+      (_) => widget.controller.load(),
+    );
   }
 
   @override
@@ -148,10 +150,7 @@ class _ChatScreenState extends State<ChatScreen> {
               },
             ),
           ),
-          _Composer(
-            controller: _composer,
-            onSend: _send,
-          ),
+          _Composer(controller: _composer, onSend: _send),
         ],
       ),
       // Listens to the composer as well as the controller, and that is not
@@ -166,10 +165,13 @@ class _ChatScreenState extends State<ChatScreen> {
       floatingActionButton: ListenableBuilder(
         listenable: Listenable.merge([widget.controller, _composer]),
         builder: (context, _) {
-          final sendable = ChatController.isSendable(_composer.text) &&
+          final sendable =
+              ChatController.isSendable(_composer.text) &&
               !widget.controller.sending;
           return Padding(
-            padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
+            padding: EdgeInsets.only(
+              bottom: MediaQuery.of(context).viewInsets.bottom,
+            ),
             child: FloatingActionButton.small(
               key: const Key('chatSendButton'),
               onPressed: sendable ? _send : null,
@@ -237,7 +239,11 @@ class _Empty extends StatelessWidget {
 
 /// One message.
 class _Bubble extends StatelessWidget {
-  const _Bubble({required this.message, required this.mine, required this.riderName});
+  const _Bubble({
+    required this.message,
+    required this.mine,
+    required this.riderName,
+  });
 
   final ChatMessage message;
   final bool mine;
@@ -255,7 +261,9 @@ class _Bubble extends StatelessWidget {
     return Padding(
       padding: EdgeInsets.only(bottom: 10.h),
       child: Column(
-        crossAxisAlignment: mine ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+        crossAxisAlignment: mine
+            ? CrossAxisAlignment.end
+            : CrossAxisAlignment.start,
         children: [
           if (!mine)
             Padding(
@@ -263,7 +271,9 @@ class _Bubble extends StatelessWidget {
               child: Text(riderName, style: theme.labelSmall),
             ),
           ConstrainedBox(
-            constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.76),
+            constraints: BoxConstraints(
+              maxWidth: MediaQuery.of(context).size.width * 0.76,
+            ),
             child: Container(
               padding: EdgeInsets.symmetric(horizontal: 12.w, vertical: 8.h),
               decoration: BoxDecoration(
@@ -345,14 +355,18 @@ class _Composer extends StatelessWidget {
                   // letting go of the wheel to look for it, and the send button is
                   // right there for the messages that matter.
                   keyboardType: TextInputType.multiline,
-                  inputFormatters: [LengthLimitingTextInputFormatter(ChatController.kMaxLength)],
+                  inputFormatters: [
+                    LengthLimitingTextInputFormatter(ChatController.kMaxLength),
+                  ],
                   decoration: InputDecoration(
                     hintText: 'Message',
                     counterText: '',
                     isDense: true,
-                    errorText: ChatController.problemFor(controller.text) == null
-                        ? null
-                        : ChatController.problemFor(controller.text),
+                    // Was `x == null ? null : x`, which is just `x` -- and called
+                    // `problemFor` twice to reach one answer. `errorText` takes null
+                    // to mean "no error", and `?? ''` would not: an empty string
+                    // still reserves the error line under the field.
+                    errorText: ChatController.problemFor(controller.text),
                     errorStyle: theme.labelSmall,
                   ),
                 ),
