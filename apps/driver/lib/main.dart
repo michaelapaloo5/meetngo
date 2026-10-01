@@ -13,6 +13,8 @@ import 'src/contact/contact_controller.dart';
 import 'src/data/driver_auth_repository.dart';
 import 'src/data/driver_repository.dart';
 import 'src/data/supabase_driver_repository.dart';
+import 'src/active_trip/leave_trip_controller.dart';
+import 'src/active_trip/supabase_leave_trip_repository.dart';
 import 'src/chat/chat_controller.dart';
 import 'src/chat/supabase_chat_repository.dart';
 import 'src/report/left_item_controller.dart';
@@ -50,18 +52,25 @@ class DriverNGoApp extends StatelessWidget {
             Provider<ContactRepository>(
               create: (_) => SupabaseContactRepository(client),
             ),
-            // Chat and left-item reports, for the same reason as the contact
-            // repository above: both read and write rows a driver has to be
-            // authorised for, and both belong beside the repositories rather
+            // Chat, left-item reports and withdrawal, for the same reason as the
+            // contact repository above: each writes rows a driver has to be
+            // authorised for, and each belongs beside the repositories rather
             // than being constructed inside a widget.
             //
-            // Neither takes an id here. This runs before there is necessarily a
-            // session, so both read `client.auth.currentUser` at the moment they
-            // use it -- an id captured at registration time would send messages
-            // and file reports as nobody.
+            // Chat and the report repository take no id here. This runs before
+            // there is necessarily a session, so both read
+            // `client.auth.currentUser` at the moment they use it -- an id
+            // captured at registration time would send messages and file reports
+            // as nobody. The withdrawal repository needs no id at all: the
+            // `leave-trip` function reads it from the caller's own token and
+            // compares it against the trip's `driver_id`, so there is nothing for
+            // a client to get wrong.
             Provider<ChatRepository>(create: (_) => SupabaseChatRepository(client)),
             Provider<LeftItemRepository>(
               create: (_) => SupabaseLeftItemRepository(client),
+            ),
+            Provider<LeaveTripRepository>(
+              create: (_) => SupabaseLeaveTripRepository(client),
             ),
             ChangeNotifierProvider<DriverAuthController>(
               create: (c) => DriverAuthController(

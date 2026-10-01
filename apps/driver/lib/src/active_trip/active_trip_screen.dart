@@ -7,10 +7,14 @@ import '../contact/contact_controller.dart';
 import '../contact/contact_sheet.dart';
 import '../chat/chat_controller.dart';
 import '../chat/chat_screen.dart';
+import '../report/left_item_controller.dart';
+import '../report/left_item_sheet.dart';
 import '../location/location_banner.dart';
 import '../location/location_controller.dart';
 import '../map/driver_map_panel.dart';
 import 'active_trip_controller.dart';
+import 'leave_trip_controller.dart';
+import 'leave_trip_sheet.dart';
 import 'pickup_otp_sheet.dart';
 
 class ActiveTripScreen extends StatelessWidget {
@@ -20,6 +24,9 @@ class ActiveTripScreen extends StatelessWidget {
     required this.location,
     required this.contact,
     this.chatRepository,
+    this.leftItemRepository,
+    this.leaveTripRepository,
+    this.onTripLeft,
     this.driverId,
   });
 
@@ -47,6 +54,22 @@ class ActiveTripScreen extends StatelessWidget {
   /// about. Null is a real state -- a build without chat -- and the screen handles
   /// it by saying so rather than by failing.
   final ChatRepository? chatRepository;
+
+  /// Where left-item reports go, or null when reporting is not wired in.
+  ///
+  /// Optional for the same reason as [chatRepository], and null is the state of
+  /// every flow in the test suite. The screen says so instead of failing.
+  final LeftItemRepository? leftItemRepository;
+
+  /// Where a withdrawal goes, or null when leaving is not wired in.
+  final LeaveTripRepository? leaveTripRepository;
+
+  /// Called after the driver has genuinely left the trip.
+  ///
+  /// A callback and not a stage change, because the shell owns the stage and a
+  /// widget reaching into another widget's state is how two things end up disagreeing
+  /// about which screen is showing. Null in the wiring tests, which never leave.
+  final VoidCallback? onTripLeft;
 
   /// The signed-in driver's own profile id, for deciding which chat bubbles are
   /// theirs. Null when the flow has not loaded a profile; the chat is then closed
@@ -250,7 +273,7 @@ class ActiveTripScreen extends StatelessWidget {
                 // Chat and, once it exists, reporting a left item: the two things
                 // a driver needs during a trip rather than at its end.
                 //
-                // Full width rather than a third of the row above. Three buttons
+                // Two full-width rows rather than one row of three. Three buttons
                 // across 390 logical pixels leaves about 110 each, which is below
                 // the 48-pixel touch target once the icon and the label are in it,
                 // and a driver pressing this one-handed in traffic is the exact
@@ -261,6 +284,33 @@ class ActiveTripScreen extends StatelessWidget {
                   icon: const Icon(Icons.chat_bubble_outline),
                   label: const Text('Message rider'),
                 ),
+                SizedBox(height: 8.h),
+                OutlinedButton.icon(
+                  key: const Key('reportLeftItemButton'),
+                  onPressed: () => _reportLeftItem(context),
+                  icon: const Icon(Icons.luggage_outlined),
+                  label: const Text('Something left behind'),
+                ),
+                SizedBox(height: 8.h),
+                // Leaving, and only while it is legal.
+                //
+                // Hidden rather than disabled while `ongoing`, because a disabled
+                // button with no explanation is what a driver taps twice before
+                // concluding the app is broken -- and the reason it cannot be
+                // pressed ("the rider is in the car") is exactly the sort of thing
+                // they need to know. It is a row in the sheet's own words instead.
+                if (controller.trip != null &&
+                    LeaveTripController.canLeave(controller.trip!.state))
+                  TextButton.icon(
+                    key: const Key('leaveTripButton'),
+                    onPressed: () => _leaveTrip(context, controller),
+                    icon: const Icon(Icons.exit_to_app, size: 18),
+                    label: const Text('Leave this trip'),
+                    style: TextButton.styleFrom(
+                      foregroundColor: MngColors.error,
+                      alignment: Alignment.centerLeft,
+                    ),
+                  ),
                 SizedBox(height: 12.h),
                 FilledButton(
                   key: const Key('primaryActionButton'),
@@ -315,6 +365,53 @@ class ActiveTripScreen extends StatelessWidget {
           riderName: riderName,
         ),
       ),
+    );
+  }
+
+  /// Ask why, then leave, then go back to the queue.
+  ///
+  /// The shell's stage machine only moves forward, so leaving cannot be done by
+  /// changing the stage from here. It calls back into the shell through
+  /// [onTripLeft], which is the one thing that may move the stage backwards -- and
+  /// putting it there rather than reaching for the flow is what keeps the shell
+  /// the only owner of "which screen is this".
+  ///
+  /// `context.mounted` rather than `mounted`: this screen is a `StatelessWidget`,
+  /// so there is no `State.mounted` to read, and the await below crosses a sheet
+  /// that the driver may have dismissed by swiping.
+  Future<void> _leaveTrip(
+    BuildContext context,
+    ActiveTripController controller,
+  ) async {
+    final repo = leaveTripRepository;
+    final trip = controller.trip;
+    if (repo == null || trip == null) {
+      _say(context, 'Leaving a trip is not available right now.');
+      return;
+    }
+    final left = await LeaveTripSheet.show(
+      context,
+      LeaveTripController(tripId: trip.id)..repository = repo,
+    );
+    if (!left || !context.mounted) return;
+    onTripLeft?.call();
+  }
+
+  /// Open the report sheet for something left in the car.
+  ///
+  /// Says so rather than opening an empty form when no repository is wired in,
+  /// for the same reason as [_openChat]: a crash here would take down the screen
+  /// a driver is using to run a live trip.
+  Future<void> _reportLeftItem(BuildContext context) async {
+    final trip = context.read<ActiveTripController>().trip;
+    final repo = leftItemRepository;
+    if (trip == null || repo == null) {
+      _say(context, 'Reporting is not available right now.');
+      return;
+    }
+    await LeftItemSheet.show(
+      context,
+      LeftItemController(tripId: trip.id)..repository = repo,
     );
   }
 

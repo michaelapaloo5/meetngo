@@ -4,6 +4,7 @@ import 'package:mng_core/mng_core.dart';
 import 'package:meetngo_driver/main.dart';
 import 'package:meetngo_driver/src/app/driver_config.dart';
 import 'package:meetngo_driver/src/app/driver_flow.dart';
+import 'package:meetngo_driver/src/active_trip/leave_trip_controller.dart';
 import 'package:meetngo_driver/src/chat/chat_controller.dart';
 import 'package:meetngo_driver/src/app/driver_shell.dart';
 import 'package:meetngo_driver/src/report/left_item_controller.dart';
@@ -335,6 +336,7 @@ void main() {
               // these tests are about the shell and not about either feature.
               Provider<ChatRepository>.value(value: NoChatRepository()),
               Provider<LeftItemRepository>.value(value: NoLeftItemRepository()),
+              Provider<LeaveTripRepository>.value(value: NoLeaveTripRepository()),
               ChangeNotifierProvider<DriverAuthController>(
                 create: (c) => DriverAuthController(c.read<DriverAuthRepository>()),
               ),

@@ -7,6 +7,8 @@ import 'package:provider/provider.dart';
 
 import '../active_trip/active_trip_controller.dart';
 import '../active_trip/active_trip_screen.dart';
+import '../active_trip/leave_trip_controller.dart';
+import '../active_trip/return_trip_banner.dart';
 import '../auth/driver_auth_controller.dart';
 import '../chat/chat_controller.dart';
 import '../contact/contact_controller.dart';
@@ -143,12 +145,40 @@ class _DriverShellState extends State<DriverShell> {
     _poll = Timer.periodic(const Duration(seconds: 3), (_) => _tick());
   }
 
+  /// The trip the driver still holds, which the home screen shows as a banner.
+  ///
+  /// Null until `_tick` has found one, and deliberately *not* clearing to null
+  /// while the poll is merely slow: a banner that flickers off and on every three
+  /// seconds while the phone is trying to reach the network is worse than one that
+  /// stays until the trip is genuinely gone.
+  Trip? _returning;
+
+  /// Adopt a trip the driver is still holding and show the banner for it.
+  void _holdTrip(Trip live) {
+    if (!mounted) return;
+    if (_returning?.id == live.id) return;
+    setState(() => _returning = live);
+  }
+
+  /// Drop the banner because the trip is over, or because the driver opened it.
+  void _releaseTrip() {
+    if (!mounted || _returning == null) return;
+    setState(() => _returning = null);
+  }
+
   Future<void> _tick() async {
     if (!mounted) return;
     final flow = context.read<DriverFlow>();
     final live = await flow.readActiveTrip();
-    if (!mounted || live == null) return;
+    if (!mounted) return;
+    if (live == null) {
+      // A trip that has finished while the app was open closes the banner. Without
+      // this a driver who completes a trip keeps being told they have one.
+      _releaseTrip();
+      return;
+    }
     flow.activeTrip.trip = live;
+    _holdTrip(live);
     if (_stage != _Stage.trip) {
       setState(() {
         _stage = _Stage.trip;
@@ -170,6 +200,37 @@ class _DriverShellState extends State<DriverShell> {
     await flow.availability.beginTrip();
     if (!mounted) return;
     await _tick();
+  }
+
+  /// The driver genuinely left the trip, and the stage may now move backwards.
+  ///
+  /// This is the *only* path out of `_Stage.trip` that is not `_finishTrip`, and
+  /// the stage machine is deliberately one-way everywhere else. The reason is not
+  /// tidiness: every other transition is a stage the driver reached by doing the
+  /// thing that stage is for, and a stage reached any other way is a stage whose
+  /// preconditions nobody checked. Leaving is the exception because it is the one
+  /// case where the driver legitimately ends up back where they started, and
+  /// because the alternative -- no way out of a trip that is not going ahead -- is
+  /// how a driver ends up sitting in a dead trip until they force-quit.
+  ///
+  /// `flow.reset()` rather than a bespoke unwind, because after leaving there is
+  /// no trip, no trip history refresh is owed, and the earnings figure did not
+  /// move. The same three lines `_finishTrip` runs, for the same reasons.
+  Future<void> _onTripLeft() async {
+    final flow = context.read<DriverFlow>();
+    if (!mounted) return;
+    _stopPolling();
+    flow.reset();
+    setState(() {
+      _stage = _Stage.home;
+      _tab = 0;
+    });
+    // The driver is back on the offer queue -- `leave-trip` set them `online`
+    // server-side -- so the queue has to start feeding again, or they sit on an
+    // empty home screen after leaving a trip.
+    _beginOfferWatch();
+    _startPolling();
+    _toast('You left the trip. Your rider is looking for another driver.');
   }
 
   Future<void> _finishTrip() async {
@@ -277,13 +338,47 @@ class _DriverShellState extends State<DriverShell> {
           // there is a profile.
           chatRepository: context.read<ChatRepository>(),
           leftItemRepository: context.read<LeftItemRepository>(),
+          leaveTripRepository: context.read<LeaveTripRepository>(),
+          onTripLeft: _onTripLeft,
           driverId: flow.profile?.id,
         ),
       );
     }
 
     return Scaffold(
-      body: SafeArea(bottom: false, child: _tabBody(flow)),
+      body: SafeArea(
+        bottom: false,
+        // The banner sits above the tab body, not inside it. Inside the home tab
+        // it would scroll away the moment the driver touched the map, and the one
+        // screen where they must not lose sight of it is the one they arrive on.
+        child: Column(
+          children: [
+            if (_returning != null)
+              Padding(
+                padding: EdgeInsets.fromLTRB(12.w, 8.h, 12.w, 0),
+                child: ReturnTripBanner(
+                  trip: _returning!,
+                  // The rider's name comes from the contact controller, which is
+                  // the only thing in this app permitted to know it.
+                  riderName: _contact?.contact?.name,
+                  onOpen: () {
+                    // Not a setState to the trip stage directly: the trip
+                    // controller has to be told first, or the trip screen renders
+                    // against a trip that is null.
+                    flow.activeTrip.trip = _returning;
+                    _releaseTrip();
+                    setState(() {
+                      _stage = _Stage.trip;
+                      _tab = 0;
+                    });
+                    _startPolling();
+                  },
+                ),
+              ),
+            Expanded(child: _tabBody(flow)),
+          ],
+        ),
+      ),
       bottomNavigationBar: _nav(flow),
     );
   }
