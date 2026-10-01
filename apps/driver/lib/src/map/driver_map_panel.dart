@@ -56,6 +56,7 @@ class DriverMapPanel extends StatefulWidget {
     this.dropoff,
     this.height = 220,
     this.drawRoute = true,
+        this.routeGeometry,
   });
 
   /// Where the driver is, or null when there is no fix.
@@ -81,6 +82,14 @@ class DriverMapPanel extends StatefulWidget {
   /// Whether to draw a line between the points. Off on the offer queue: a line
   /// to a pickup that has not been accepted is a route the driver is not on.
   final bool drawRoute;
+
+  /// The route to draw, as the routing engine returned it.
+  ///
+  /// Optional and preferred over [drawRoute]'s two-point fallback, because a line
+  /// from the driver to the pickup crosses buildings. A navigator that draws a
+  /// straight line and tells the driver to follow it is worse than one that draws
+  /// nothing, so this is the whole of what "navigate" means visually.
+  final List<GeoPoint>? routeGeometry;
 
   /// Replaces the live map engine with an inert stand-in, under test.
   ///
@@ -161,10 +170,32 @@ class _DriverMapPanelState extends State<DriverMapPanel> {
         oldWidget.driverHeading == widget.driverHeading &&
         oldWidget.pickup == widget.pickup &&
         oldWidget.dropoff == widget.dropoff &&
-        oldWidget.drawRoute == widget.drawRoute) {
+        oldWidget.drawRoute == widget.drawRoute &&
+        // The geometry is compared too, and it is the most important line in this
+        // gate. A re-routed trip hands the panel a whole new list of several
+        // hundred points, and without this the map keeps drawing the route the
+        // driver was on before they left it -- which is the one thing a navigator
+        // must never show. Compared by length and by element, not by identity,
+        // because `progressOn` builds a fresh list on every tick.
+        _sameGeometry(oldWidget.routeGeometry, widget.routeGeometry)) {
       return;
     }
     _pushOverlays();
+  }
+
+  /// Whether two geometries are the same line.
+  ///
+  /// By value, and tolerating either side being null. The panel re-renders on every
+  /// position fix, so this runs a few hundred times a minute and comparing a list
+  /// of `GeoPoint`s is cheaper than redrawing a `LineLayer`.
+  static bool _sameGeometry(List<GeoPoint>? a, List<GeoPoint>? b) {
+    if (identical(a, b)) return true;
+    if (a == null || b == null) return false;
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i] != b[i]) return false;
+    }
+    return true;
   }
 
   Future<void> _pushOverlays() async {
@@ -199,7 +230,12 @@ class _DriverMapPanelState extends State<DriverMapPanel> {
   /// both would put a segment through the pickup pin and make the route look
   /// like it doubles back.
   List<GeoPoint>? get _route {
+    // Real geometry first. A navigated route is the engine's polyline, which is
+    // hundreds of points along actual roads; the two-point line below is only for
+    // a trip that has no route fetched yet.
     if (!widget.drawRoute) return null;
+    final geometry = widget.routeGeometry;
+    if (geometry != null && geometry.length >= 2) return geometry;
     if (widget.driverPoint != null && widget.pickup != null) {
       return [widget.driverPoint!, widget.pickup!];
     }

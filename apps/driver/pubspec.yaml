@@ -66,6 +66,11 @@ dependencies:
   # a full-screen read as peers of the call button rather than hiding them behind
   # an error state. A driver who can read the number is never stuck.
   url_launcher: ^6.3.1
+  # Voice instructions. The only dependency added for navigation, and it is
+  # optional in practice: `FlutterTtsSpeech` swallows every failure, so a phone
+  # with no working text-to-speech loses the voice and keeps the banner, which is
+  # the part they cannot do without.
+  flutter_tts: ^4.2.5
   # The map, on purpose OpenStreetMap raster tiles and not Google Maps.
   # `google_maps_flutter` needs an API key, and an API key with Maps SDK for
   # Android enabled is billed to a card. OSM's public tile servers need no key,

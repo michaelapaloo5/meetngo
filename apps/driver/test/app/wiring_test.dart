@@ -6,6 +6,7 @@ import 'package:meetngo_driver/src/app/driver_config.dart';
 import 'package:meetngo_driver/src/app/driver_flow.dart';
 import 'package:meetngo_driver/src/active_trip/leave_trip_controller.dart';
 import 'package:meetngo_driver/src/chat/chat_controller.dart';
+import 'package:meetngo_driver/src/navigation/navigation_controller.dart';
 import 'package:meetngo_driver/src/app/driver_shell.dart';
 import 'package:meetngo_driver/src/report/left_item_controller.dart';
 import 'package:meetngo_driver/src/auth/driver_auth_controller.dart';
@@ -337,6 +338,10 @@ void main() {
               Provider<ChatRepository>.value(value: NoChatRepository()),
               Provider<LeftItemRepository>.value(value: NoLeftItemRepository()),
               Provider<LeaveTripRepository>.value(value: NoLeaveTripRepository()),
+              Provider<RouteRepository>.value(value: NoRouteRepository()),
+              // main.dart registers a real one; the shell reads it, so the harness
+              // has to as well or it is not the same app.
+              Provider<SpeechPort>.value(value: SilentSpeech()),
               ChangeNotifierProvider<DriverAuthController>(
                 create: (c) => DriverAuthController(c.read<DriverAuthRepository>()),
               ),

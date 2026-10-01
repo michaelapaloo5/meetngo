@@ -11,6 +11,8 @@ import '../active_trip/leave_trip_controller.dart';
 import '../active_trip/return_trip_banner.dart';
 import '../auth/driver_auth_controller.dart';
 import '../chat/chat_controller.dart';
+import '../navigation/navigation_controller.dart';
+import '../navigation/navigation_host.dart';
 import '../contact/contact_controller.dart';
 import '../data/driver_auth_repository.dart';
 import '../data/driver_repository.dart';
@@ -136,6 +138,19 @@ class _DriverShellState extends State<DriverShell> {
   /// `_tick`, and this only hands the controller over. Splitting it that way
   /// means the screen is a pure function of its arguments and a test can render
   /// it with a stub repository.
+  /// Navigation for the trip on screen. Owned here because it has to outlive the
+  /// trip screen: the controller holds the route, the last-spoken step and the
+  /// stuck timer, and a screen that rebuilt would drop all three.
+  NavigationHost? _navigation;
+
+  NavigationHost _navigationFor() {
+    return _navigation ??= NavigationHost(
+      repository: context.read<RouteRepository>(),
+      // Read rather than built, for the same reason the repositories are.
+      speech: context.read<SpeechPort>(),
+    );
+  }
+
   ContactController _contactFor(DriverFlow flow) {
     return _contact ??= ContactController(flow.contacts);
   }
@@ -173,11 +188,18 @@ class _DriverShellState extends State<DriverShell> {
     if (!mounted) return;
     if (live == null) {
       // A trip that has finished while the app was open closes the banner. Without
-      // this a driver who completes a trip keeps being told they have one.
+      // this a driver who completes a trip keeps being told they have one -- and
+      // keeps following a route to somewhere they have already been.
       _releaseTrip();
+      _navigation?.stop();
       return;
     }
     flow.activeTrip.trip = live;
+    // Navigation follows the driver, and this poll already reads the position
+    // the location controller is holding. Feeding it from here rather than from
+    // a second timer is the difference between one location stream per trip and
+    // two, on a connection that is metered.
+    unawaited(_navigation?.onMoved(flow.location.point ?? live.pickup.point));
     _holdTrip(live);
     if (_stage != _Stage.trip) {
       setState(() {
@@ -220,6 +242,7 @@ class _DriverShellState extends State<DriverShell> {
     final flow = context.read<DriverFlow>();
     if (!mounted) return;
     _stopPolling();
+    _navigation?.stop();
     flow.reset();
     setState(() {
       _stage = _Stage.home;
@@ -238,6 +261,7 @@ class _DriverShellState extends State<DriverShell> {
     await flow.availability.endTrip();
     if (!mounted) return;
     _stopPolling();
+    _navigation?.stop();
     flow.reset();
     setState(() {
       _stage = _Stage.home;
@@ -265,6 +289,8 @@ class _DriverShellState extends State<DriverShell> {
     _stopPolling();
     _offerWatch?.cancel();
     _offerWatch = null;
+    _navigation?.stop();
+    _navigation?.dispose();
     _kyc?.dispose();
     _earnings?.dispose();
     _trips?.dispose();
@@ -339,6 +365,7 @@ class _DriverShellState extends State<DriverShell> {
           chatRepository: context.read<ChatRepository>(),
           leftItemRepository: context.read<LeftItemRepository>(),
           leaveTripRepository: context.read<LeaveTripRepository>(),
+          navigationHost: _navigationFor(),
           onTripLeft: _onTripLeft,
           driverId: flow.profile?.id,
         ),

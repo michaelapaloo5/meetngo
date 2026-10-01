@@ -6,6 +6,7 @@ import 'package:meetngo_driver/src/active_trip/active_trip_screen.dart';
 import 'package:meetngo_driver/src/contact/contact_controller.dart';
 import 'package:meetngo_driver/src/data/driver_repository.dart';
 import 'package:meetngo_driver/src/location/location_controller.dart';
+import 'package:meetngo_driver/src/navigation/navigation_host.dart';
 import 'package:provider/provider.dart';
 
 import '../support/fakes.dart';
@@ -27,6 +28,19 @@ Widget wrap(
   LocationController? location,
   ContactRepository? contacts,
   Contact? contact,
+
+  /// Whether to hand the screen a `NavigationHost`.
+  ///
+  /// True by default, because that is what `driver_shell.dart` does and a harness
+  /// that is not the app is not a stricter test. False is the state of a build
+  /// without a routing repository, and the screen has to survive it.
+  bool withNavigationHost = true,
+
+  /// Whether the screen's location controller has a fix.
+  ///
+  /// False by default, because most tests here are about the trip and not about
+  /// the map, and the screen routes from `location.point`.
+  bool withLocation = false,
 }) {
   // One source of truth, not two. `wrap` took both a repository and a contact,
   // and the controller was built from the repository and then had `contact`
@@ -46,10 +60,13 @@ Widget wrap(
         onFinished: onFinished ?? () {},
         location: location ??
             LocationController(
-              StubLocationReader(pointThrows: 'no fix'),
+              withLocation
+                  ? StubLocationReader(point: const GeoPoint(5.6037, -0.1870))
+                  : StubLocationReader(pointThrows: 'no fix'),
               StubDriverRepository(),
             ),
         contact: controller,
+        navigationHost: withNavigationHost ? NavigationHost() : null,
       ),
     ),
   );
@@ -379,25 +396,41 @@ void main() {
     expect(find.text('Start navigation'), findsOneWidget);
   });
 
-  // `google_maps_flutter` and `url_launcher` are not dependencies of this app.
-  // The plan's `onPressed: () {}` was a live-looking control that did nothing;
-  // what is here says what is missing.
+  // `google_maps_flutter` is not a dependency of this app. The plan's
+  // `onPressed: () {}` was a live-looking control that did nothing, which is
+  // worse than saying what is missing.
   //
   // This used to be one test covering both buttons, asserting that each said
   // "not part of this build". It is two now, because the two buttons no longer
   // share a fate. `url_launcher` is a dependency, the rider's number is fetched
   // and shown, and Call opens a sheet offering the dialler, the clipboard and a
-  // full-screen read. Navigate still says it is missing, because there is still no
-  // turn-by-turn engine wired into the app.
-  testWidgets('Navigate still says what is missing rather than doing nothing',
-      (tester) async {
-    useDesignSurface(tester);
-    final c = ActiveTripController(repo)..trip = tripIn(TripState.matched);
-    await tester.pumpWidget(wrap(c));
+  // full-screen read.
+  //
+  // Navigate navigates now. What is pinned here is the screen's contract with the
+  // navigation host: with no location, or no host, the button says which of those
+  // it is rather than doing nothing -- and never throws, because a crash here
+  // would take down the screen a driver is running a live trip on.
+  group('the Navigate button', () {
+    testWidgets('says it needs a location rather than doing nothing', (tester) async {
+      useDesignSurface(tester);
+      final c = ActiveTripController(repo)..trip = tripIn(TripState.matched);
+      await tester.pumpWidget(wrap(c));
 
-    await tester.tap(find.byKey(const Key('navigateButton')));
-    await tester.pumpAndSettle();
-    expect(find.textContaining('not part of this build'), findsOneWidget);
+      // `wrap` gives the screen a `LocationController` whose reader throws
+      // 'no fix', so there is no point to route from.
+      await tester.tap(find.byKey(const Key('navigateButton')));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('Waiting for your location'), findsOneWidget);
+    });
+
+    testWidgets('does not throw when no navigation host is wired in', (tester) async {
+      useDesignSurface(tester);
+      final c = ActiveTripController(repo)..trip = tripIn(TripState.matched);
+      await tester.pumpWidget(wrap(c, withNavigationHost: false));
+      await tester.tap(find.byKey(const Key('navigateButton')));
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+    });
   });
 
   group('the Call button', () {

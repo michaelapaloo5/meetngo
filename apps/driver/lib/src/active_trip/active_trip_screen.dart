@@ -12,6 +12,8 @@ import '../report/left_item_sheet.dart';
 import '../location/location_banner.dart';
 import '../location/location_controller.dart';
 import '../map/driver_map_panel.dart';
+import '../navigation/navigation_host.dart';
+import '../navigation/turn_banner.dart';
 import 'active_trip_controller.dart';
 import 'leave_trip_controller.dart';
 import 'leave_trip_sheet.dart';
@@ -26,6 +28,7 @@ class ActiveTripScreen extends StatelessWidget {
     this.chatRepository,
     this.leftItemRepository,
     this.leaveTripRepository,
+    this.navigationHost,
     this.onTripLeft,
     this.driverId,
   });
@@ -64,6 +67,12 @@ class ActiveTripScreen extends StatelessWidget {
   /// Where a withdrawal goes, or null when leaving is not wired in.
   final LeaveTripRepository? leaveTripRepository;
 
+  /// Navigation for this trip, owned by the shell so it outlives this widget.
+  ///
+  /// Null when navigation is not wired in, which is the state of every flow in
+  /// the test suite and of any build without a routing repository.
+  final NavigationHost? navigationHost;
+
   /// Called after the driver has genuinely left the trip.
   ///
   /// A callback and not a stage change, because the shell owns the stage and a
@@ -83,9 +92,6 @@ class ActiveTripScreen extends StatelessWidget {
   /// on the device that matters. The plan's `onPressed: () {}` was worse: a
   /// live-looking control that does nothing at all. This says what is missing
   /// instead -- and the map above the buttons is what the driver uses to
-  /// navigate, which is the honest replacement.
-  static const _notInThisBuild =
-      'Turn-by-turn navigation is not part of this build. Follow the map above.';
 
   @override
   Widget build(BuildContext context) {
@@ -171,13 +177,35 @@ class ActiveTripScreen extends StatelessWidget {
             ),
           ),
           LocationBanner(location: location),
+          // The banner is above the map, not below it. A driver reads an
+          // instruction and then looks at the road; the other order means reading
+          // the road and then finding the instruction.
+          if (navigationHost?.isRunning ?? false)
+            Padding(
+              padding: EdgeInsets.fromLTRB(16.w, 12.h, 16.w, 0),
+              child: ListenableBuilder(
+                // On the host rather than the controller, so the banner rebuilds
+                // when the route or the step changes without the trip screen
+                // rebuilding the map on every position fix.
+                listenable: navigationHost!,
+                builder: (context, _) {
+                  final controller = navigationHost!.controller;
+                  if (controller == null) return const SizedBox.shrink();
+                  return TurnBanner(
+                    controller: controller,
+                    onMuteToggle: () =>
+                        navigationHost!.setSpeaking(!controller.speakInstructions),
+                  );
+                },
+              ),
+            ),
+          SizedBox(height: 8.h),
           Padding(
             padding: EdgeInsets.symmetric(horizontal: 20.w),
             child: DriverMapPanel(
               // The driver, the pickup and the drop-off, with a line from the
               // driver to the pickup while collecting and from the pickup to
-              // the drop-off once the rider is aboard. Before the fix lands the
-              // panel says so rather than showing an empty rectangle.
+              // the drop-off once the rider is aboard.
               driverPoint: location.point,
               // With it, the driver's own car is drawn pointed the way they are
               // driving rather than as a dot. Without a compass reading nothing
@@ -187,6 +215,10 @@ class ActiveTripScreen extends StatelessWidget {
               driverHeading: location.heading,
               pickup: trip.pickup.point,
               dropoff: trip.dropoff.point,
+              // The engine's polyline, when navigation is running. Without it the
+              // panel falls back to a straight line from driver to pickup, which
+              // crosses buildings -- fine as a hint, wrong as directions.
+              routeGeometry: navigationHost?.controller?.route?.points,
               height: 200.h,
             ),
           ),
@@ -235,9 +267,17 @@ class ActiveTripScreen extends StatelessWidget {
                       Expanded(
                         child: OutlinedButton.icon(
                           key: const Key('navigateButton'),
-                          onPressed: () => _say(context, _notInThisBuild),
+                          onPressed: () => _startNavigation(context, controller),
                           icon: const Icon(Icons.navigation),
-                          label: const Text('Navigate'),
+                          label: Text(
+                              navigationHost?.controller?.loading == true
+                                // The label changes rather than only the spinner,
+                                // because a driver tapping a button and getting
+                                // nothing back assumes the app has frozen.
+                                ? 'Starting...'
+                                : 'Navigate',
+                            key: const Key('navigateLabel'),
+                          ),
                         ),
                       ),
                       SizedBox(width: 12.w),
@@ -395,6 +435,33 @@ class ActiveTripScreen extends StatelessWidget {
     );
     if (!left || !context.mounted) return;
     onTripLeft?.call();
+  }
+
+  /// Fetch a route and follow it.
+  ///
+  /// The destination changes at the moment the rider gets in, and a navigator
+  /// that keeps pointing at the pickup afterwards sends the driver back where
+  /// they came from. So it is read from the trip's state here and handed to the
+  /// host, which retargets rather than rebuilding -- a driver who turns the voice
+  /// off at the pickup must not have to turn it off again at the drop-off.
+  Future<void> _startNavigation(
+    BuildContext context,
+    ActiveTripController controller,
+  ) async {
+    final host = navigationHost;
+    final trip = controller.trip;
+    // The screen's own `location`, which it was handed as an argument rather than
+    // read from a provider -- matching how the map gets it two widgets up.
+    final point = location.point;
+    if (host == null || trip == null || point == null) {
+      _say(context, 'Waiting for your location before starting directions.');
+      return;
+    }
+    await host.start(
+      at: point,
+      destination:
+          trip.state == TripState.ongoing ? trip.dropoff.point : trip.pickup.point,
+    );
   }
 
   /// Open the report sheet for something left in the car.

@@ -14,6 +14,9 @@ import 'src/data/driver_auth_repository.dart';
 import 'src/data/driver_repository.dart';
 import 'src/data/supabase_driver_repository.dart';
 import 'src/active_trip/leave_trip_controller.dart';
+import 'package:flutter_tts/flutter_tts.dart';
+import 'src/navigation/navigation_controller.dart';
+import 'src/navigation/supabase_route_repository.dart';
 import 'src/active_trip/supabase_leave_trip_repository.dart';
 import 'src/chat/chat_controller.dart';
 import 'src/chat/supabase_chat_repository.dart';
@@ -71,6 +74,20 @@ class DriverNGoApp extends StatelessWidget {
             ),
             Provider<LeaveTripRepository>(
               create: (_) => SupabaseLeaveTripRepository(client),
+            ),
+            // Routing, and the voice. Both take no id and read the session at the
+            // moment of use, for the same reason the report repository does.
+            Provider<RouteRepository>(
+              create: (_) => SupabaseRouteRepository(client),
+            ),
+            // The voice. Registered as a port like everything else rather than
+            // constructed inside the navigation host, so the host does not need
+            // `flutter_tts` and a widget test does not need a platform channel.
+            //
+            // `FlutterTtsSpeech` swallows every failure by design -- a phone with
+            // no working text-to-speech loses the voice and keeps the banner.
+            Provider<SpeechPort>(
+              create: (_) => FlutterTtsSpeech(FlutterTts()),
             ),
             ChangeNotifierProvider<DriverAuthController>(
               create: (c) => DriverAuthController(
