@@ -263,39 +263,6 @@ class _KycScreenState extends State<KycScreen> {
     }
   }
 
-  /// One label-and-value row for the review screen.
-  ///
-  /// A row rather than a sentence, and the label above the value rather than
-  /// beside it. The reason is that these are being checked against a photograph
-  /// by a person in a hurry, one field at a time: "Date of birth / 14/03/1994" is
-  /// something you can scan down a column of, and "Date of birth: 14/03/1994,
-  /// Sex: M, Nationality: Ghanaian" is a sentence you have to parse.
-  ///
-  /// A blank value says "not given" rather than rendering as nothing. An empty row
-  /// reads as a rendering failure, and a driver would retype a field that is
-  /// perfectly fine -- or worse, would assume the app had lost it.
-  static Widget _detail(String label, String value) {
-    final shown = value.trim().isEmpty ? 'not given' : value.trim();
-    return Padding(
-      padding: EdgeInsets.only(bottom: 10.h),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            label,
-            style: MngTheme.light.textTheme.labelSmall,
-          ),
-          SizedBox(height: 2.h),
-          Text(
-            shown,
-            key: Key('kycDetail_${label.replaceAll(' ', '')}'),
-            style: MngTheme.light.textTheme.bodyMedium,
-          ),
-        ],
-      ),
-    );
-  }
-
   Widget _body(BuildContext context, KycController c) {    switch (c.step) {
       case KycStep.documents:
         return DocumentChecklist(
@@ -423,27 +390,27 @@ class _KycScreenState extends State<KycScreen> {
               'Ghana Card',
               style: MngTheme.light.textTheme.titleSmall,
             ),
-            _detail('Name on card', c.cardName ?? c.fullName ?? ''),
-            _detail('Date of birth', c.cardDob ?? ''),
-            _detail(
+            _kycDetail('Name on card', c.cardName ?? c.fullName ?? ''),
+            _kycDetail('Date of birth', c.cardDob ?? ''),
+            _kycDetail(
               'Age',
               c.cardAge == null ? 'not given' : '${c.cardAge}',
             ),
-            _detail('Sex', c.cardSex ?? ''),
-            _detail('Nationality', c.cardNationality ?? ''),
-            _detail('Card number', c.cardNumber ?? ''),
-            _detail('Date of issue', c.cardIssued ?? ''),
-            _detail('Expires', c.cardExpiry ?? ''),
+            _kycDetail('Sex', c.cardSex ?? ''),
+            _kycDetail('Nationality', c.cardNationality ?? ''),
+            _kycDetail('Card number', c.cardNumber ?? ''),
+            _kycDetail('Date of issue', c.cardIssued ?? ''),
+            _kycDetail('Expires', c.cardExpiry ?? ''),
             const SizedBox(height: 20),
             Text(
               'Vehicle',
               style: MngTheme.light.textTheme.titleSmall,
             ),
-            _detail(
+            _kycDetail(
               'Registered',
               '${c.vehicleMake ?? ''} ${c.vehicleModel ?? ''}',
             ),
-            _detail('Number plate', c.vehiclePlate ?? ''),
+            _kycDetail('Number plate', c.vehiclePlate ?? ''),
             const SizedBox(height: 20),
             Text(
               'We check this by hand. Nothing on this screen is decided '
@@ -453,49 +420,217 @@ class _KycScreenState extends State<KycScreen> {
           ],
         );
       case KycStep.underReview:
-        return Center(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Icon(
-                Icons.hourglass_top,
-                color: MngColors.primary,
-                size: 64,
-              ),
-              SizedBox(height: 12.h),
-              Text(
-                'An administrator checks every driver by hand. You can go '
-                'online as soon as they approve you.',
-                textAlign: TextAlign.center,
-                style: MngTheme.light.textTheme.bodySmall,
-              ),
-            ],
-          ),
+        return Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const Icon(
+              Icons.hourglass_top,
+              color: MngColors.primary,
+              size: 64,
+            ),
+            SizedBox(height: 12.h),
+            Text(
+              'An administrator checks every driver by hand. You can go '
+              'online as soon as they approve you.',
+              textAlign: TextAlign.center,
+              style: MngTheme.light.textTheme.bodySmall,
+            ),
+            SizedBox(height: 20.h),
+            // What they are checking. The freeze in
+            // 20260930000006_freeze_kyc_identity.sql makes these read-only from
+            // here on, so showing them is not decoration: a driver who cannot
+            // see what was submitted cannot tell a typo from a correct reading,
+            // and a typo they cannot fix is a rejection they do not understand.
+            // The line saying who can change it is the other half -- "locked"
+            // with no way forward is the message that produces a support call.
+            _SubmittedIdentity(
+              label: 'What we are checking',
+              lockedNote: 'These are locked while your review is open. If '
+                  'something is wrong, ask an administrator to reopen it.',
+              cardNumber: c.cardNumber,
+              dob: c.cardDob,
+              sex: c.cardSex,
+              nationality: c.cardNationality,
+              issued: c.cardIssued,
+              expiry: c.cardExpiry,
+            ),
+          ],
         );
       case KycStep.approved:
-        return Center(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
+        return Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const Icon(
+              Icons.check_circle,
+              color: MngColors.success,
+              size: 64,
+            ),
+            SizedBox(height: 12.h),
+            // Not the step's headline: the app bar already carries it. The
+            // plan's version rendered 'You are verified' in both, which made
+            // its own `findsOneWidget` unsatisfiable and gave the driver the
+            // same sentence twice on the same screen.
+            Text(
+              'Start driving below. We will stop asking for these.',
+              textAlign: TextAlign.center,
+              style: MngTheme.light.textTheme.bodySmall,
+            ),
+            SizedBox(height: 20.h),
+            // The same summary, for the same reason, and with a different note:
+            // this one is not going to be reopened on request, so the sentence
+            // has to say that a *correction* now needs an administrator rather
+            // than promising a reopen.
+            _SubmittedIdentity(
+              label: 'What we verified',
+              lockedNote: 'Locked, because this is the record your approval was '
+                  'made against. If it is wrong, an administrator has to correct '
+                  'it -- the app cannot.',
+              cardNumber: c.cardNumber,
+              dob: c.cardDob,
+              sex: c.cardSex,
+              nationality: c.cardNationality,
+              issued: c.cardIssued,
+              expiry: c.cardExpiry,
+            ),
+          ],
+        );
+    }
+  }
+}
+
+/// One label-and-value row for the review screen and for the locked summary.
+///
+/// A row rather than a sentence, and the label above the value rather than
+/// beside it. The reason is that these are being checked against a photograph
+/// by a person in a hurry, one field at a time: "Date of birth / 14/03/1994" is
+/// something you can scan down a column of, and "Date of birth: 14/03/1994,
+/// Sex: M, Nationality: Ghanaian" is a sentence you have to parse.
+///
+/// A blank value says "not given" rather than rendering as nothing. An empty row
+/// reads as a rendering failure, and a driver would retype a field that is
+/// perfectly fine -- or worse, would assume the app had lost it.
+///
+/// Top level rather than a static on `_KycScreenState`, because
+/// [_SubmittedIdentity] needs the same row and a locked summary that looks
+/// different from the review it came from is exactly the sort of small
+/// inconsistency that makes a driver think they are looking at different data.
+Widget _kycDetail(String label, String value) {
+  final shown = value.trim().isEmpty ? 'not given' : value.trim();
+  return Padding(
+    padding: EdgeInsets.only(bottom: 10.h),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          label,
+          style: MngTheme.light.textTheme.labelSmall,
+        ),
+        SizedBox(height: 2.h),
+        Text(
+          shown,
+          key: Key('kycDetail_${label.replaceAll(' ', '')}'),
+          style: MngTheme.light.textTheme.bodyMedium,
+        ),
+      ],
+    ),
+  );
+}
+
+/// The identity evidence the driver submitted, shown read-only once a decision
+/// has been made about it.
+///
+/// This exists because the freeze changed what the app can do, and a rule the
+/// user only discovers by being refused is a rule they do not believe. Before
+/// the freeze the driver could edit these at any time; after it, they cannot,
+/// and the app owes them an answer to "what is locked, and who do I ask".
+///
+/// Three properties, each of which is a decision rather than styling:
+///
+/// **No editable field.** Not a disabled `TextField` -- a greyed box looks
+/// broken and still invites taps. Plain text, laid out as the `review` step
+/// already lays out the same six fields, so the driver sees the same thing they
+/// saw on the way in.
+///
+/// **A field with no value says "not given",** the same word the review step
+/// uses. Not blank, and not a dash: a driver looking at an empty row cannot tell
+/// whether the app failed to save it or saved nothing because the card did not
+/// say. Naming it is the difference between a question and an accusation.
+///
+/// **The note is passed in, not derived from the status.** "While your review is
+/// open, ask an administrator to reopen it" and "an administrator has to correct
+/// it" are both true and mean different things to the driver, and which one is
+/// right depends on the step, not on anything this widget could work out.
+class _SubmittedIdentity extends StatelessWidget {
+  const _SubmittedIdentity({
+    required this.label,
+    required this.lockedNote,
+    this.cardNumber,
+    this.dob,
+    this.sex,
+    this.nationality,
+    this.issued,
+    this.expiry,
+  });
+
+  final String label;
+  final String lockedNote;
+  final String? cardNumber;
+  final String? dob;
+  final String? sex;
+  final String? nationality;
+  final String? issued;
+  final String? expiry;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = MngTheme.light.textTheme;
+    // Nothing on this screen if the driver never gave a card number. An empty
+    // box titled "What we verified" is worse than no box: it says a verification
+    // happened against something.
+    if ((cardNumber ?? '').trim().isEmpty) return const SizedBox.shrink();
+
+    return Container(
+      key: const Key('kycSubmittedIdentity'),
+      padding: EdgeInsets.all(16.w),
+      decoration: BoxDecoration(
+        color: MngColors.page,
+        borderRadius: BorderRadius.circular(12.w),
+        border: Border.all(color: MngColors.divider),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(label, style: theme.titleSmall),
+          SizedBox(height: 12.h),
+          _kycDetail('Card number', cardNumber ?? ''),
+          _kycDetail('Date of birth', dob ?? ''),
+          _kycDetail('Sex', sex ?? ''),
+          _kycDetail('Nationality', nationality ?? ''),
+          _kycDetail('Date of issue', issued ?? ''),
+          _kycDetail('Expires', expiry ?? ''),
+          SizedBox(height: 4.h),
+          // The lock is stated as a fact with a way forward, not as an error.
+          // No icon and no red: nothing has gone wrong, and a driver who reads a
+          // warning here concludes they did something wrong with their own card.
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Icon(
-                Icons.check_circle,
-                color: MngColors.success,
-                size: 64,
-              ),
-              SizedBox(height: 12.h),
-              // Not the step's headline: the app bar already carries it. The
-              // plan's version rendered 'You are verified' in both, which made
-              // its own `findsOneWidget` unsatisfiable and gave the driver the
-              // same sentence twice on the same screen.
-              Text(
-                'Start driving below. We will stop asking for these.',
-                textAlign: TextAlign.center,
-                style: MngTheme.light.textTheme.bodySmall,
+              const Icon(Icons.lock_outline, size: 16, color: MngColors.textSub),
+              SizedBox(width: 8.w),
+              Expanded(
+                child: Text(
+                  lockedNote,
+                  key: const Key('kycIdentityLockedNote'),
+                  style: theme.bodySmall?.copyWith(color: MngColors.textSub),
+                ),
               ),
             ],
           ),
-        );
-    }
+        ],
+      ),
+    );
   }
 }
 
