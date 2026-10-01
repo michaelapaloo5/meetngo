@@ -5,6 +5,8 @@ import 'package:provider/provider.dart';
 
 import '../contact/contact_controller.dart';
 import '../contact/contact_sheet.dart';
+import '../chat/chat_controller.dart';
+import '../chat/chat_screen.dart';
 import '../location/location_banner.dart';
 import '../location/location_controller.dart';
 import '../map/driver_map_panel.dart';
@@ -17,6 +19,8 @@ class ActiveTripScreen extends StatelessWidget {
     required this.onFinished,
     required this.location,
     required this.contact,
+    this.chatRepository,
+    this.driverId,
   });
 
   /// Called when the driver presses the button on a finished trip.
@@ -34,6 +38,20 @@ class ActiveTripScreen extends StatelessWidget {
   /// no Supabase client. The controller is read through a `ListenableBuilder`
   /// below, so a number that arrives after the first frame reaches the button.
   final ContactController contact;
+
+  /// Where chat messages come from, or null when chat is not wired in.
+  ///
+  /// Optional on purpose. Every existing `DriverFlow(...)` in the test suite
+  /// builds a flow with no chat repository, and making this required would mean
+  /// touching all of them to add a dependency that most of those tests are not
+  /// about. Null is a real state -- a build without chat -- and the screen handles
+  /// it by saying so rather than by failing.
+  final ChatRepository? chatRepository;
+
+  /// The signed-in driver's own profile id, for deciding which chat bubbles are
+  /// theirs. Null when the flow has not loaded a profile; the chat is then closed
+  /// anyway by [chatRepository] being null in the same build.
+  final String? driverId;
 
   /// What the two buttons the plan put on this screen cannot do yet.
   ///
@@ -229,6 +247,21 @@ class ActiveTripScreen extends StatelessWidget {
                   ),
                 ),
                 SizedBox(height: 12.h),
+                // Chat and, once it exists, reporting a left item: the two things
+                // a driver needs during a trip rather than at its end.
+                //
+                // Full width rather than a third of the row above. Three buttons
+                // across 390 logical pixels leaves about 110 each, which is below
+                // the 48-pixel touch target once the icon and the label are in it,
+                // and a driver pressing this one-handed in traffic is the exact
+                // person a too-small target fails.
+                OutlinedButton.icon(
+                  key: const Key('chatRiderButton'),
+                  onPressed: () => _openChat(context),
+                  icon: const Icon(Icons.chat_bubble_outline),
+                  label: const Text('Message rider'),
+                ),
+                SizedBox(height: 12.h),
                 FilledButton(
                   key: const Key('primaryActionButton'),
                   onPressed: controller.busy ||
@@ -250,6 +283,39 @@ class ActiveTripScreen extends StatelessWidget {
     ScaffoldMessenger.of(context)
       ..clearSnackBars()
       ..showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  /// Open the conversation with this trip's rider.
+  ///
+  /// The repository comes from the widget rather than from the flow, because chat
+  /// is reached from exactly one place and a `ChatRepository` in the flow's
+  /// constructor list would be a dependency that the twenty-odd `DriverFlow(...)`
+  /// calls in the test suite do not have and do not need.
+  ///
+  /// Falls back to a sentence rather than opening an empty thread when there is
+  /// no repository -- which is the state every existing flow is in. A crash here
+  /// would take down the screen a driver is using to run a live trip, over a
+  /// feature that is not what they pressed.
+  void _openChat(BuildContext context) {
+    final trip = context.read<ActiveTripController>().trip;
+    final repo = chatRepository;
+    if (trip == null || repo == null) {
+      _say(
+        context,
+        'Messages are not available right now. You can still call the rider.',
+      );
+      return;
+    }
+    final riderName = context.read<ContactController>().contact?.name ?? 'Rider';
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => ChatScreen(
+          controller: ChatController(myId: driverId ?? '', tripId: trip.id)
+            ..repository = repo,
+          riderName: riderName,
+        ),
+      ),
+    );
   }
 
   Future<void> _act(
