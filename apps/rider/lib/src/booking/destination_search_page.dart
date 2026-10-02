@@ -407,7 +407,18 @@ class _SavedPlaceChip extends StatelessWidget {
   Widget build(BuildContext context) {
     return InputChip(
       key: Key('savedPlace-${place.id}'),
-      label: Text(place.label),
+      label: Text(
+        place.label,
+        // Ellipsised as a backstop.
+        //
+        // The name field caps at 40, but a row can also arrive from a build that
+        // capped differently, and a 79-character chip pushed its own delete
+        // button off the edge of the screen -- a place the rider had saved and no
+        // longer had any way to remove. A chip that cannot be deleted is a place
+        // that is stuck there for good.
+        overflow: TextOverflow.ellipsis,
+        maxLines: 1,
+      ),
       onPressed: onPick,
       onDeleted: onRemove,
       deleteIcon: const Icon(Icons.close, size: 16),

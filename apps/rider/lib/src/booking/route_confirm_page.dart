@@ -45,6 +45,29 @@ class RouteDraft {
       RouteDraft(pickup: pickup, dropoff: dropoff, category: category);
 }
 
+/// A short, real place name to pre-fill the naming field with.
+///
+/// The first comma-separated segment of [address]: "Dansoman Police Station,
+/// General Acheampong High Street, Dansoman" becomes "Dansoman Police Station".
+///
+/// It used to pre-fill the whole address, which was wrong in two ways at once.
+/// The field is a *name* -- "So you can tap it next time" says so -- and a saved
+/// place is drawn as a chip, where a full address overflows the row and pushes
+/// the delete button off the edge of the screen. The address is still what gets
+/// stored and what the chip sends a car to; only the name is shortened, and it is
+/// shortened to a real place rather than to a number of characters.
+///
+/// The segment is truncated to [maxLength] as a backstop, because an address
+/// with no comma in it is one long name and the field still has to be usable.
+String defaultPlaceName(String address, {int maxLength = 40}) {
+  final trimmed = address.trim();
+  if (trimmed.isEmpty) return '';
+  final first = trimmed.split(',').first.trim();
+  final name = first.isEmpty ? trimmed : first;
+  if (name.length <= maxLength) return name;
+  return name.substring(0, maxLength - 1).trimRight() + '…';
+}
+
 /// The dialog that names a saved place.
 ///
 /// Owns its own controller so it can dispose it in [dispose], which happens
@@ -61,7 +84,7 @@ class _NamePlaceDialog extends StatefulWidget {
 
 class _NamePlaceDialogState extends State<_NamePlaceDialog> {
   late final TextEditingController _name = TextEditingController(
-    text: widget.address,
+    text: defaultPlaceName(widget.address),
   );
 
   @override
@@ -78,13 +101,14 @@ class _NamePlaceDialogState extends State<_NamePlaceDialog> {
         key: const Key('savedPlaceNameField'),
         controller: _name,
         autofocus: true,
-        // 120, not a rounder-looking smaller number, because the field opens
-        // pre-filled with the **address** and a Ghanaian one is routinely longer
-        // than 60 characters. The cap used to be 60, which made the dialog's own
-        // default value illegal: it opened showing a red "65/60" counter over an
-        // address the rider had not typed and had every reason to keep. The
-        // column is unbounded `text`, so nothing downstairs is counting either.
-        maxLength: 120,
+        // 40, and the pre-fill is now a short real place name rather
+        // than the whole address (see [defaultPlaceName]). Between them they have
+        // to fit: the saved place is drawn as a chip, and a name longer than the
+        // chip overflows the row and pushes the delete button off the edge of the
+        // screen -- which is exactly what happened with a 79-character name saved
+        // from the handset. The column is unbounded `text`, so this is the only
+        // cap anywhere, and it belongs here where the chip is.
+        maxLength: 40,
         textCapitalization: TextCapitalization.words,
         decoration: const InputDecoration(
           labelText: 'Call it',

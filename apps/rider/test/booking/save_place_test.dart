@@ -8,6 +8,7 @@ import 'package:meetngo_rider/src/data/place_service.dart';
 import 'package:meetngo_rider/src/map/ride_map.dart';
 import 'package:meetngo_rider/src/data/saved_place_repository.dart';
 
+
 class _NoPlaces implements PlaceService {
   @override
   Future<List<PlaceSuggestion>> search(String query) async => const [];
@@ -47,6 +48,37 @@ const dropoff = TripStop(
 );
 
 void main() {
+group('defaultPlaceName', () {
+  test('takes the first named segment of the address', () {
+    expect(
+      defaultPlaceName(
+        'Dansoman Police Station, General Acheampong High Street, Dansoman',
+      ),
+      'Dansoman Police Station',
+      reason: 'a chip needs two or three words',
+    );
+  });
+
+  test('keeps the whole thing when there is no comma', () {
+    expect(defaultPlaceName('Spintex'), 'Spintex');
+    expect(defaultPlaceName('  Airport Residential  '), 'Airport Residential');
+  });
+
+  test('truncates a single unbreakable name rather than overflowing', () {
+    // An address with no comma is one long name, and the chip still has to fit.
+    final name = defaultPlaceName('A' * 80);
+    expect(name.length, lessThanOrEqualTo(40));
+    expect(name, endsWith('…'));
+  });
+
+  test('an address that is only commas does not produce an empty name', () {
+    expect(defaultPlaceName(',,,'), isNotEmpty);
+  });
+
+  test('an empty address produces an empty name', () {
+    expect(defaultPlaceName('   '), isEmpty);
+  });
+});
   setUpAll(() => RideMap.disabledForTest = true);
   tearDownAll(() => RideMap.disabledForTest = false);
 
@@ -133,16 +165,25 @@ void main() {
       );
     });
 
-    testWidgets('the default name is the place, not an empty field', (t) async {
-      final repo = _FakeSaved();
-      await pump(t, saved: repo);
-      await t.tap(find.byKey(const Key('savePlaceButton')));
-      await t.pumpAndSettle();
-      await t.tap(find.byKey(const Key('confirmSavePlace')));
-      await t.pumpAndSettle();
+    testWidgets(
+      'the default name is a short real place, not the whole address',
+      (t) async {
+        // The field is a *name* -- "So you can tap it next time" -- and a saved
+        // place is a chip. Pre-filling the full address put a 79-character label on
+        // the chip, which overflowed the row and pushed the delete button off the
+        // edge of the screen: a place the rider had saved and could not remove.
+        final repo = _FakeSaved();
+        await pump(t, saved: repo);
+        await t.tap(find.byKey(const Key('savePlaceButton')));
+        await t.pumpAndSettle();
+        await t.tap(find.byKey(const Key('confirmSavePlace')));
+        await t.pumpAndSettle();
 
-      expect(repo.written.single.label, 'Spintex Road, Accra');
-    });
+        expect(repo.written.single.label, 'Spintex Road');
+        // The address is still what a car is sent to.
+        expect(repo.written.single.address, 'Spintex Road, Accra');
+      },
+    );
 
     testWidgets('cancelling writes nothing', (t) async {
       final repo = _FakeSaved();
