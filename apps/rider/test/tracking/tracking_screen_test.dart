@@ -35,7 +35,7 @@ void useDesignSurface(WidgetTester tester) {
 /// `etaMinutes` is a parameter and not a fixed 4 because a fixture that pins
 /// every ETA to the same number cannot tell a mirrored `eta_minutes` from a
 /// hardcoded one. `TripStop` has no `operator ==`, so nothing here asserts on a
-/// `TripStop` — only on `.address` and `.point`.
+/// `TripStop` â€” only on `.address` and `.point`.
 Trip tripInState(
   TripState state, {
   int? etaMinutes,
@@ -62,9 +62,9 @@ Trip tripInState(
 
 /// Stands in for the raw `http.ClientException` a direct PostgREST call lets
 /// through, so the controller's `on Exception` clause is exercised by
-/// something that behaves the way the real one does — `http` declares
+/// something that behaves the way the real one does â€” `http` declares
 /// `class ClientException implements Exception`
-/// (`http-1.6.0/lib/src/exception.dart:6`) — without importing `package:http`,
+/// (`http-1.6.0/lib/src/exception.dart:6`) â€” without importing `package:http`,
 /// which this package does not depend on.
 class FakeTransportException implements Exception {
   const FakeTransportException();
@@ -247,13 +247,21 @@ Widget wrapTracking(TrackingController c) => ScreenUtilInit(
 /// sits at y=881 with a 844-high viewport, so a bare `tap` misses it and warns.
 /// Scrolling to it is what a rider does anyway, and the screen was already
 /// scrollable for exactly this reason (the 200% text-scale test).
-Future<void> tapSos(WidgetTester tester) async {
-  await tester.ensureVisible(find.byKey(const Key('sosButton')));
-  await tester.pumpAndSettle();
-  await tester.tap(find.byKey(const Key('sosButton')));
-  await tester.pump();
-  await tester.pump();
-}
+/// Press Safety and then confirm it.
+///
+/// Two taps because there are two steps on purpose now: the first opens the
+/// confirmation and the second raises the alert. confirm: false stops at the
+/// dialog, which is how a test asserts that a cancelled alert wrote nothing.
+Future<void> tapSos(WidgetTester tester, {bool confirm = true}) async {
+    await tester.ensureVisible(find.byKey(const Key('sosButton')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('sosButton')));
+    await tester.pumpAndSettle();
+    if (!confirm) return;
+    await tester.tap(find.byKey(const Key('sosConfirmSend')));
+    await tester.pump();
+    await tester.pump();
+  }
 
 void main() {
   testWidgets('matched state shows the ride-confirmed headline', (
@@ -464,15 +472,47 @@ void main() {
     );
   });
 
-  testWidgets('a second SOS tap does not raise another event', (tester) async {
+  testWidgets('the SOS button is inert once an alert has been raised', (
+    tester,
+  ) async {
     useDesignSurface(tester);
     final c = FakeTrackingController(TripState.arriving);
     await tester.pumpWidget(wrapTracking(c));
     await tapSos(tester);
-    await tapSos(tester);
-    // The call count, not the flag. `sosRaised` is true after one write and after
+
+    // The call count, not the flag: sosRaised is true after one write and after
     // two, so asserting on it pins nothing.
     expect(c.repo.sosCalls, 1);
+
+    // And the button is now inert, which is a stronger guarantee than the old
+    // silent no-op. A rider who pressed Safety twice has already been told the
+    // team has the trip; a second alert row would tell staff the first did not
+    // land, and the fix is that there is no second press left to make.
+    //
+    // Not tapped a second time: a disabled button has no hit, so a tap would
+    // warn about a missed hit rather than prove anything.
+    final button = tester.widget<OutlinedButton>(
+      find.byKey(const Key('sosButton')),
+    );
+    expect(button.onPressed, isNull);
+  });
+
+  testWidgets('a cancelled SOS writes nothing at all', (tester) async {
+    useDesignSurface(tester);
+    final c = FakeTrackingController(TripState.arriving);
+    await tester.pumpWidget(wrapTracking(c));
+
+    // Stop at the dialog. This is the case the confirmation exists for: a
+    // mis-tap in a moving car, where nothing was wrong and a real alert row
+    // would train staff to discount the button.
+    await tapSos(tester, confirm: false);
+    expect(find.byKey(const Key('sosConfirmDialog')), findsOneWidget);
+    expect(c.repo.sosCalls, 0);
+
+    await tester.tap(find.byKey(const Key('sosConfirmCancel')));
+    await tester.pumpAndSettle();
+    expect(c.repo.sosCalls, 0);
+    expect(find.byKey(const Key('sosConfirmDialog')), findsNothing);
   });
 
   testWidgets('driver car and plate render when a vehicle is attached', (
@@ -672,7 +712,10 @@ void main() {
       find.text('Help is on the way. Our team has your trip.'),
       findsNothing,
     );
-    expect(find.text('Not signed in'), findsOneWidget);
+        // Twice: the banner on the screen and the snackbar that is now the
+    // receipt. The snackbar is what a rider actually reads, and it appears
+    // only once the write has actually landed.
+    expect(find.text('Not signed in'), findsNWidgets(2));
   });
 
   testWidgets('a dropped connection on SOS says the server was unreachable', (
@@ -911,7 +954,7 @@ void main() {
   ) async {
     useDesignSurface(tester);
     // `RideCategory.lite`'s label is `Lite`, capitalised
-    // (`mng_core/lib/src/models/category.dart`) — read off the enum, not
+    // (`mng_core/lib/src/models/category.dart`) â€” read off the enum, not
     // assumed. A standard-trip-only assertion cannot tell this line from a
     // hardcoded string, because the hardcoded string was Standard's. That is
     // exactly what went stale when the tier was renamed from `van`: the comment

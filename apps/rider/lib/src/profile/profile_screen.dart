@@ -93,10 +93,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
             ),
         ],
       ),
-      body: SafeArea(
-        top: false,
-        child: _body(c),
-      ),
+      body: SafeArea(top: false, child: _body(c)),
     );
   }
 
@@ -115,7 +112,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
         return _Message(
           icon: Icons.person_off_outlined,
           title: 'No profile yet',
-          body: 'Your account exists but has no profile row yet. '
+          body:
+              'Your account exists but has no profile row yet. '
               'Contact support and it will be created.',
         );
       case ProfileStatus.loaded:
@@ -150,13 +148,13 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     key: const Key('profileName'),
                     style: MngTheme.light.textTheme.titleLarge,
                   ),
-                  SizedBox(height: 2.h),
-                  Text(
-                    c.profile!.kyc == KycStatus.approved
-                        ? 'Identity verified'
-                        : 'Identity not verified',
-                    style: MngTheme.light.textTheme.bodySmall,
-                  ),
+                  // No identity line under the name. It read 'Identity
+                  // verified' or 'Identity not verified' and told a rider
+                  // nothing they could act on: riders do not submit identity
+                  // documents in this app at all -- there is no upload control and
+                  // no submission -- so it was a permanent 'not verified' for
+                  // every rider. A status nobody can change and nothing explains
+                  // is worse than no status.
                 ],
               ),
             ),
@@ -220,11 +218,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 value: '${p.tripCount}',
                 valueKey: const Key('tripCountValue'),
               ),
-              _Fact(
-                label: 'Identity check',
-                value: kycLabel(p.kyc),
-                valueKey: const Key('kycValue'),
-              ),
+              // The identity row is gone for the same reason as the subtitle
+              // above. `kycValue` no longer exists on this screen, so a test
+              // asserting on it is asserting on a removed feature.
             ],
           ),
           SizedBox(height: 12.h),
@@ -288,11 +284,11 @@ class _ProfileScreenState extends State<ProfileScreen> {
 }
 
 String kycLabel(KycStatus kyc) => switch (kyc) {
-      KycStatus.notStarted => 'Not started',
-      KycStatus.pending => 'In review',
-      KycStatus.approved => 'Verified',
-      KycStatus.rejected => 'Not approved',
-    };
+  KycStatus.notStarted => 'Not started',
+  KycStatus.pending => 'In review',
+  KycStatus.approved => 'Verified',
+  KycStatus.rejected => 'Not approved',
+};
 
 class _Field extends StatelessWidget {
   const _Field({
@@ -396,9 +392,7 @@ class _Note extends StatelessWidget {
       children: [
         const Icon(Icons.info_outline, size: 14, color: MngColors.textSub),
         SizedBox(width: 8.w),
-        Expanded(
-          child: Text(text, style: MngTheme.light.textTheme.bodySmall),
-        ),
+        Expanded(child: Text(text, style: MngTheme.light.textTheme.bodySmall)),
       ],
     );
   }

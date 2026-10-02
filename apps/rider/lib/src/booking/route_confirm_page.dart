@@ -3,6 +3,8 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
 import 'package:mng_core/mng_core.dart';
+
+import '../app/rider_flow.dart';
 import '../data/place_service.dart';
 import '../home/widgets/category_chips.dart';
 import '../map/ride_map.dart';
@@ -25,8 +27,11 @@ class RouteDraft {
 /// a location fix still renders on the map. `kDefaultPickup` is the fallback
 /// for "the rider declined or has no fix", not the normal path: the shell asks
 /// the OS for a fix first and passes the answer in.
-const kDefaultPickup =
-    TripStop('Pickup', GeoPoint(5.6037, -0.1870), 'Osu, Accra');
+const kDefaultPickup = TripStop(
+  'Pickup',
+  GeoPoint(5.6037, -0.1870),
+  'Osu, Accra',
+);
 
 /// The default destination, used only when the rider has not chosen one.
 ///
@@ -35,8 +40,11 @@ const kDefaultPickup =
 /// ride to the same airport every single time, and the rider had no way to ask
 /// for anywhere else. The field is editable now; this is only what it starts
 /// as.
-const kDefaultDropoff =
-    TripStop('Dropoff', GeoPoint(5.6052, -0.1660), 'Airport Residential, Accra');
+const kDefaultDropoff = TripStop(
+  'Dropoff',
+  GeoPoint(5.6052, -0.1660),
+  'Airport Residential, Accra',
+);
 
 /// A pickup built from a real device fix.
 ///
@@ -341,21 +349,38 @@ class _RouteConfirmPageState extends State<RouteConfirmPage> {
     // missing destination is a number, and a wrong number on a price is worse
     // than no number at all.
     final km = _distanceKm;
-    final full = km == null ? null : widget.calc.quote(
-      category: _category,
-      distanceKm: km,
-    );
+    final full = km == null
+        ? null
+        : widget.calc.quote(category: _category, distanceKm: km);
     // 30% off when the rider arrived by pressing the offer, applied here on
     // the one screen that shows a fare rather than on the home screen where
     // none is shown, so the discount is visible where it is spent.
     //
-    // Taken off the quoted fare rather than pushed through the calculator as a
-    // `discountGhs`, because a flat amount off depends on the distance while
-    // the offer is 30% off whatever the ride costs. A rider in Kumasi and one
-    // in Osu should both be paying 70%.
-    final fare = (full == null || !widget.promoApplied)
-        ? full?.fareGhs
-        : full.fareGhs * 0.7;
+    // Through the calculator as a `discountGhs`, not as `fare * 0.7`. Those are
+    // not the same number, and the difference is the whole of this fix:
+    //
+    // - the server computes `round2(min(gross * 30/100, 40.00))` and then
+    //   subtracts that from the gross (`functions/request-ride/fare.ts`,
+    //   `promoDiscountGhs`), so **the discount is capped at GHS 40**
+    // - `fare * 0.7` has no cap, so it is cheaper on the screen than on the bill
+    //   for every fare above GHS 133.33
+    // - and the two round differently even below the cap, so the last two
+    //   decimal places could disagree
+    //
+    // A rider confirming a price and then being charged a different one is the
+    // single most trust-destroying thing a ride app can do, and it was happening
+    // silently on the screen where the price is agreed.
+    final fare = full == null
+        ? null
+        : widget.calc
+              .quote(
+                category: _category,
+                distanceKm: full.distanceKm,
+                discountGhs: widget.promoApplied
+                    ? promoDiscountGhs(full.fareGhs)
+                    : 0,
+              )
+              .fareGhs;
     return Scaffold(
       // Opaque white. A scrim over the map is what this page used to be, and a
       // rider confirming where they are going should be able to see it.
@@ -375,148 +400,156 @@ class _RouteConfirmPageState extends State<RouteConfirmPage> {
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-              _StopField(
-                fieldName: 'pickup',
-                fieldKey: const Key('pickupField'),
-                icon: Icons.circle,
-                iconColor: MngColors.success,
-                stop: _pickup,
-                hint: 'Where should we pick you up?',
-                active: _editing == _Field.pickup,
-                onChanged: (v) => _onQueryChanged(_Field.pickup, v),
-                onTap: () => _focus(_Field.pickup),
-                onPickOnMap: _pickingOnMap && _mapField == _Field.pickup
-                    ? () => setState(() => _pickingOnMap = false)
-                    : () => _openMapFor(_Field.pickup),
-                showMapAction: true,
-              ),
-              SizedBox(height: 8.h),
-              _StopField(
-                fieldName: 'dropoff',
-                fieldKey: const Key('dropoffField'),
-                icon: Icons.circle,
-                iconColor: MngColors.error,
-                stop: _dropoff,
-                hint: 'Where are you going?',
-                active: _editing == _Field.dropoff,
-                onChanged: (v) => _onQueryChanged(_Field.dropoff, v),
-                onTap: () => _focus(_Field.dropoff),
-                onPickOnMap: _pickingOnMap && _mapField == _Field.dropoff
-                    ? () => setState(() => _pickingOnMap = false)
-                    : () => _openMapFor(_Field.dropoff),
-                showMapAction: true,
-              ),
-              if (_editing != null) ...[
+                _StopField(
+                  fieldName: 'pickup',
+                  fieldKey: const Key('pickupField'),
+                  icon: Icons.circle,
+                  iconColor: MngColors.success,
+                  stop: _pickup,
+                  hint: 'Where should we pick you up?',
+                  active: _editing == _Field.pickup,
+                  onChanged: (v) => _onQueryChanged(_Field.pickup, v),
+                  onTap: () => _focus(_Field.pickup),
+                  onPickOnMap: _pickingOnMap && _mapField == _Field.pickup
+                      ? () => setState(() => _pickingOnMap = false)
+                      : () => _openMapFor(_Field.pickup),
+                  showMapAction: true,
+                ),
                 SizedBox(height: 8.h),
-                _Results(
-                  results: _results,
-                  searching: _searching,
-                  query: _query,
-                  onPick: (hit) => _choose(_editing ?? _Field.dropoff, hit),
+                _StopField(
+                  fieldName: 'dropoff',
+                  fieldKey: const Key('dropoffField'),
+                  icon: Icons.circle,
+                  iconColor: MngColors.error,
+                  stop: _dropoff,
+                  hint: 'Where are you going?',
+                  active: _editing == _Field.dropoff,
+                  onChanged: (v) => _onQueryChanged(_Field.dropoff, v),
+                  onTap: () => _focus(_Field.dropoff),
+                  onPickOnMap: _pickingOnMap && _mapField == _Field.dropoff
+                      ? () => setState(() => _pickingOnMap = false)
+                      : () => _openMapFor(_Field.dropoff),
+                  showMapAction: true,
                 ),
-              ],
-              if (_pickingOnMap) ...[
-                SizedBox(height: 10.h),
-                _MapPicker(
-                  field: _mapField,
-                  // The point the map is centred on. Null when the field being
-                  // set is the destination and there is not one yet, in which
-                  // case the map falls back to the pickup rather than inventing
-                  // a centre: the rider can pan anywhere, and a map centred on
-                  // a fabricated point is a map centred on a lie.
-                  point: _mapField == _Field.pickup
-                      ? _pickup.point
-                      : _dropoff?.point ?? _pickup.point,
-                  onPick: _pickOnMap,
-                  onClose: () => setState(() => _pickingOnMap = false),
-                ),
-              ],
-              SizedBox(height: 12.h),
-              // The fare and distance only exist once both ends are known. A
-              // row reading "GHS 0.00" before a destination has been chosen is
-              // a price, and a wrong one is worse than no price.
-              if (_canSubmit)
-                Container(
-                  padding: EdgeInsets.all(12.w),
-                  decoration: BoxDecoration(
-                    color: MngColors.muted,
-                    borderRadius: BorderRadius.circular(MngRadius.small),
+                if (_editing != null) ...[
+                  SizedBox(height: 8.h),
+                  _Results(
+                    results: _results,
+                    searching: _searching,
+                    query: _query,
+                    onPick: (hit) => _choose(_editing ?? _Field.dropoff, hit),
                   ),
-                  child: Row(
-                    children: [
-                      Expanded(
-                        child: Text(
-                          // Safe: this block only draws when both ends exist.
-                          '${_distanceKm!.toStringAsFixed(1)} km  ·  ~$_driveMinutes min drive',
-                          overflow: TextOverflow.ellipsis,
-                          style: MngTheme.light.textTheme.titleMedium,
-                        ),
-                      ),
-                      SizedBox(width: 8.w),
-                      Text('GHS ${fare!.toStringAsFixed(2)}',
-                          style: MngTheme.light.textTheme.titleMedium),
-                      if (widget.promoApplied)
-                        Padding(
-                          padding: EdgeInsets.only(left: 6.w),
+                ],
+                if (_pickingOnMap) ...[
+                  SizedBox(height: 10.h),
+                  _MapPicker(
+                    field: _mapField,
+                    // The point the map is centred on. Null when the field being
+                    // set is the destination and there is not one yet, in which
+                    // case the map falls back to the pickup rather than inventing
+                    // a centre: the rider can pan anywhere, and a map centred on
+                    // a fabricated point is a map centred on a lie.
+                    point: _mapField == _Field.pickup
+                        ? _pickup.point
+                        : _dropoff?.point ?? _pickup.point,
+                    onPick: _pickOnMap,
+                    onClose: () => setState(() => _pickingOnMap = false),
+                  ),
+                ],
+                SizedBox(height: 12.h),
+                // The fare and distance only exist once both ends are known. A
+                // row reading "GHS 0.00" before a destination has been chosen is
+                // a price, and a wrong one is worse than no price.
+                if (_canSubmit)
+                  Container(
+                    padding: EdgeInsets.all(12.w),
+                    decoration: BoxDecoration(
+                      color: MngColors.muted,
+                      borderRadius: BorderRadius.circular(MngRadius.small),
+                    ),
+                    child: Row(
+                      children: [
+                        Expanded(
                           child: Text(
-                            '30% off',
-                            style: MngTheme.light.textTheme.bodySmall
-                                ?.copyWith(color: MngColors.success),
+                            // Safe: this block only draws when both ends exist.
+                            '${_distanceKm!.toStringAsFixed(1)} km  ·  ~$_driveMinutes min drive',
+                            overflow: TextOverflow.ellipsis,
+                            style: MngTheme.light.textTheme.titleMedium,
                           ),
                         ),
-                    ],
+                        SizedBox(width: 8.w),
+                        Text(
+                          'GHS ${fare!.toStringAsFixed(2)}',
+                          style: MngTheme.light.textTheme.titleMedium,
+                        ),
+                        if (widget.promoApplied)
+                          Padding(
+                            padding: EdgeInsets.only(left: 6.w),
+                            child: Text(
+                              '30% off',
+                              style: MngTheme.light.textTheme.bodySmall
+                                  ?.copyWith(color: MngColors.success),
+                            ),
+                          ),
+                      ],
+                    ),
+                  )
+                else
+                  Container(
+                    key: const Key('noDestinationYet'),
+                    padding: EdgeInsets.all(12.w),
+                    decoration: BoxDecoration(
+                      color: MngColors.muted,
+                      borderRadius: BorderRadius.circular(MngRadius.small),
+                    ),
+                    child: Row(
+                      children: [
+                        const Icon(
+                          Icons.info_outline,
+                          size: 16,
+                          color: MngColors.textSub,
+                        ),
+                        SizedBox(width: 8.w),
+                        Expanded(
+                          child: Text(
+                            'Choose where you are going to see the fare.',
+                            style: MngTheme.light.textTheme.bodySmall,
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
-                )
-              else
-                Container(
-                  key: const Key('noDestinationYet'),
-                  padding: EdgeInsets.all(12.w),
-                  decoration: BoxDecoration(
-                    color: MngColors.muted,
-                    borderRadius: BorderRadius.circular(MngRadius.small),
-                  ),
-                  child: Row(
+                if (_isUneditedDefault) ...[
+                  SizedBox(height: 10.h),
+                  Row(
                     children: [
-                      const Icon(Icons.info_outline,
-                          size: 16, color: MngColors.textSub),
-                      SizedBox(width: 8.w),
+                      const Icon(
+                        Icons.info_outline,
+                        size: 16,
+                        color: MngColors.textSub,
+                      ),
+                      SizedBox(width: 6.w),
                       Expanded(
                         child: Text(
-                          'Choose where you are going to see the fare.',
+                          'Still the demo route. Tap either field to pick '
+                          'somewhere else.',
                           style: MngTheme.light.textTheme.bodySmall,
                         ),
                       ),
                     ],
                   ),
+                ],
+                SizedBox(height: 16.h),
+                CategoryChips(
+                  selected: _category,
+                  onSelected: (c) => setState(() => _category = c),
                 ),
-              if (_isUneditedDefault) ...[
-                SizedBox(height: 10.h),
-                Row(
-                  children: [
-                    const Icon(Icons.info_outline,
-                        size: 16, color: MngColors.textSub),
-                    SizedBox(width: 6.w),
-                    Expanded(
-                      child: Text(
-                        'Still the demo route. Tap either field to pick '
-                        'somewhere else.',
-                        style: MngTheme.light.textTheme.bodySmall,
-                      ),
-                    ),
-                  ],
+                SizedBox(height: 20.h),
+                FilledButton(
+                  key: const Key('confirmRouteButton'),
+                  onPressed: _canSubmit ? _submit : null,
+                  child: const Text('Search for a ride'),
                 ),
-              ],
-              SizedBox(height: 16.h),
-              CategoryChips(
-                selected: _category,
-                onSelected: (c) => setState(() => _category = c),
-              ),
-              SizedBox(height: 20.h),
-              FilledButton(
-                key: const Key('confirmRouteButton'),
-                onPressed: _canSubmit ? _submit : null,
-                child: const Text('Search for a ride'),
-              ),
               ],
             ),
           ),
@@ -694,8 +727,9 @@ class _StopField extends StatelessWidget {
                   isDense: true,
                   border: InputBorder.none,
                   hintText: hint,
-                  hintStyle: MngTheme.light.textTheme.bodyMedium
-                      ?.copyWith(color: MngColors.textSub),
+                  hintStyle: MngTheme.light.textTheme.bodyMedium?.copyWith(
+                    color: MngColors.textSub,
+                  ),
                 ),
               ),
             ),
@@ -757,8 +791,8 @@ class _Results extends StatelessWidget {
                 searching
                     ? 'Looking for places...'
                     : query.trim().length < kMinPlaceSearchChars
-                        ? 'Type at least $kMinPlaceSearchChars letters.'
-                        : 'Nothing matched "$query".',
+                    ? 'Type at least $kMinPlaceSearchChars letters.'
+                    : 'Nothing matched "$query".',
                 style: MngTheme.light.textTheme.bodySmall,
               ),
             ),
@@ -779,12 +813,14 @@ class _Results extends StatelessWidget {
               key: Key('placeHit-${hit.label}'),
               onTap: () => onPick(hit),
               child: Padding(
-                padding: EdgeInsets.symmetric(
-                    horizontal: 12.w, vertical: 10.h),
+                padding: EdgeInsets.symmetric(horizontal: 12.w, vertical: 10.h),
                 child: Row(
                   children: [
-                    const Icon(Icons.place_outlined,
-                        size: 16, color: MngColors.textSub),
+                    const Icon(
+                      Icons.place_outlined,
+                      size: 16,
+                      color: MngColors.textSub,
+                    ),
                     SizedBox(width: 10.w),
                     Expanded(
                       child: Text(

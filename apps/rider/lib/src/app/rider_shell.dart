@@ -24,6 +24,7 @@ import '../home/notifications_screen.dart';
 import '../profile/profile_controller.dart';
 import '../profile/profile_screen.dart';
 import '../tracking/finding_driver_screen.dart';
+import '../profile/rider_phone_gate_screen.dart';
 import '../tracking/tracking_controller.dart';
 import '../tracking/tracking_screen.dart';
 import '../trip/receipt_screen.dart';
@@ -377,6 +378,33 @@ class _RiderShellState extends State<RiderShell> {
     final flow = context.watch<RiderFlow>();
     final trip = _trip;
     final busy = flow.requesting || _completing;
+
+    // The phone gate, above everything else in this file.
+    //
+    // A rider with `phone = ''` cannot be reached by any driver, and the driver
+    // app already has a designed path for exactly that state: `contact` answers
+    // `callable: false` and the driver's sheet says "This rider has not added a
+    // phone number." So the cost of a rider skipping this is paid by a stranger,
+    // in traffic, at a kerb. The rider is asked for it once, here, and the app
+    // has nothing to offer them until it exists.
+    //
+    // Placed before the nav bar and before any trip stage, because there is no
+    // part of this app that works without it. Sign-up collects name, email and
+    // password and nothing else, and `profiles.phone` is `NOT NULL default ''` --
+    // so without this gate the row is written, nothing fails, and the rider walks
+    // into a finished-looking app they cannot use.
+    final profile = context.watch<RiderProfileController>();
+    if (profile.status == ProfileStatus.loaded &&
+        !isCallableGhanaPhone(profile.profile?.phone)) {
+      return RiderPhoneGateScreen(
+        onSaved: (phone) async {
+          await profile.save(
+            fullName: profile.profile?.fullName ?? '',
+            phone: phone,
+          );
+        },
+      );
+    }
 
     final Widget body;
     if (busy) {

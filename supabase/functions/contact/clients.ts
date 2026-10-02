@@ -70,7 +70,7 @@ export function buildContactLookup(
     // parties need to reach each other; a rating is a rider-facing thing.
     const { data: profile, error: profileError } = await service
       .from('profiles')
-      .select('full_name, phone, photo_url, rating')
+      .select('full_name, phone, photo_url, rating, vehicle_id')
       .eq('id', otherId)
       .maybeSingle();
     if (profileError) throw new Error(profileError.message);
@@ -86,16 +86,30 @@ export function buildContactLookup(
     // photo or rating could reach a driver's app even by accident.
     if (tripRow.rider_id !== callerId) return base;
 
-    // The driver's vehicle, if the trip has one. `trips.vehicle_id` is set when
-    // the driver accepts, so this is null for a trip that has not been taken up
-    // yet, and the rider's card then shows a name and a number and nothing to
-    // identify a car by -- which is honest, because there is no car yet.
+    // Which car, for a rider standing at a rank.
+    //
+    // `trips.vehicle_id` first, because a trip that records a vehicle is the one
+    // that can be right about *which* car is coming -- a driver who changes
+    // vehicle between trips must not have the old plate shown.
+    //
+    // Then the driver's current `profiles.vehicle_id`, and that fallback is not
+    // a convenience: **nothing in this product writes `trips.vehicle_id`.** No
+    // Edge Function, no trigger, no client. Grep finds only this read and the
+    // admin page's own driver query. So without the fallback the column is
+    // permanently null and a rider never sees a car or a plate on any trip --
+    // which is exactly what the first live check of this function found:
+    // `vehicle: null` on a trip whose driver had a registered, approved vehicle.
+    //
+    // Populating the trip column when a driver accepts is a real gap rather than
+    // a style preference. Until then this fallback is the only path that gives a
+    // rider the one detail they can read off a windscreen.
+    const vehicleId = tripRow.vehicle_id ?? profile?.vehicle_id ?? null;
     let vehicle: { make: string; model: string; plate: string } | null = null;
-    if (tripRow.vehicle_id) {
+    if (vehicleId) {
       const { data: car, error: carError } = await service
         .from('vehicles')
         .select('make, model, plate')
-        .eq('id', tripRow.vehicle_id)
+        .eq('id', vehicleId)
         .maybeSingle();
       if (carError) throw new Error(carError.message);
       if (car) {

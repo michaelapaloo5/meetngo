@@ -8,6 +8,35 @@ import '../trip/trip_controller.dart';
 
 const kPromoCode = 'RIDE30';
 
+/// The launch offer, as the *server* applies it.
+///
+/// These four numbers and `promoDiscountGhs` below are the whole of `RIDE30`, and
+/// they exist here because the client has to show the price the rider will be
+/// charged. `supabase/functions/request-ride/fare.ts` holds the same pair in
+/// `PROMOS`/`promoDiscountGhs`; if one changes the other has to, and the test
+/// below is what notices.
+///
+/// The cap is the part that was missing. The server takes
+/// `min(gross * 30 / 100, 40.00)` and subtracts that from the gross. The client
+/// used to compute `gross * 0.7` with no cap at all, so on any fare above
+/// **GHS 133.33** the rider agreed to a number lower than the one they were
+/// charged. That is the bug this fixes, and the reason the cap is a named
+/// constant rather than a literal inside a widget.
+const kPromoPercentOff = 30.0;
+const kPromoMaxDiscountGhs = 40.0;
+
+/// What `RIDE30` takes off [gross], capped exactly as the server caps it.
+///
+/// `math.min` on the percentage and then `round2`, in that order, because that is
+/// the order in `promoDiscountGhs`. Rounding the percentage down first and the
+/// total second would be a different number on many fares.
+double promoDiscountGhs(double gross) {
+  final uncapped = gross * kPromoPercentOff / 100.0;
+  return FareCalculator.round2(
+    uncapped > kPromoMaxDiscountGhs ? kPromoMaxDiscountGhs : uncapped,
+  );
+}
+
 /// The ride flow, from tapping search to seeing a receipt.
 ///
 /// Owns only the two things a screen cannot work out for itself: which step of
@@ -17,8 +46,8 @@ const kPromoCode = 'RIDE30';
 /// test against it.
 class RiderFlow extends ChangeNotifier {
   RiderFlow({required this.trips, required this.functions})
-      : calc = FareCalculator(),
-        controller = TripController(trips: trips, functions: functions);
+    : calc = FareCalculator(),
+      controller = TripController(trips: trips, functions: functions);
 
   final TripRepository trips;
   final TripFunctions functions;

@@ -4,8 +4,10 @@ import 'package:mng_core/mng_core.dart';
 import 'package:provider/provider.dart';
 
 import '../data/chat_repository.dart';
+import '../data/booked_trip.dart';
 import '../map/ride_map.dart';
 import 'driver_contact_sheet.dart';
+import '../trip/share_ride_sheet.dart';
 import 'tracking_controller.dart';
 import 'widgets/driver_summary.dart';
 import 'widgets/eta_badge.dart';
@@ -42,6 +44,73 @@ class TrackingScreen extends StatelessWidget {
     TripState.completed: 'Trip complete',
     TripState.cancelled: 'Trip cancelled',
   };
+
+  /// Ask before raising an SOS, then say plainly what happened.
+  ///
+  /// Three things this fixes, all of them found by reading rather than by
+  /// looking:
+  ///
+  /// - there was no confirmation at all, so a mis-tap raised a real alert that
+  ///   nothing in this app could retract
+  /// - the success state was a red `Text` with no key of its own, so it could
+  ///   not be asserted on and a rider who pressed it could not tell whether it
+  ///   had landed
+  /// - a second press was a silent no-op (`if (sosRaised) return`), so a rider
+  ///   who pressed again because nothing appeared was told nothing
+  ///
+  /// The snackbar is the receipt. `raiseSos` rolls its optimistic flag back on
+  /// failure, and a rider who was shown "help is on the way" for a row that
+  /// never reached `sos_events` is the outcome this whole path exists to
+  /// prevent -- so the message is only shown once the write has actually landed.
+  static Future<void> _confirmSos(
+    BuildContext context,
+    TrackingController controller,
+  ) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        key: const Key('sosConfirmDialog'),
+        title: const Text('Alert our team?'),
+        content: const Text(
+          'We will share your trip and location with the Meet \'N Go team so they '
+          'can help. Your driver will not be told.',
+        ),
+        actions: [
+          TextButton(
+            key: const Key('sosConfirmCancel'),
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            key: const Key('sosConfirmSend'),
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('Send alert'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    if (!context.mounted) return;
+
+    final raised = await controller.raiseSos();
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context)
+      ..clearSnackBars()
+      ..showSnackBar(
+        SnackBar(
+          key: const Key('sosResultSnack'),
+          content: Text(
+            raised
+                // Not "Help is on the way" -- nothing in this app sends anyone
+                // anywhere. The team has the trip and the rider's location and
+                // will act; saying help is coming would be a promise the app
+                // cannot keep.
+                ? 'Our team has your trip and location.'
+                : controller.error ?? 'We could not send the alert. Try again.',
+          ),
+        ),
+      );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -329,6 +398,30 @@ class TrackingScreen extends StatelessWidget {
                         ),
                       ),
                       SizedBox(height: 10.h),
+                      // Share, because the question a rider actually asks about
+                      // a live ride is "where are you", and the answer is
+                      // usually to somebody else.
+                      //
+                      // No coordinates in what leaves the phone: `stopLabel` is
+                      // used precisely because some rows in this database carry a
+                      // coordinate string in the address field, and a shared block
+                      // is the last place that should leak one.
+                      Padding(
+                        padding: EdgeInsets.fromLTRB(20.w, 0, 20.w, 10.h),
+                        child: OutlinedButton.icon(
+                          key: const Key('shareRideButton'),
+                          onPressed: () => ShareRideSheet.show(
+                            context,
+                            ride: BookedTrip(
+                              trip: trip,
+                              createdAt: DateTime.now(),
+                            ),
+                            driver: c.knownDriver,
+                          ),
+                          icon: const Icon(Icons.ios_share, size: 18),
+                          label: const Text('Share ride details'),
+                        ),
+                      ),
                       if (canCancel)
                         Padding(
                           padding: EdgeInsets.fromLTRB(20.w, 0, 20.w, 12.h),
@@ -346,7 +439,23 @@ class TrackingScreen extends StatelessWidget {
                         padding: EdgeInsets.fromLTRB(20.w, 0, 20.w, 20.h),
                         child: OutlinedButton.icon(
                           key: const Key('sosButton'),
-                          onPressed: c.raiseSos,
+                          // A confirmation, because the alternative is one tap
+                          // writing an irreversible `sos_events` row that nothing
+                          // in this app can retract.
+                          //
+                          // The audit found no `showDialog` anywhere in the rider
+                          // app -- not a decision against one, just nobody having
+                          // written it. A mis-tap in a moving car is the ordinary
+                          // case, and a false alert that teaches staff to discount
+                          // this button is worse than no alert at all.
+                          //
+                          // Confirm rather than press-and-hold or a countdown: a
+                          // rider in real distress should not have to learn a
+                          // gesture first. The dialog offers cancelling, which is
+                          // the entire reason it exists.
+                          onPressed: c.sosRaised
+                              ? null
+                              : () => _confirmSos(context, c),
                           style: OutlinedButton.styleFrom(
                             foregroundColor: MngColors.error,
                             minimumSize: const Size.fromHeight(48),

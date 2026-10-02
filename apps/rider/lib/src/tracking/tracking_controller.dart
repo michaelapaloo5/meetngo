@@ -360,26 +360,35 @@ class TrackingController extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> raiseSos() async {
-    if (sosRaised) return;
+  /// Raise the safety alert, and say whether it landed.
+  ///
+  /// Returns whether a row reached `sos_events`, because the caller needs to
+  /// tell the rider so. It used to return `void` and paint an optimistic
+  /// banner, which meant a rider could be told "Help is on the way" for an alert
+  /// that was rolled back a moment later -- and a safety feature that lies about
+  /// whether it fired is worse than one that does not fire.
+  ///
+  /// False when there is no trip, when it has already been raised, or when the
+  /// write failed. All three are answers the caller can act on.
+  Future<bool> raiseSos() async {
+    if (sosRaised) return false;
     final current = _trip;
-    if (current == null) return;
+    if (current == null) return false;
     error = null;
     sosRaised = true;
     notifyListeners();
     try {
       await trips.raiseSos(current.id, 'Rider pressed the safety button');
+      return true;
     } on Exception catch (e) {
-      // Rolled back, not left standing. The banner is driven by the optimistic
-      // `notifyListeners()` above, so once this round trip is in flight the
-      // screen is reading "Help is on the way", and a rider told help is coming
-      // when no row reached `sos_events` is the outcome this whole path exists
-      // to prevent. Back to false, so the button is live again and the rider can
-      // press it a second time.
+      // Rolled back, not left standing, so the button is live again and the
+      // rider can press it a second time.
       sosRaised = false;
       _report(e);
+      return false;
+    } finally {
+      notifyListeners();
     }
-    notifyListeners();
   }
 
   void _report(Exception e) {
