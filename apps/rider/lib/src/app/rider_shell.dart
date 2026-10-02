@@ -27,6 +27,7 @@ import '../tracking/finding_driver_screen.dart';
 import '../profile/rider_phone_gate_screen.dart';
 import '../tracking/tracking_controller.dart';
 import '../tracking/tracking_screen.dart';
+import '../bookings/trip_detail_screen.dart';
 import '../trip/receipt_screen.dart';
 import 'rider_flow.dart';
 
@@ -508,7 +509,54 @@ class _RiderShellState extends State<RiderShell> {
     recentRides: _recentRides,
     onSearchTap: (_) => _openRouteEntry(),
     onNotificationsTap: (_) => _openNotifications(),
+    onRideTap: _openRide,
   );
+
+  /// Where tapping a ride on the home screen goes.
+  ///
+  /// Two destinations, chosen by whether the ride is still happening:
+  ///
+  /// - **live** (`matched`, `arriving`, `ongoing`) goes back to the tracking
+  ///   screen, so a rider who taps their own current ride lands on the Call,
+  ///   Message and driver-details controls rather than a receipt for a ride that
+  ///   has not finished.
+  /// - **finished or cancelled** goes to the trip detail, which is where the
+  ///   fare is and where the rider can report a problem with it.
+  ///
+  /// The split is by *state* and not by recency, because the trip on screen and
+  /// the trip in the list are the same row and they can disagree about how far
+  /// along it is -- the shell polls every three seconds and the list was loaded
+  /// when the home screen was built. Trusting the state on the row the rider
+  /// tapped is the one that cannot be a version behind.
+  Future<void> _openRide(BookedTrip ride) async {
+    final trip = ride.trip;
+    switch (trip.state) {
+      case TripState.requested:
+      case TripState.matched:
+      case TripState.arriving:
+      case TripState.ongoing:
+        // Build the controller here for the same reason `_tick` does: the shell
+        // has to hold the instance, or the three-second poll cannot reach it and
+        // the screen is frozen on the state it was created with.
+        setState(() {
+          _trip = trip;
+          _stage = _Stage.tracking;
+        });
+        _tracking?.dispose();
+        _tracking = TrackingController(
+          trips: context.read<TripRepository>(),
+          initialTrip: trip,
+        );
+        _startPolling();
+      case TripState.completed:
+      case TripState.cancelled:
+        await Navigator.of(context).push(
+          MaterialPageRoute<void>(builder: (_) => TripDetailScreen(ride: ride)),
+        );
+        if (!mounted) return;
+        unawaited(_loadRecentRides());
+    }
+  }
 
   /// The rider's last few trips for the home screen.
   ///

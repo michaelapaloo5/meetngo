@@ -3,10 +3,12 @@ import 'package:flutter_screenutil/flutter_screenutil.dart';
 import 'package:mng_core/mng_core.dart';
 
 import '../trip/trip_copy.dart';
+
 import 'package:provider/provider.dart';
 
 import '../data/chat_repository.dart';
 import '../data/booked_trip.dart';
+import '../map/fullscreen_ride_map_screen.dart';
 import '../map/ride_map.dart';
 import 'driver_contact_sheet.dart';
 import '../trip/share_ride_sheet.dart';
@@ -171,6 +173,23 @@ class TrackingScreen extends StatelessWidget {
                 // unchanged and simply has no car on it yet.
                 driver: c.driverPoint,
                 fill: true,
+                // Tap to open it full screen.
+                //
+                // The card cannot be pannable -- it is inside a scrolling column,
+                // so a drag on it has to scroll the ride details, or the buttons
+                // below are unreachable. That leaves the rider watching a fixed
+                // frame with no way to check the junction they are about to pass,
+                // so the tap is the way past it and the larger map has the
+                // gestures on.
+                onTapToExpand: () => FullscreenRideMapScreen.show(
+                  context,
+                  pickup: trip.pickup.point,
+                  pickupLabel: stopLabel(trip.pickup),
+                  dropoff: trip.dropoff.point,
+                  dropoffLabel: stopLabel(trip.dropoff),
+                  location: c.location,
+                  driver: c.driverPoint,
+                ),
               ),
             ),
             // Opaque, not translucent: the ETA pill and the driver name have

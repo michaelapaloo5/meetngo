@@ -20,7 +20,17 @@ import 'chat_controller.dart';
 /// invented, and a body outside it is rejected by PostgREST rather than
 /// trimmed.
 class ChatScreen extends StatefulWidget {
-  const ChatScreen({super.key});
+  const ChatScreen({super.key, this.forOneTrip = false});
+
+  /// Whether this screen was pushed for one specific ride rather than opened as
+  /// the Chat tab.
+  ///
+  /// It changes the back button and nothing else, because it changes what "back"
+  /// *means*: from a ride there is somewhere to go back to, and from the tab there
+  /// is only the list of other rides. Without it a rider who pressed "Message
+  /// driver" mid-ride and then pressed back landed in the trip picker instead of
+  /// back on their ride.
+  final bool forOneTrip;
 
   @override
   State<ChatScreen> createState() => _ChatScreenState();
@@ -61,7 +71,26 @@ class _ChatScreenState extends State<ChatScreen> {
         backgroundColor: MngColors.page,
         surfaceTintColor: Colors.transparent,
         elevation: 0,
-        leading: c.stage == ChatStage.thread
+        // Two different backs for two different ways in.
+        //
+        // Opened from the Chat tab, this screen is a list of rides and a thread,
+        // and going back from a thread means choosing another ride -- which is
+        // what `closeTrip` does.
+        //
+        // Opened by pressing "Message driver" on a live ride, there is no list:
+        // the rider pushed one specific conversation from one specific screen,
+        // and pressing back must return them to the ride they are on. It used to
+        // put them in the trip picker instead, which is a screen belonging to a
+        // part of the app they had left, and left them with no way back to the
+        // driver they were trying to reach.
+        leading: widget.forOneTrip
+            ? IconButton(
+                key: const Key('backOutOfChat'),
+                icon: const Icon(Icons.arrow_back),
+                tooltip: 'Back to your ride',
+                onPressed: () => Navigator.of(context).maybePop(),
+              )
+            : c.stage == ChatStage.thread
             ? IconButton(
                 key: const Key('backToTrips'),
                 icon: const Icon(Icons.arrow_back),
@@ -69,9 +98,7 @@ class _ChatScreenState extends State<ChatScreen> {
               )
             : null,
         title: Text(
-          c.stage == ChatStage.thread
-              ? 'Messages'
-              : 'Chat',
+          widget.forOneTrip || c.stage == ChatStage.thread ? 'Messages' : 'Chat',
           style: MngTheme.light.textTheme.titleLarge,
         ),
       ),
@@ -203,22 +230,21 @@ class _Thread extends StatelessWidget {
             child: _ErrorLine(message: controller.error!),
           ),
         Expanded(
-          child: controller.messages.isEmpty &&
-                  !controller.loadingThread
+          child: controller.messages.isEmpty && !controller.loadingThread
               ? const _Notice(
                   icon: Icons.waving_hand_outlined,
                   title: 'No messages yet',
                   body: 'Say hello to your driver.',
                 )
               : ListView.builder(
-                  padding:
-                      EdgeInsets.fromLTRB(20.w, 12.h, 20.w, 12.h),
+                  padding: EdgeInsets.fromLTRB(20.w, 12.h, 20.w, 12.h),
                   itemCount: controller.messages.length,
                   itemBuilder: (context, i) {
                     final m = controller.messages[i];
                     return _Bubble(
                       message: m,
-                      mine: controller.selfId != null &&
+                      mine:
+                          controller.selfId != null &&
                           m.senderId == controller.selfId,
                     );
                   },
@@ -285,8 +311,7 @@ class _Composer extends StatelessWidget {
                       vertical: 12.h,
                     ),
                     border: OutlineInputBorder(
-                      borderRadius:
-                          BorderRadius.circular(MngRadius.small),
+                      borderRadius: BorderRadius.circular(MngRadius.small),
                       borderSide: BorderSide.none,
                     ),
                   ),
@@ -342,12 +367,13 @@ class _Bubble extends StatelessWidget {
     return Padding(
       padding: EdgeInsets.only(bottom: 8.h),
       child: Row(
-        mainAxisAlignment: mine ? MainAxisAlignment.end : MainAxisAlignment.start,
+        mainAxisAlignment: mine
+            ? MainAxisAlignment.end
+            : MainAxisAlignment.start,
         children: [
           Flexible(
             child: Container(
-              padding:
-                  EdgeInsets.symmetric(horizontal: 14.w, vertical: 10.h),
+              padding: EdgeInsets.symmetric(horizontal: 14.w, vertical: 10.h),
               decoration: BoxDecoration(
                 color: mine ? MngColors.primary : MngColors.muted,
                 borderRadius: BorderRadius.circular(MngRadius.small),
@@ -396,10 +422,7 @@ class _ErrorLine extends StatelessWidget {
         color: MngColors.error.withValues(alpha: 0.08),
         borderRadius: BorderRadius.circular(MngRadius.small),
       ),
-      child: Text(
-        message,
-        style: const TextStyle(color: MngColors.error),
-      ),
+      child: Text(message, style: const TextStyle(color: MngColors.error)),
     );
   }
 }

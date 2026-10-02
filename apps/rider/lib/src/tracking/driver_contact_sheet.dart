@@ -68,7 +68,7 @@ Future<void> openDriverChat(
     MaterialPageRoute<void>(
       builder: (_) => ChangeNotifierProvider<ChatController>.value(
         value: controller,
-        child: const ChatScreen(),
+        child: const ChatScreen(forOneTrip: true),
       ),
     ),
   );

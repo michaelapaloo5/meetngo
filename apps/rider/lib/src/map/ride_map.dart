@@ -64,7 +64,22 @@ class RideMap extends StatefulWidget {
     this.onTapPoint,
     this.pickupLabel,
     this.dropoffLabel,
+    this.onTapToExpand,
   });
+
+  /// Called when the rider taps the map, to open it full screen.
+  ///
+  /// The reason this exists rather than turning the gestures on in place: this
+  /// card is inside a scrolling column, so a drag on it has to scroll the ride
+  /// details rather than move the map out from under the rider. That means the
+  /// card itself can never be pannable, and a rider watching it to see where they
+  /// are was stuck with a fixed frame.
+  ///
+  /// So the tap is the way past it. A bare tap recogniser with no pan beside it,
+  /// so a drag is claimed by the column and the tap rejected.
+  ///
+  /// Null on the screens where the map is already the whole screen.
+  final VoidCallback? onTapToExpand;
 
   /// The place name to print beside the pickup pin, when there is one.
   ///
@@ -355,6 +370,23 @@ class RideMapState extends State<RideMap> {
               : _buildMap(from: from, to: to, here: here),
         ),
         const Positioned(left: 0, right: 0, bottom: 0, child: _Attribution()),
+        // The tap-to-open layer, over the map and *under* the note and the
+        // attribution, so both stay readable and neither is a tap target.
+        //
+        // `opaque`, because the map underneath is a platform view and there is no
+        // Flutter child for a hit test to land on -- without it this layer's own
+        // hit test depends on having a child, which it does not.
+        //
+        // It does not swallow the drag: a bare tap recogniser with no pan beside
+        // it loses the arena to the column's scroll as soon as a finger moves.
+        if (widget.onTapToExpand != null)
+          Positioned.fill(
+            child: GestureDetector(
+              key: const Key('expandRideMapGesture'),
+              behavior: HitTestBehavior.opaque,
+              onTap: widget.onTapToExpand,
+            ),
+          ),
         if (note.isNotEmpty)
           Positioned(
             left: 8,
