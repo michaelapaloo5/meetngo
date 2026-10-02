@@ -10,9 +10,80 @@ class TripRequestFailure implements Exception {
   String toString() => message;
 }
 
+/// The driver's own details, as far as a rider is entitled to them.
+///
+/// Deliberately a distinct type from the driver's `Contact` rather than a shared
+/// one: the two sides of a trip need different fields and, more importantly,
+/// different *failures*. A rider asking about a driver wants to know the car is
+/// coming and who is driving it. Anything less than a name, a car and a plate
+/// is a number they cannot use.
+class DriverContact {
+  const DriverContact({
+    required this.name,
+    required this.phone,
+    required this.callable,
+    required this.carMake,
+    required this.carModel,
+    required this.plate,
+    required this.photoUrl,
+    this.rating,
+  });
+
+  /// What to show when the lookup could not be completed.
+  ///
+  /// A screen with nothing is a broken screen; a screen that says "we could not
+  /// get your driver's details, try again" is a working one.
+  const DriverContact.unavailable()
+    : name = '',
+      phone = '',
+      callable = false,
+      carMake = '',
+      carModel = '',
+      plate = '',
+      photoUrl = '',
+      rating = null;
+
+  final String name;
+  final String phone;
+
+  /// Whether [phone] is one this app is willing to put into a dialler.
+  ///
+  /// Not `phone.isNotEmpty`. A number that is present and malformed is not
+  /// callable, and the server cannot know whether it is a Ghanaian one, so the
+  /// check happens here where `isCallableGhanaPhone` lives -- the same rule the
+  /// driver app applies to the rider.
+  final bool callable;
+
+  final String carMake;
+  final String carModel;
+
+  /// The number plate, which is the thing a rider actually looks for at a rank.
+  final String plate;
+
+  /// The driver's profile picture, or empty for none.
+  final String photoUrl;
+
+  final double? rating;
+
+  /// "Toyota Corolla", or empty when the vehicle is not known.
+  String get car => [carMake, carModel].where((s) => s.isNotEmpty).join(' ');
+
+  /// Whether there is enough here to put a card on screen.
+  bool get hasCar => plate.isNotEmpty || car.isNotEmpty;
+}
+
 abstract class TripRepository {
   Future<Trip?> activeTrip();
   Stream<Trip> watchTrip(String tripId);
+
+  /// How the rider can reach the driver assigned to [tripId].
+  ///
+  /// The `contact` Edge Function answers both directions -- a driver asking
+  /// about their rider and a rider asking about their driver -- and the rider
+  /// direction was built and deployed but **never called from this app**. Both
+  /// tracking buttons were `onPressed: () {}` while this went unused, which is
+  /// the exact pair of facts that let that ship.
+  Future<DriverContact> driverContact(String tripId);
 
   /// The rider's own trips, newest first.
   ///

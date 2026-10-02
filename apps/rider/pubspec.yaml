@@ -42,14 +42,23 @@ dependencies:
   # exists in 5.x. The real 2.x trap: .sm is deprecated, use .spMin.
   # See the "Screenutil is pinned to 5.x" section of README.md.
   flutter_screenutil: ^5.9.3
-  # Auth, Realtime and Edge Functions. `google_maps_flutter` and
-  # `url_launcher` are not direct dependencies of this app: nothing here
-  # imports them, and each is added by the task that does. (`url_launcher` and
-  # `shared_preferences` do appear in pubspec.lock, as transitive dependencies
-  # of supabase_flutter — that is not the same thing as depending on them
-  # here, and it is why this list is read off this file, not the lock.)
+  # Auth, Realtime and Edge Functions. `google_maps_flutter` is not a direct
+  # dependency of this app: nothing here imports it. (`shared_preferences` does
+  # appear in pubspec.lock, as a transitive dependency of supabase_flutter — that
+  # is not the same thing as depending on it here, and it is why this list is
+  # read off this file, not the lock.)
   supabase_flutter: ^2.4.0
   geolocator: ^13.0.1
+  # Added for the rider's Call driver button. The tracking screen's call and
+  # message actions were both `onPressed: () {}` -- live-looking buttons that
+  # did nothing -- while the rider app declined to depend on the one package
+  # that can open a dialler. The comment above used to say the dependency was
+  # absent *because* nothing imported it, which is a true statement about the
+  # code and a false statement about the product: a rider who cannot call their
+  # driver cannot complete a ride that needs them to.
+  #
+  # Same version as the driver app's, so both handsets resolve one copy.
+  url_launcher: ^6.3.1
   # Reverse geocoding for the home screen's location line. Free: no key, no
   # account, no card, which is the only reason it is Nominatim and not Google's.
   # Pure Dart -- no native code, so it cannot affect what the APK links -- and

@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:mng_core/mng_core.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+
 import 'booked_trip.dart';
 import 'function_failure.dart';
 import 'location_service.dart';
@@ -8,7 +9,7 @@ import 'trip_repository.dart';
 
 class SupabaseTripRepository implements TripRepository {
   SupabaseTripRepository(this._client, {LocationService? locations})
-      : _locations = locations ?? const GeolocatorLocationService();
+    : _locations = locations ?? const GeolocatorLocationService();
 
   final SupabaseClient _client;
   final LocationService _locations;
@@ -91,12 +92,15 @@ class SupabaseTripRepository implements TripRepository {
     // `TripStop.fromJson` can parse.
     dynamic data;
     try {
-      final res = await _client.functions.invoke('request-ride', body: {
-        'category': category.name,
-        'promoCode': promoCode,
-        'pickup': {...pickup.toJson(), ...pickup.point.toJson()},
-        'dropoff': {...dropoff.toJson(), ...dropoff.point.toJson()},
-      });
+      final res = await _client.functions.invoke(
+        'request-ride',
+        body: {
+          'category': category.name,
+          'promoCode': promoCode,
+          'pickup': {...pickup.toJson(), ...pickup.point.toJson()},
+          'dropoff': {...dropoff.toJson(), ...dropoff.point.toJson()},
+        },
+      );
       data = res.data;
     } on FunctionException catch (e) {
       throw TripRequestFailure(describeFunctionFailure(e));
@@ -114,14 +118,66 @@ class SupabaseTripRepository implements TripRepository {
   @override
   Future<void> cancelTrip(String tripId) async {
     try {
-      await _client.functions.invoke(
-        'cancel-trip',
-        body: {'tripId': tripId},
-      );
+      await _client.functions.invoke('cancel-trip', body: {'tripId': tripId});
     } on FunctionException catch (e) {
       throw TripRequestFailure(describeFunctionFailure(e));
     }
   }
+
+  @override
+  Future<DriverContact> driverContact(String tripId) async {
+    final Map<String, dynamic> body;
+    try {
+      final res = await _client.functions.invoke(
+        'contact',
+        body: {'tripId': tripId},
+      );
+      // `.data`, not the response itself. `functions_client` 2.7.1 hands back a
+      // `FunctionResponse`, and reading it as if it were the payload gives a
+      // map whose `data` key is the answer -- so `body['name']` is null and the
+      // card renders blank with no error anywhere. This is the second time this
+      // file has been bitten by that shape; the first is `requestRide` above.
+      final data = res.data;
+      if (data is! Map) {
+        throw const TripRequestFailure(
+          'We could not get your driver\'s details just now.',
+        );
+      }
+      body = data.cast<String, dynamic>();
+    } on TripRequestFailure {
+      rethrow;
+    } on FunctionException catch (e) {
+      throw TripRequestFailure(describeFunctionFailure(e));
+    }
+
+    final vehicle = body['vehicle'];
+    final car = vehicle is Map ? vehicle.cast<String, dynamic>() : null;
+
+    return DriverContact(
+      name: _text(body['name']),
+      phone: _text(body['phone']),
+      // Checked here rather than trusted from the payload. `callable` on the
+      // server is "the number is non-empty"; whether it is *dialable* is a
+      // question about Ghanaian numbering, and `isCallableGhanaPhone` is the
+      // rule this project has already agreed on in both apps.
+      callable:
+          body['callable'] == true &&
+          isCallableGhanaPhone(body['phone'] as String?),
+      carMake: _text(car?['make']),
+      carModel: _text(car?['model']),
+      plate: _text(car?['plate']),
+      photoUrl: _text(body['photoUrl']),
+      rating: (body['rating'] as num?)?.toDouble(),
+    );
+  }
+
+  /// A string field, or empty.
+  ///
+  /// Every field of `contact` is optional in practice -- a driver who has never
+  /// set a phone has none, and the vehicle sub-object is absent entirely when
+  /// the trip has no vehicle on it -- and a cast that throws on a missing key
+  /// would turn "this driver has no plate" into a failed screen.
+  static String _text(Object? value) => value is String ? value : '';
 
   @override
   Future<DeviceLocation> locate() => _locations.current();
@@ -153,7 +209,7 @@ class SupabaseTripRepository implements TripRepository {
           // mid-trip has no row, and `.single()` throws on a zero-row read --
           // which would turn "the driver has no position right now" into a
           // thrown error on a screen that has a perfectly good way to render
-      // that. The TripRepository README says the same about trip reads.
+          // that. The TripRepository README says the same about trip reads.
           .limit(1);
     } on PostgrestException {
       // A refused read is not a crash: the policy denies it before a driver is

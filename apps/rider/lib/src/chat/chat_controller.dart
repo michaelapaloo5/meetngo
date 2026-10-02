@@ -81,6 +81,32 @@ class ChatController extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// One booked trip by id, or null when it is not among this rider's trips.
+  ///
+  /// For callers that already know which trip they mean -- the live ride's
+  /// Message button, which is not a choice among a list. Returns null rather
+  /// than throwing, because "this trip is not yours" is an answer the caller has
+  /// to handle and not an exceptional condition.
+  Future<BookedTrip?> bookedTrip(String tripId) async {
+    if (_loadingTrips) return null;
+    _loadingTrips = true;
+    _error = null;
+    notifyListeners();
+    try {
+      final rides = await trips.history(limit: 200);
+      for (final ride in rides) {
+        if (ride.trip.id == tripId) return ride;
+      }
+      return null;
+    } on Object catch (e) {
+      _error = describeFailure(e);
+      return null;
+    } finally {
+      _loadingTrips = false;
+      notifyListeners();
+    }
+  }
+
   Future<void> refresh() async {
     final ride = _open;
     if (ride == null) return;

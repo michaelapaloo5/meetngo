@@ -37,6 +37,10 @@ class _StubProfiles implements ProfileRepository {
 }
 
 class _StubTrips implements TripRepository {
+  @override
+  Future<DriverContact> driverContact(String tripId) async =>
+      const DriverContact.unavailable();
+
   _StubTrips({this.pastTrips = const []});
 
   /// What [history] answers with. Named for the field rather than `history`,

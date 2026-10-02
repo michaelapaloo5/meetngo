@@ -2,13 +2,32 @@ import 'package:flutter/material.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
 import 'package:mng_core/mng_core.dart';
 import 'package:provider/provider.dart';
+
+import '../data/chat_repository.dart';
 import '../map/ride_map.dart';
+import 'driver_contact_sheet.dart';
 import 'tracking_controller.dart';
 import 'widgets/driver_summary.dart';
 import 'widgets/eta_badge.dart';
 
 class TrackingScreen extends StatelessWidget {
-  const TrackingScreen({super.key});
+  const TrackingScreen({super.key, this.onCallDriver, this.onMessageDriver});
+
+  /// Call the assigned driver.
+  ///
+  /// A callback rather than something this screen reaches for, because opening
+  /// a dialler, copying a number and showing a sheet full screen are three
+  /// different decisions and the screen should not own any of them. Null is a
+  /// real state -- a build with no way to reach the other party -- and the
+  /// buttons are *disabled* rather than removed, so the rider can see the
+  /// feature exists and that it is unavailable, which is a different and more
+  /// honest thing than a screen that never had the buttons.
+  final VoidCallback? onCallDriver;
+
+  /// Open the conversation with the assigned driver.
+  ///
+  /// Null for the same reason as [onCallDriver].
+  final VoidCallback? onMessageDriver;
 
   // The `tileProvider` parameter that used to be here is gone with the 2D map.
   // It existed only to hand `flutter_map` a silent tile source under test; the
@@ -85,9 +104,7 @@ class TrackingScreen extends StatelessWidget {
                 padding: EdgeInsets.fromLTRB(20.w, 18.h, 20.w, 12.h),
                 decoration: const BoxDecoration(
                   color: MngColors.page,
-                  borderRadius: BorderRadius.vertical(
-                    top: Radius.circular(24),
-                  ),
+                  borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
                 ),
                 // Scrollable inside the card, because at 2.0 text scale the
                 // address line, the driver card and four buttons are taller
@@ -97,189 +114,247 @@ class TrackingScreen extends StatelessWidget {
                     mainAxisSize: MainAxisSize.min,
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-            Padding(
-              padding: EdgeInsets.symmetric(horizontal: 20.w),
-              child: Row(
-                children: [
-                  // Expanded, so the headline ellipsizes beside the ETA pill
-                  // rather than overflowing the row by 3.5px at 390 logical
-                  // pixels.
-                  Expanded(
-                    child: Text(
-                      _headlines[trip.state] ?? 'Your ride',
-                      overflow: TextOverflow.ellipsis,
-                      style: MngTheme.light.textTheme.titleLarge,
-                    ),
-                  ),
-                  if (c.etaMinutes != null) ...[
-                    SizedBox(width: 10.w),
-                    EtaBadge(minutes: c.etaMinutes!),
-                  ],
-                ],
-              ),
-            ),
-            SizedBox(height: 4.h),
-            Padding(
-              padding: EdgeInsets.symmetric(horizontal: 20.w),
-              child: Text(
-                '${trip.pickup.address} to ${trip.dropoff.address}',
-                style: MngTheme.light.textTheme.bodySmall,
-              ),
-            ),
-            SizedBox(height: 16.h),
-            if (c.driver != null)
-              Padding(
-                padding: EdgeInsets.symmetric(horizontal: 20.w),
-                child: DriverSummary(
-                  driver: c.driver!,
-                  vehicle: c.driverVehicle,
-                ),
-              ),
-            // Shown only while the driver is at the pickup, which is the only
-            // moment the code is asked for. A driver arrives, taps "Arrived at
-            // pickup", and asks the rider to read four digits out loud. Without
-            // this panel the rider has nowhere to read them from and the trip
-            // cannot leave `arriving` at all.
-            //
-            // `pickupOtp` is nullable, and null is shown rather than hidden:
-            // a rider whose code is missing needs to know that, and a panel
-            // that silently does not appear is indistinguishable from a bug.
-            if (trip.state == TripState.arriving) ...[
-              SizedBox(height: 12.h),
-              Padding(
-                padding: EdgeInsets.symmetric(horizontal: 20.w),
-                child: Container(
-                  key: const Key('pickupCodePanel'),
-                  padding: EdgeInsets.symmetric(
-                    horizontal: 16.w,
-                    vertical: 12.h,
-                  ),
-                  decoration: BoxDecoration(
-                    color: MngColors.primary,
-                    borderRadius: BorderRadius.circular(MngRadius.large),
-                  ),
-                  child: Row(
-                    children: [
-                      Expanded(
-                        child: Text(
-                          'Read this out\nto your driver',
-                          style: MngTheme.light.textTheme.bodySmall?.copyWith(
-                            color: MngColors.onPrimary,
-                          ),
+                      Padding(
+                        padding: EdgeInsets.symmetric(horizontal: 20.w),
+                        child: Row(
+                          children: [
+                            // Expanded, so the headline ellipsizes beside the ETA pill
+                            // rather than overflowing the row by 3.5px at 390 logical
+                            // pixels.
+                            Expanded(
+                              child: Text(
+                                _headlines[trip.state] ?? 'Your ride',
+                                overflow: TextOverflow.ellipsis,
+                                style: MngTheme.light.textTheme.titleLarge,
+                              ),
+                            ),
+                            if (c.etaMinutes != null) ...[
+                              SizedBox(width: 10.w),
+                              EtaBadge(minutes: c.etaMinutes!),
+                            ],
+                          ],
                         ),
                       ),
-                      SizedBox(width: 12.w),
-                      // Shown as "Not available" rather than hidden: a rider
-                      // whose trip row predates code minting has none, and a
-                      // panel that silently does not appear is
-                      // indistinguishable from a bug. `Flexible` because that
-                      // placeholder is wider than four digits plus the
-                      // letterspacing, and a bare `Text` here overflows the row
-                      // by 6px at 390 logical pixels.
-                      Flexible(
+                      SizedBox(height: 4.h),
+                      Padding(
+                        padding: EdgeInsets.symmetric(horizontal: 20.w),
                         child: Text(
-                          trip.pickupOtp ?? 'Not available',
-                          key: const Key('pickupCodeText'),
-                          textAlign: TextAlign.right,
-                          overflow: TextOverflow.ellipsis,
-                          style: MngTheme.light.textTheme.titleLarge?.copyWith(
-                            color: MngColors.onPrimary,
-                            letterSpacing: trip.pickupOtp == null ? 0 : 4,
-                          ),
+                          '${trip.pickup.address} to ${trip.dropoff.address}',
+                          style: MngTheme.light.textTheme.bodySmall,
                         ),
                       ),
-                    ],
-                  ),
-                ),
-              ),
-            ],
-            if (c.sosRaised) ...[              SizedBox(height: 12.h),
-              Padding(
-                padding: EdgeInsets.symmetric(horizontal: 20.w),
-                child: Container(
-                  padding: EdgeInsets.all(12.w),
-                  decoration: BoxDecoration(
-                    color: MngColors.error.withValues(alpha: 0.08),
-                    borderRadius: BorderRadius.circular(MngRadius.small),
-                  ),
-                  child: const Text(
-                    'Help is on the way. Our team has your trip.',
-                    style: TextStyle(color: MngColors.error),
-                  ),
-                ),
-              ),
-            ],
-            // Both failure messages, and they are different kinds of thing. The
-            // banner above is only reachable once `raiseSos` has written a row;
-            // this line is where every caught failure lands, which is why the
-            // SOS button stays enabled after a failed press.
-            if (c.error != null) ...[
-              SizedBox(height: 12.h),
-              Padding(
-                padding: EdgeInsets.symmetric(horizontal: 20.w),
-                child: Text(c.error!,
-                    style: const TextStyle(color: MngColors.error)),
-              ),
-            ],
-            // No `Spacer` here any more. It was there to push the buttons to the
-            // bottom of a column stretched to the viewport, which needed the
-            // `IntrinsicHeight` that is now gone. Inside a scroll view its
-            // height is unbounded, so a flex child throws outright:
-            // "RenderFlex children have non-zero flex but incoming height
-            // constraints are unbounded". The card is bottom-anchored and
-            // sized to its content, so it does not need one.
-            Padding(
-              padding: EdgeInsets.symmetric(horizontal: 20.w),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: OutlinedButton.icon(
-                      key: const Key('callButton'),
-                      onPressed: () {},
-                      icon: const Icon(Icons.call, size: 18),
-                      label: const Text('Call'),
-                    ),
-                  ),
-                  SizedBox(width: 10.w),
-                  Expanded(
-                    child: OutlinedButton.icon(
-                      key: const Key('messageButton'),
-                      onPressed: () {},
-                      icon: const Icon(Icons.chat_bubble_outline, size: 18),
-                      label: const Text('Message'),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            SizedBox(height: 10.h),
-            if (canCancel)
-              Padding(
-                padding:
-                    EdgeInsets.fromLTRB(20.w, 0, 20.w, 12.h),
-                child: OutlinedButton(
-                  key: const Key('cancelButton'),
-                  onPressed: c.cancel,
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: MngColors.error,
-                    minimumSize: const Size.fromHeight(48),
-                  ),
-                  child: const Text('Cancel trip'),
-                ),
-              ),
-            Padding(
-              padding: EdgeInsets.fromLTRB(20.w, 0, 20.w, 20.h),
-              child: OutlinedButton.icon(
-                key: const Key('sosButton'),
-                onPressed: c.raiseSos,
-                style: OutlinedButton.styleFrom(
-                  foregroundColor: MngColors.error,
-                  minimumSize: const Size.fromHeight(48),
-                ),
-                icon: const Icon(Icons.shield_outlined, size: 18),
-                label: const Text('Safety'),
-              ),
-            ),
+                      SizedBox(height: 16.h),
+                      if (c.driverContact != null)
+                        Padding(
+                          padding: EdgeInsets.symmetric(horizontal: 20.w),
+                          child: DriverSummary(driver: c.driverContact!),
+                        )
+                      // A rider waiting for a car and told nothing is the worst
+                      // state this screen has. While the lookup is in flight, say
+                      // so, rather than showing a gap where the driver should be
+                      // -- which is what an unconditional null check looks like.
+                      else if (c.driverContactPending)
+                        Padding(
+                          padding: EdgeInsets.symmetric(horizontal: 20.w),
+                          child: Text(
+                            'Getting your driver\'s details...',
+                            key: const Key('driverDetailsPending'),
+                            style: MngTheme.light.textTheme.bodySmall,
+                          ),
+                        )
+                      else if (c.driverContactFailed != null)
+                        Padding(
+                          padding: EdgeInsets.symmetric(horizontal: 20.w),
+                          child: Row(
+                            children: [
+                              Expanded(
+                                child: Text(
+                                  c.driverContactFailed!,
+                                  key: const Key('driverDetailsFailed'),
+                                  style: MngTheme.light.textTheme.bodySmall,
+                                ),
+                              ),
+                              TextButton(
+                                key: const Key('driverDetailsRetry'),
+                                onPressed: c.loadDriverContact,
+                                child: const Text('Try again'),
+                              ),
+                            ],
+                          ),
+                        ),
+                      // Shown only while the driver is at the pickup, which is the only
+                      // moment the code is asked for. A driver arrives, taps "Arrived at
+                      // pickup", and asks the rider to read four digits out loud. Without
+                      // this panel the rider has nowhere to read them from and the trip
+                      // cannot leave `arriving` at all.
+                      //
+                      // `pickupOtp` is nullable, and null is shown rather than hidden:
+                      // a rider whose code is missing needs to know that, and a panel
+                      // that silently does not appear is indistinguishable from a bug.
+                      if (trip.state == TripState.arriving) ...[
+                        SizedBox(height: 12.h),
+                        Padding(
+                          padding: EdgeInsets.symmetric(horizontal: 20.w),
+                          child: Container(
+                            key: const Key('pickupCodePanel'),
+                            padding: EdgeInsets.symmetric(
+                              horizontal: 16.w,
+                              vertical: 12.h,
+                            ),
+                            decoration: BoxDecoration(
+                              color: MngColors.primary,
+                              borderRadius: BorderRadius.circular(
+                                MngRadius.large,
+                              ),
+                            ),
+                            child: Row(
+                              children: [
+                                Expanded(
+                                  child: Text(
+                                    'Read this out\nto your driver',
+                                    style: MngTheme.light.textTheme.bodySmall
+                                        ?.copyWith(color: MngColors.onPrimary),
+                                  ),
+                                ),
+                                SizedBox(width: 12.w),
+                                // Shown as "Not available" rather than hidden: a rider
+                                // whose trip row predates code minting has none, and a
+                                // panel that silently does not appear is
+                                // indistinguishable from a bug. `Flexible` because that
+                                // placeholder is wider than four digits plus the
+                                // letterspacing, and a bare `Text` here overflows the row
+                                // by 6px at 390 logical pixels.
+                                Flexible(
+                                  child: Text(
+                                    trip.pickupOtp ?? 'Not available',
+                                    key: const Key('pickupCodeText'),
+                                    textAlign: TextAlign.right,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: MngTheme.light.textTheme.titleLarge
+                                        ?.copyWith(
+                                          color: MngColors.onPrimary,
+                                          letterSpacing: trip.pickupOtp == null
+                                              ? 0
+                                              : 4,
+                                        ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ],
+                      if (c.sosRaised) ...[
+                        SizedBox(height: 12.h),
+                        Padding(
+                          padding: EdgeInsets.symmetric(horizontal: 20.w),
+                          child: Container(
+                            padding: EdgeInsets.all(12.w),
+                            decoration: BoxDecoration(
+                              color: MngColors.error.withValues(alpha: 0.08),
+                              borderRadius: BorderRadius.circular(
+                                MngRadius.small,
+                              ),
+                            ),
+                            child: const Text(
+                              'Help is on the way. Our team has your trip.',
+                              style: TextStyle(color: MngColors.error),
+                            ),
+                          ),
+                        ),
+                      ],
+                      // Both failure messages, and they are different kinds of thing. The
+                      // banner above is only reachable once `raiseSos` has written a row;
+                      // this line is where every caught failure lands, which is why the
+                      // SOS button stays enabled after a failed press.
+                      if (c.error != null) ...[
+                        SizedBox(height: 12.h),
+                        Padding(
+                          padding: EdgeInsets.symmetric(horizontal: 20.w),
+                          child: Text(
+                            c.error!,
+                            style: const TextStyle(color: MngColors.error),
+                          ),
+                        ),
+                      ],
+                      // No `Spacer` here any more. It was there to push the buttons to the
+                      // bottom of a column stretched to the viewport, which needed the
+                      // `IntrinsicHeight` that is now gone. Inside a scroll view its
+                      // height is unbounded, so a flex child throws outright:
+                      // "RenderFlex children have non-zero flex but incoming height
+                      // constraints are unbounded". The card is bottom-anchored and
+                      // sized to its content, so it does not need one.
+                      Padding(
+                        padding: EdgeInsets.symmetric(horizontal: 20.w),
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: OutlinedButton.icon(
+                                key: const Key('callButton'),
+                                // The `contact` Edge Function, which answers a rider
+                                // asking about their driver as readily as a driver asking
+                                // about their rider. `onPressed: () {}` was here: a
+                                // live-looking button that did nothing, which is worse
+                                // than no button, because a rider who presses it concludes
+                                // the app cannot call and gives up rather than asking
+                                // someone for the number.
+                                onPressed: () => showDriverContactSheet(
+                                  context,
+                                  c.knownDriver,
+                                  loading: c.driverContactPending,
+                                  failed: c.driverContactFailed,
+                                ),
+                                icon: const Icon(Icons.call, size: 18),
+                                label: const Text('Call'),
+                              ),
+                            ),
+                            SizedBox(width: 10.w),
+                            Expanded(
+                              child: OutlinedButton.icon(
+                                key: const Key('messageButton'),
+                                onPressed: () => openDriverChat(
+                                  context,
+                                  trips: c.trips,
+                                  chat: context.read<ChatRepository>(),
+                                  tripId: c.trip?.id,
+                                ),
+                                icon: const Icon(
+                                  Icons.chat_bubble_outline,
+                                  size: 18,
+                                ),
+                                label: const Text('Message'),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      SizedBox(height: 10.h),
+                      if (canCancel)
+                        Padding(
+                          padding: EdgeInsets.fromLTRB(20.w, 0, 20.w, 12.h),
+                          child: OutlinedButton(
+                            key: const Key('cancelButton'),
+                            onPressed: c.cancel,
+                            style: OutlinedButton.styleFrom(
+                              foregroundColor: MngColors.error,
+                              minimumSize: const Size.fromHeight(48),
+                            ),
+                            child: const Text('Cancel trip'),
+                          ),
+                        ),
+                      Padding(
+                        padding: EdgeInsets.fromLTRB(20.w, 0, 20.w, 20.h),
+                        child: OutlinedButton.icon(
+                          key: const Key('sosButton'),
+                          onPressed: c.raiseSos,
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: MngColors.error,
+                            minimumSize: const Size.fromHeight(48),
+                          ),
+                          icon: const Icon(Icons.shield_outlined, size: 18),
+                          label: const Text('Safety'),
+                        ),
+                      ),
                     ],
                   ),
                 ),

@@ -85,6 +85,10 @@ class FakeTripFunctions implements TripFunctions {
 }
 
 class FakeTripRepository implements TripRepository {
+  @override
+  Future<DriverContact> driverContact(String tripId) async =>
+      const DriverContact.unavailable();
+
 
   @override
   Future<List<BookedTrip>> history({int limit = 50}) async => const [];

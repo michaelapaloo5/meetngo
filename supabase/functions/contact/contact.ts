@@ -50,6 +50,31 @@ export interface ContactResponse {
   callable: boolean;
   /** The name on the other party's profile, for "call Michael". */
   name: string;
+  /**
+   * The driver's public face, and only ever a driver's.
+   *
+   * A rider standing at a rank needs to identify a car: the name on the profile,
+   * the picture on it, the make and model, and above all the plate, which is the
+   * one thing they can read off the windscreen from ten metres away. Without
+   * these a rider has a phone number and no way to know who is about to answer
+   * it.
+   *
+   * Omitted -- rather than null or empty -- when the caller is a driver, or when
+   * the other party is a rider, or when there is no vehicle on the trip. A rider's
+   * selfie, rating and card stay unreadable in the driver direction on purpose,
+   * and a response that carried those fields as empty strings would make "we
+   * chose not to send this" indistinguishable from "this person has none".
+   */
+  driver?: {
+    name: string;
+    photoUrl: string;
+    rating: number | null;
+    vehicle: {
+      make: string;
+      model: string;
+      plate: string;
+    } | null;
+  };
 }
 
 export type ContactDeps = {
@@ -64,6 +89,13 @@ export type ContactDeps = {
     trip: { rider_id: string; driver_id: string | null } | null;
     otherName: string;
     otherPhone: string;
+    /**
+     * The other party's rating and photo, and their vehicle. Read only when the
+     * caller is a rider and the other party is the driver, which is the one
+     * direction a rider genuinely needs this in.
+     */
+    otherProfile?: { photoUrl: string; rating: number | null };
+    otherVehicle?: { make: string; model: string; plate: string } | null;
   } | null>;
 };
 
@@ -133,6 +165,26 @@ export async function handleContact(
       // read them out, rather than opening a dialler onto nothing.
       callable: typeof otherPhone === 'string' && otherPhone.length > 0,
       name: otherName,
+      // Rider-asking-about-the-driver only, and only when there is something to
+      // say. Built here rather than in the lookup so the rule "a driver never
+      // receives these" is stated in the one place that decides what a response
+      // contains.
+      ...(isRider && found.otherProfile
+        ? {
+          driver: {
+            name: otherName,
+            photoUrl: found.otherProfile.photoUrl,
+            rating: found.otherProfile.rating,
+            vehicle: found.otherVehicle
+              ? {
+                make: found.otherVehicle.make,
+                model: found.otherVehicle.model,
+                plate: found.otherVehicle.plate,
+              }
+              : null,
+          },
+        }
+        : {}),
     },
   };
 }

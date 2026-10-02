@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -98,6 +100,46 @@ class FakeTripRepository implements TripRepository {
   /// Where the assigned driver is, for the tests that draw the car.
   VehicleFix? driverPoint;
 
+  /// What the `contact` function answers with.
+  ///
+  /// Null means "the lookup found nothing", which is a different state from
+  /// "nobody asked", so the default below is a full driver rather than null: the
+  /// tests that are not about this card should not have to arrange for it.
+  DriverContact? contact;
+
+  /// Held open to model a lookup that has not answered yet.
+  ///
+  /// Needed because the controller fetches the driver the moment it is
+  /// constructed, so a test for the *pending* state cannot get there by simply
+  /// not calling anything -- the request is already in flight.
+  Completer<DriverContact>? gate;
+
+  /// How many times the lookup was asked for.
+  int driverContactCalls = 0;
+
+  /// Thrown by the lookup when set.
+  Object? driverContactFailure;
+
+  @override
+  Future<DriverContact> driverContact(String tripId) async {
+    driverContactCalls++;
+    final held = gate;
+    if (held != null) return held.future;
+    final failure = driverContactFailure;
+    if (failure != null) throw failure;
+    return contact ??
+        const DriverContact(
+          name: 'Jane Cooper',
+          phone: '0240000000',
+          callable: true,
+          carMake: 'Toyota',
+          carModel: 'Corolla',
+          plate: 'GR-1234-22',
+          photoUrl: '',
+          rating: 4.8,
+        );
+  }
+
   @override
   Future<Trip?> activeTrip() async {
     final failure = refreshFailure;
@@ -157,22 +199,29 @@ class FakeTrackingController extends TrackingController {
   /// `initialTrip` is a parameter because the controller seeds `etaMinutes` from
   /// it, and a test that cannot hand the constructor a trip carrying a
   /// particular `eta_minutes` cannot pin the seeding at all.
-  FakeTrackingController(this.state, [Trip? initialTrip])
+  FakeTrackingController(this.state, [Trip? initialTrip, TripRepository? repo])
     : super(
-        trips: FakeTripRepository(),
+        trips: repo ?? FakeTripRepository(),
         initialTrip: initialTrip ?? tripInState(state),
-      ) {
-    driver = const DriverProfile(
-      id: 'd1',
-      fullName: 'Jane Cooper',
-      phone: '0240000000',
-      photoUrl: '',
-      rating: 4.8,
-      tripCount: 148,
-      kyc: KycStatus.approved,
-      availability: DriverAvailability.onTrip,
-    );
-  }
+      );
+
+  /// The driver's card, as the `contact` function answers it.
+  ///
+  /// A `DriverContact` rather than a `DriverProfile` and a `Vehicle`, because
+  /// those are the types this card used to take and neither could ever be
+  /// populated in production: the rider app is allowed to read neither
+  /// `profiles` nor `vehicles`. The previous fixture asserted against a driver
+  /// the app had no way to load.
+  DriverContact get driver => const DriverContact(
+    name: 'Jane Cooper',
+    phone: '0240000000',
+    callable: true,
+    carMake: 'Toyota',
+    carModel: 'Corolla',
+    plate: 'GR-1234-22',
+    photoUrl: '',
+    rating: 4.8,
+  );
 
   final TripState state;
 
@@ -241,11 +290,126 @@ void main() {
 
   testWidgets('driver name, rating and car are summarised', (tester) async {
     useDesignSurface(tester);
-    await tester.pumpWidget(
-      wrapTracking(FakeTrackingController(TripState.arriving)),
-    );
+    final c = FakeTrackingController(TripState.arriving)
+      ..driverContact = const DriverContact(
+        name: 'Jane Cooper',
+        phone: '0240000000',
+        callable: true,
+        carMake: 'Toyota',
+        carModel: 'Corolla',
+        plate: 'GR-1234-22',
+        photoUrl: '',
+        rating: 4.8,
+      );
+    await tester.pumpWidget(wrapTracking(c));
     expect(find.text('Jane Cooper'), findsOneWidget);
     expect(find.text('4.8'), findsOneWidget);
+    expect(find.text('Toyota Corolla'), findsOneWidget);
+    expect(find.text('GR-1234-22'), findsOneWidget);
+  });
+
+  testWidgets('the card says it is looking while the lookup is in flight', (
+    tester,
+  ) async {
+    useDesignSurface(tester);
+    // The lookup is held open, because the controller fetches the driver the
+    // moment it is constructed -- there is no state where "nobody has asked".
+    final repo = FakeTripRepository()..gate = Completer<DriverContact>();
+    final c = FakeTrackingController(TripState.matched, null, repo);
+    await tester.pumpWidget(wrapTracking(c));
+    await tester.pump();
+
+    // A gap where the driver should be is how the rider is told there is no
+    // driver, when the truth is that we are still asking.
+    expect(find.byKey(const Key('driverDetailsPending')), findsOneWidget);
+    expect(find.text('Jane Cooper'), findsNothing);
+
+    repo.gate!.complete(
+      repo.contact ??
+          const DriverContact(
+            name: 'Jane Cooper',
+            phone: '0240000000',
+            callable: true,
+            carMake: 'Toyota',
+            carModel: 'Corolla',
+            plate: 'GR-1234-22',
+            photoUrl: '',
+            rating: 4.8,
+          ),
+    );
+    await tester.pump();
+    await tester.pump();
+    expect(find.text('Jane Cooper'), findsOneWidget);
+  });
+
+  testWidgets('a driver who is assigned is looked up, and only once', (
+    tester,
+  ) async {
+    useDesignSurface(tester);
+    final c = FakeTrackingController(TripState.matched);
+    await tester.pumpWidget(wrapTracking(c));
+    await tester.pump();
+
+    expect(c.repo.driverContactCalls, 1);
+    expect(find.text('Jane Cooper'), findsOneWidget);
+
+    // Three seconds later, on the next poll: the answer cannot have changed
+    // during a ride, so this must not cost a round trip every three seconds.
+    await c.refresh();
+    await tester.pump();
+    expect(c.repo.driverContactCalls, 1);
+  });
+
+  testWidgets('a failed driver lookup is offered again rather than left blank', (
+    tester,
+  ) async {
+    useDesignSurface(tester);
+    final repo = FakeTripRepository()
+      ..driverContactFailure = const TripRequestFailure('no such trip');
+    final c = FakeTrackingController(TripState.matched, null, repo);
+    await tester.pumpWidget(wrapTracking(c));
+    await tester.pump();
+
+    expect(find.byKey(const Key('driverDetailsFailed')), findsOneWidget);
+    expect(find.text('no such trip'), findsOneWidget);
+
+    // And the retry works, rather than the failure being permanent because the
+    // first attempt set a flag nothing clears.
+    repo.driverContactFailure = null;
+    await tester.tap(find.byKey(const Key('driverDetailsRetry')));
+    await tester.pump();
+    await tester.pump();
+    expect(find.text('Jane Cooper'), findsOneWidget);
+  });
+
+  testWidgets('a driver replaced mid-ride is looked up again', (tester) async {
+    useDesignSurface(tester);
+    final c = FakeTrackingController(TripState.matched);
+    await tester.pumpWidget(wrapTracking(c));
+    await tester.pump();
+    expect(c.repo.driverContactCalls, 1);
+
+    c.repo
+      ..contact = const DriverContact(
+        name: 'New Driver',
+        phone: '0240000001',
+        callable: true,
+        carMake: 'Nissan',
+        carModel: 'Note',
+        plate: 'GR-9999-23',
+        photoUrl: '',
+        rating: 5,
+      )
+      ..active = tripInState(TripState.matched).copyWith(driverId: 'd2');
+    await c.refresh();
+    await tester.pump();
+
+    // Showing the first driver's plate while a second driver approaches is the
+    // one stale-data outcome worse than showing none: the rider would be looking
+    // for the wrong car.
+    expect(c.repo.driverContactCalls, 2);
+    expect(find.text('New Driver'), findsOneWidget);
+    expect(find.text('Jane Cooper'), findsNothing);
   });
 
   testWidgets('call, message and cancel actions are all present', (
@@ -316,16 +480,15 @@ void main() {
   ) async {
     useDesignSurface(tester);
     final c = FakeTrackingController(TripState.arriving)
-      ..driverVehicle = const Vehicle(
-        id: 'v1',
-        ownerId: 'd1',
-        category: VehicleCategory.sedan,
-        make: 'Toyota',
-        model: 'Corolla',
+      ..driverContact = const DriverContact(
+        name: 'Jane Cooper',
+        phone: '0240000000',
+        callable: true,
+        carMake: 'Toyota',
+        carModel: 'Corolla',
         plate: 'GR-1234-22',
-        seats: 4,
         photoUrl: '',
-        rideCategory: RideCategory.standard,
+        rating: 4.8,
       );
     await tester.pumpWidget(wrapTracking(c));
     expect(find.text('Toyota Corolla'), findsOneWidget);
@@ -614,16 +777,15 @@ void main() {
     addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
     final c = FakeTrackingController(TripState.arriving)
       ..etaMinutes = 4
-      ..driverVehicle = const Vehicle(
-        id: 'v1',
-        ownerId: 'd1',
-        category: VehicleCategory.sedan,
-        make: 'Toyota',
-        model: 'Corolla',
+      ..driverContact = const DriverContact(
+        name: 'Jane Cooper',
+        phone: '0240000000',
+        callable: true,
+        carMake: 'Toyota',
+        carModel: 'Corolla',
         plate: 'GR-1234-22',
-        seats: 4,
         photoUrl: '',
-        rideCategory: RideCategory.standard,
+        rating: 4.8,
       );
     await tester.pumpWidget(wrapTracking(c));
     expect(tester.takeException(), isNull);

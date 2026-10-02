@@ -53,6 +53,18 @@ class _RiderShellState extends State<RiderShell> {
   Timer? _poll;
   bool _completing = false;
 
+  /// The tracking screen's controller, owned here rather than created by the
+  /// provider below it.
+  ///
+  /// Owned here because `_tick` has to hand it the fresh row on every poll, and
+  /// a controller created inside `ChangeNotifierProvider(create: ...)` is not
+  /// reachable from anywhere else. That was the whole of the tracking screen's
+  /// failure: the shell polled every three seconds, the screen listened to a
+  /// controller nobody ever told anything, and so the headline, the ETA, the
+  /// pickup OTP panel and the driver's car all sat on the state the trip had at
+  /// the moment it was created.
+  TrackingController? _tracking;
+
   /// The rider's own position for the home line and the two map screens, read
   /// once on launch and again when the search sheet opens and when a trip is
   /// booked. Held rather than read inside the screens so a rider who declined
@@ -119,6 +131,10 @@ class _RiderShellState extends State<RiderShell> {
   @override
   void dispose() {
     _stopPolling();
+    // Disposed here because it is created here. Left to the provider it would
+    // still be disposed on sign-out, but only by luck of the widget tree.
+    _tracking?.dispose();
+    _tracking = null;
     super.dispose();
   }
 
@@ -146,12 +162,37 @@ class _RiderShellState extends State<RiderShell> {
         _trip = fresh;
         _stage = _Stage.tracking;
       });
+      // Built here rather than in `build`, so the shell holds the same instance
+      // it hands to the provider below and that `_tick` can update. A
+      // `ChangeNotifierProvider(create: ...)` is a *different* object to the one
+      // the poll needs to talk to, which is exactly how this screen ended up
+      // frozen while the shell carried on polling every three seconds.
+      _tracking?.dispose();
+      _tracking = TrackingController(
+        trips: context.read<TripRepository>(),
+        initialTrip: fresh,
+      );
       _startPolling();
-    } else if (_stage == _Stage.tracking && fresh.state == TripState.completed) {
+    } else if (_stage == _Stage.tracking &&
+        fresh.state == TripState.completed) {
       _stopPolling();
+      _tracking?.dispose();
+      _tracking = null;
       await _openReceipt(fresh);
     } else if (_stage == _Stage.tracking) {
       setState(() => _trip = fresh);
+      // The controller is handed the fresh row rather than reading it again.
+      //
+      // Without this the tracking screen showed the state of the trip at the
+      // moment it was created, for the whole ride: the headline never advanced,
+      // the pickup OTP panel could never appear, the ETA was pinned, and the
+      // driver's car was never drawn -- because `refresh()` had no callers in
+      // `lib/` at all and `driverPoint` is only ever read from there.
+      //
+      // One read, two consumers: the shell decides the stage, the controller
+      // updates the screen it owns.
+      final tracking = _tracking;
+      if (tracking != null) await tracking.sync(fresh);
     }
   }
 
@@ -280,7 +321,9 @@ class _RiderShellState extends State<RiderShell> {
     final state = controller.paymentState;
     setState(() => _completing = false);
     if (settlement == null || state == null) {
-      _toast(controller.error ?? 'The trip finished but the receipt did not load');
+      _toast(
+        controller.error ?? 'The trip finished but the receipt did not load',
+      );
       return;
     }
     await Navigator.of(context).push(
@@ -289,10 +332,8 @@ class _RiderShellState extends State<RiderShell> {
           trip: trip,
           settlement: settlement,
           paymentState: state,
-          onRated: (stars, comment) => controller.complete(
-            stars: stars,
-            comment: comment,
-          ),
+          onRated: (stars, comment) =>
+              controller.complete(stars: stars, comment: comment),
         ),
       ),
     );
@@ -347,13 +388,22 @@ class _RiderShellState extends State<RiderShell> {
         onCancelSearch: _cancelTrip,
       );
     } else if (_stage == _Stage.tracking && trip != null) {
-      body = ChangeNotifierProvider<TrackingController>(
-        create: (_) => TrackingController(
-          trips: context.read<TripRepository>(),
-          initialTrip: trip,
-        ),
-        child: const TrackingScreen(),
-      );
+      // `.value`, not `create:`. The controller is owned by this State so the
+      // three-second poll can reach it; a `create:` would build a second
+      // instance every time this branch rebuilt and throw the first away, and
+      // the copy on screen would be the one nothing ever updates.
+      final tracking = _tracking;
+      if (tracking == null) {
+        // Only reachable in the build that follows the stage change, before
+        // `_tick` has run again. Rendered rather than asserted, because a blank
+        // screen on a live ride is the worst thing this file could do.
+        body = const Center(child: CircularProgressIndicator());
+      } else {
+        body = ChangeNotifierProvider<TrackingController>.value(
+          value: tracking,
+          child: const TrackingScreen(),
+        );
+      }
     } else {
       body = _tabBody();
     }
@@ -406,15 +456,14 @@ class _RiderShellState extends State<RiderShell> {
   }
 
   Widget _home() => HomeScreen(
-        riderName: context.watch<RiderProfileController>().greetingName,
-        promoCode: kPromoCode,
-        location: _location,
-        place: _place,
-        recentRides: _recentRides,
-        onSearchTap: (_, {bool promo = false}) =>
-            _openRouteEntry(promo: promo),
-        onNotificationsTap: (_) => _openNotifications(),
-      );
+    riderName: context.watch<RiderProfileController>().greetingName,
+    promoCode: kPromoCode,
+    location: _location,
+    place: _place,
+    recentRides: _recentRides,
+    onSearchTap: (_, {bool promo = false}) => _openRouteEntry(promo: promo),
+    onNotificationsTap: (_) => _openNotifications(),
+  );
 
   /// The rider's last few trips for the home screen.
   ///
@@ -464,7 +513,9 @@ class _RiderShellState extends State<RiderShell> {
                         Icon(
                           _iconFor(i),
                           size: 22,
-                          color: _tab == i ? MngColors.primary : MngColors.textSub,
+                          color: _tab == i
+                              ? MngColors.primary
+                              : MngColors.textSub,
                         ),
                         SizedBox(height: 3.h),
                         Text(

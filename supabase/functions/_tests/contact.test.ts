@@ -8,6 +8,10 @@ import {
 } from '../contact/contact.ts';
 
 // What `buildContactLookup` would find for a trip the caller IS on.
+//
+// `otherProfile` and `otherVehicle` are absent by default, which is the
+// driver-asking case: `buildContactLookup` returns early in that direction, so
+// the fields never come back and the response carries no `driver` object at all.
 function lookupFor(tripId: string, callerId: string, other: { name?: string; phone?: string } = {}) {
   return async (askedTripId: string, askedCaller: string) => {
     assertEquals(askedTripId, tripId);
@@ -18,6 +22,27 @@ function lookupFor(tripId: string, callerId: string, other: { name?: string; pho
       otherPhone: other.phone ?? '0241234567',
     };
   };
+}
+
+/// A rider asking about the driver: the lookup returns the extra fields.
+function riderLookup(
+  over: {
+    name?: string;
+    phone?: string;
+    photoUrl?: string;
+    rating?: number | null;
+    vehicle?: { make: string; model: string; plate: string } | null;
+  } = {},
+) {
+  return async () => ({
+    trip: { rider_id: 'rider-1', driver_id: 'driver-1' },
+    otherName: over.name ?? 'Michael Apaloo',
+    otherPhone: over.phone ?? '0241234567',
+    otherProfile: { photoUrl: over.photoUrl ?? '', rating: over.rating ?? null },
+    otherVehicle: over.vehicle === undefined
+      ? { make: 'Toyota', model: 'Corolla', plate: 'GR-1234-22' }
+      : over.vehicle,
+  });
 }
 
 const deps = (over: Partial<ContactDeps> = {}): ContactDeps => ({
@@ -47,6 +72,63 @@ Deno.test('a rider gets the driver\'s number', async () => {
   assertEquals(r.status, 200);
   assertEquals((r.body as { role: string }).role, 'driver');
   assertEquals((r.body as { phone: string }).phone, '0559988776');
+});
+
+Deno.test('a rider gets the driver\'s car and photo, not just a number', async () => {
+  // The thing a rider standing at a rank actually needs: a name, a face, and a
+  // plate they can read off a windscreen. Before this, the rider direction
+  // answered with a phone number alone, so the tracking screen had nothing to
+  // draw and the driver card never rendered.
+  const r = await handleContact('t1', deps({
+    callerId: 'rider-1',
+    lookup: riderLookup({
+      name: 'Michael Apaloo',
+      photoUrl: 'https://example.test/michael.jpg',
+      rating: 4.8,
+    }),
+  }));
+  assertEquals(r.status, 200);
+  const driver = (r.body as { driver: Record<string, unknown> }).driver;
+  assertEquals(driver.name, 'Michael Apaloo');
+  assertEquals(driver.photoUrl, 'https://example.test/michael.jpg');
+  assertEquals(driver.rating, 4.8);
+  assertEquals(
+    (driver.vehicle as Record<string, string>).plate,
+    'GR-1234-22',
+  );
+});
+
+Deno.test('a driver never receives the rider\'s photo or rating', async () => {
+  // Asymmetric on purpose. A rider needs to identify their driver; a driver does
+  // not need the rider's photograph, and a response that carried those fields as
+  // empty strings would make "we chose not to send this" indistinguishable from
+  // "this person has none". Absent, not empty.
+  const r = await handleContact('t1', deps({
+    callerId: 'driver-1',
+    lookup: async () => ({
+      trip: { rider_id: 'rider-1', driver_id: 'driver-1' },
+      otherName: 'Ama Boateng',
+      otherPhone: '0559988776',
+      otherProfile: { photoUrl: 'https://example.test/ama.jpg', rating: 5 },
+      otherVehicle: { make: 'Toyota', model: 'Corolla', plate: 'GR-9999-22' },
+    }),
+  }));
+  assertEquals(r.status, 200);
+  assertEquals('driver' in (r.body as object), false);
+});
+
+Deno.test('a driver with no vehicle gives the rider a name and nothing else', async () => {
+  // No car yet is a real state: `trips.vehicle_id` is null until a driver
+  // accepts. The rider's card must still work rather than fail, because there
+  // is a driver and a number and those are worth showing.
+  const r = await handleContact('t1', deps({
+    callerId: 'rider-1',
+    lookup: riderLookup({ vehicle: null }),
+  }));
+  assertEquals(r.status, 200);
+  const driver = (r.body as { driver: Record<string, unknown> }).driver;
+  assertEquals(driver.name, 'Michael Apaloo');
+  assertEquals(driver.vehicle, null);
 });
 
 Deno.test('the number is the stored string, not a tel: URI or a formatted one', async () => {

@@ -37,7 +37,7 @@ export function buildContactLookup(
     // not on the trip is a zero row, not an error condition worth surfacing.
     const { data: tripRow, error: tripError } = await service
       .from('trips')
-      .select('id, rider_id, driver_id')
+      .select('id, rider_id, driver_id, vehicle_id')
       .eq('id', tripId)
       .or(`rider_id.eq.${callerId},driver_id.eq.${callerId}`)
       .maybeSingle();
@@ -60,21 +60,60 @@ export function buildContactLookup(
     // product that deliberately does, and it is why the trip membership check
     // above is not optional.
     //
-    // `full_name` and `phone` only. Not the card fields, not the selfie, not the
-    // rating: this function's job is a phone number, and a function that reads
-    // more than it needs is a function whose future reader cannot tell what it
-    // is allowed to see.
+    // Named columns, never `select('*')`. This function reads another user's
+    // row, so the list of columns here *is* the list of things this product is
+    // allowed to hand a stranger, and it has to be readable in one line: a
+    // rider's Ghana card and selfie must never appear in it.
+    //
+    // `photo_url` and `rating` are read only in the rider-asking direction (see
+    // below). The phone number and the name are read in both, because both
+    // parties need to reach each other; a rating is a rider-facing thing.
     const { data: profile, error: profileError } = await service
       .from('profiles')
-      .select('full_name, phone')
+      .select('full_name, phone, photo_url, rating')
       .eq('id', otherId)
       .maybeSingle();
     if (profileError) throw new Error(profileError.message);
 
-    return {
+    const base = {
       trip: tripRow as { rider_id: string; driver_id: string | null },
       otherName: (profile?.full_name ?? '').toString(),
       otherPhone: (profile?.phone ?? '').toString(),
+    };
+
+    // A driver asking about a rider stops here. Not "the fields come back
+    // empty" -- they are not read at all, so there is no path by which a rider's
+    // photo or rating could reach a driver's app even by accident.
+    if (tripRow.rider_id !== callerId) return base;
+
+    // The driver's vehicle, if the trip has one. `trips.vehicle_id` is set when
+    // the driver accepts, so this is null for a trip that has not been taken up
+    // yet, and the rider's card then shows a name and a number and nothing to
+    // identify a car by -- which is honest, because there is no car yet.
+    let vehicle: { make: string; model: string; plate: string } | null = null;
+    if (tripRow.vehicle_id) {
+      const { data: car, error: carError } = await service
+        .from('vehicles')
+        .select('make, model, plate')
+        .eq('id', tripRow.vehicle_id)
+        .maybeSingle();
+      if (carError) throw new Error(carError.message);
+      if (car) {
+        vehicle = {
+          make: (car.make ?? '').toString(),
+          model: (car.model ?? '').toString(),
+          plate: (car.plate ?? '').toString(),
+        };
+      }
+    }
+
+    return {
+      ...base,
+      otherProfile: {
+        photoUrl: (profile?.photo_url ?? '').toString(),
+        rating: typeof profile?.rating === 'number' ? profile.rating : null,
+      },
+      otherVehicle: vehicle,
     };
   };
 }
