@@ -34,6 +34,11 @@ const trip = (await sql(`select t.id, t.fare_ghs, t.category, t.state, p.full_na
 if (!trip) { console.error('no ride waiting for a driver; book one on the handset first'); process.exit(1); }
 console.log(`ride ${trip.id}  state=${trip.state}  fare=${trip.fare_ghs}  rider=${trip.rider}`);
 
+// `vehicles.plate` is globally unique, so the plate has to be unique per run.
+// A fixed one meant the second run of this script died on the constraint before it
+// accepted anything at all -- and the failure looked like "the driver never
+// accepted" rather than "the plate was taken", which is how it cost a cycle.
+const PLATE = `${MARK.toUpperCase()}-${Date.now() % 100000}`;
 const email = `${MARK}-driver-${Date.now()}@example.test`;
 const signed = await (await fetch(url + '/auth/v1/signup', {
   method:'POST', headers:{apikey:ANON,'Content-Type':'application/json'},
@@ -46,7 +51,7 @@ if (!driverId) throw new Error('signed up but absent from auth.users');
 await sql(`update profiles set role='driver', kyc_status='approved', availability='online',
   phone='0200000001', full_name='${MARK} driver' where id='${driverId}'`);
 const vehicle = (await sql(`insert into vehicles (owner_id, vehicle_category, make, model, plate, seats, approved, ride_category)
-  values ('${driverId}','sedan','Toyota','Corolla','${MARK.toUpperCase()}',4,true,'${trip.category}') returning id`))[0];
+  values ('${driverId}','sedan','Toyota','Corolla','${PLATE}',4,true,'${trip.category}') returning id`))[0];
 await sql(`update profiles set vehicle_id='${vehicle.id}' where id='${driverId}'`);
 await sql(`insert into driver_locations (driver_id, point, heading)
   values ('${driverId}', st_makepoint(5.5639,-0.1950), 0)`);
