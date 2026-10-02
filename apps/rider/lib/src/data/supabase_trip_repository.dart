@@ -76,23 +76,41 @@ class SupabaseTripRepository implements TripRepository {
     // `limit` is bound by the caller-supplied value, so it is clamped rather
     // than passed through: an unbounded `.select()` on a rider with a long
     // history is a response the phone cannot hold, and this is a list view.
-    // dynamic on purpose. The client's type is inferred from the first call in
-    // the chain as PostgrestTransformBuilder, which has no eq -- the filter
-    // methods appear on the builder you get *back*. So a non-dynamic variable
-    // cannot be reassigned to .eq(...) and the filters below cannot compile.
-    dynamic query = _client
-        .from('trips')
-        .select()
-        .eq('rider_id', user.id)
-        .order('created_at', ascending: false)
-        .limit(limit.clamp(1, 200));
+    //
+    // **Filters first, then order and limit.** Not the other way round, and not
+    // with the variable typed `dynamic`.
+    //
+    // Dart infers a builder's type from the whole chain in the initialiser, and
+    // `.order()`/`.limit()` return a `PostgrestTransformBuilder` while `.eq()`
+    // and `.gte()` only exist on the `PostgrestFilterBuilder` you get *back*.
+    // So putting the ordering in the initialiser made the later `.eq()` calls a
+    // compile error, and silencing that with `dynamic` moved the failure to
+    // runtime: `await` on a `dynamic` is a dynamic invocation, the call threw a
+    // `TypeError`, and every rider saw "Your rides did not load" with no clue
+    // why. Found by installing it.
+    //
+    // Chaining the filters straight after the first `.eq()` keeps the type
+    // `var` already inferred. The order and limit are applied inside a local
+    // function and the result is awaited as a concrete `Future`, because
+    // `.order().limit()` returns a *different* builder type and reassigning it
+    // over the filtered one is a type error -- which is the same mistake as the
+    // `dynamic` one, only noisier.
+    Future<List<Map<String, dynamic>>> run() async {
+      var q = _client.from('trips').select().eq('rider_id', user.id);
+      if (state != null) {
+        q = q.eq('state', state.name);
+      }
+      if (since != null) {
+        q = q.gte('created_at', since.toUtc().toIso8601String());
+      }
+      return q
+          .order('created_at', ascending: false)
+          // `.toInt()` because `num.clamp` is typed `num` and `limit` wants an
+          // `int`. Harmless at runtime -- the value already is one -- but a
+          // `dynamic` chain stops checking it.
+          .limit(limit.clamp(1, 200).toInt());
+    }
 
-    if (state != null) {
-      query = query.eq('state', state.name);
-    }
-    if (since != null) {
-      query = query.gte('created_at', since.toUtc().toIso8601String());
-    }
     // PostgREST `like`, not `ilike`, on an embedded jsonb column would need the
     // arrow operators and the column is nested. Filtering on the two place names
     // is therefore done **here**, after the rows come back, rather than in the
@@ -102,7 +120,7 @@ class SupabaseTripRepository implements TripRepository {
     // database still returns at most 200 rows, so filtering afterwards is
     // filtering a bounded set. It is not sound without the clamp, which is why
     // the clamp is not a default the caller can widen past 200.
-    final rows = await query;
+    final rows = await run();
     final all = rows.map(BookedTrip.fromRow).toList();
     final needle = search?.trim().toLowerCase() ?? '';
     if (needle.isEmpty) return all;
