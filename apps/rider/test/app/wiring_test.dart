@@ -53,7 +53,12 @@ class _StubTrips implements TripRepository {
   int historyCalls = 0;
 
   @override
-  Future<List<BookedTrip>> history({int limit = 50}) async {
+  Future<List<BookedTrip>> history({
+    int limit = 50,
+    TripState? state,
+    DateTime? since,
+    String? search,
+  }) async {
     historyCalls++;
     return pastTrips.take(limit).toList();
   }

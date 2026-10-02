@@ -320,12 +320,38 @@ class _RiderShellState extends State<RiderShell> {
     final settlement = controller.settlement;
     final state = controller.paymentState;
     setState(() => _completing = false);
+
+    // **Leave the ride before showing anything**, and this ordering is the fix.
+    //
+    // The stage was cleared *after* the receipt was popped, so the two early
+    // returns below -- and any throw -- left the rider on `TrackingScreen`
+    // forever: polling stopped, the nav bar stayed hidden, the screen kept
+    // saying what it said when it was first built, and the system back gesture
+    // had nothing to pop to. A rider whose trip was over could not get out.
+    //
+    // Clearing first costs nothing: the receipt is a pushed route over the
+    // shell, and the shell underneath it is meant to be the ride list.
+    _stopPolling();
+    flow.reset();
+    setState(() {
+      _trip = null;
+      _stage = _Stage.idle;
+    });
+    if (!mounted) return;
+
     if (settlement == null || state == null) {
-      _toast(
-        controller.error ?? 'The trip finished but the receipt did not load',
-      );
+      // No receipt to show. That is a real state -- most often because the
+      // *driver* completed the trip and this call is the rider trying to
+      // complete it a second time -- and the rider still has to be told the ride
+      // is finished and be shown where it went.
+      //
+      // The old behaviour here was a toast and nothing else, which left them
+      // looking at a ride that would never change again.
+      _toast(controller.error ?? 'Your ride has finished.');
+      setState(() => _tab = 1);
       return;
     }
+
     await Navigator.of(context).push(
       MaterialPageRoute<void>(
         builder: (_) => ReceiptScreen(
@@ -337,13 +363,6 @@ class _RiderShellState extends State<RiderShell> {
         ),
       ),
     );
-    if (!mounted) return;
-    _stopPolling();
-    context.read<RiderFlow>().reset();
-    setState(() {
-      _trip = null;
-      _stage = _Stage.idle;
-    });
   }
 
   Future<void> _cancelTrip() async {

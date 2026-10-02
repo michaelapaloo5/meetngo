@@ -93,7 +93,23 @@ abstract class TripRepository {
   /// ORed together by RLS) and a rider who is also the assigned driver of
   /// someone else's trip would otherwise get that trip into their booking
   /// history.
-  Future<List<BookedTrip>> history({int limit = 50});
+  /// The rider's own trips, newest first, filtered.
+  ///
+  /// Every filter is nullable and they combine with AND, so a rider can ask for
+  /// "completed rides from this month" without the controller composing a filter
+  /// string. The composition happens here, in Dart, where it can be tested --
+  /// rather than in a PostgREST `.or()` that the rider's own typed text reaches.
+  ///
+  /// [search] matches the two place names, case-insensitively. It is escaped
+  /// before it reaches the query: an unescaped `%` or `,` in a search box would
+  /// otherwise change what the query means, and a rider typing "Accra, Kumasi"
+  /// would get a syntax error rather than an empty list.
+  Future<List<BookedTrip>> history({
+    int limit = 50,
+    TripState? state,
+    DateTime? since,
+    String? search,
+  });
 
   Future<Trip> requestRide({
     required TripStop pickup,

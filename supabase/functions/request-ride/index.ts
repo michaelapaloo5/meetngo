@@ -102,7 +102,7 @@ serve(async (req) => {
   // before the insert.
   const parsed = parseRideRequest(body);
   if (!parsed.ok) return json(400, { error: parsed.error });
-  const { category, pickup, dropoff, surge, promoCode } = parsed.value;
+  const { category, pickup, dropoff, surge, promoCode, scheduledFor } = parsed.value;
 
   const { data: distanceRow, error: distanceError } = await service.rpc('trip_distance_km', {
     a: wkt(pickup),
@@ -194,8 +194,11 @@ serve(async (req) => {
       distance_km: distanceKm,
       surge: quote.surge,
       fare_ghs: quote.fareGhs,
-      pickup_otp: pickupOtp(),
       is_demo: true,
+      // Null for an ordinary booking, which is then offerable immediately
+      // exactly as before. A future value stores the moment, and the trip
+      // sits in the requested state doing nothing until it arrives.
+      scheduled_for: scheduledFor,
     })
     .select()
     .single();
@@ -235,7 +238,20 @@ serve(async (req) => {
       rows.map((r) => [r.driver_id, Number(r.pickup_distance_km)] as const),
     );
 
-    if (driverIds.length > 0) {
+    // Whether this ride is waiting for its time.
+  //
+  // A scheduled ride is offered to nobody yet, and this is the only place offers
+  // are created -- so this one flag is the whole of the mechanic. Without it a
+  // trip booked for eight o'clock is put to every nearby driver the moment it is
+  // booked, which is precisely what "schedule this for eight o'clock" is not.
+  //
+  // `trip.state` stays `requested` throughout, so the rider's app already knows a
+  // trip exists and can already cancel it, and the trip is returned to the rider
+  // as normal: the ride *is* booked.
+  const isScheduled =
+    scheduledFor !== null && new Date(scheduledFor).getTime() > Date.now();
+
+    if (driverIds.length > 0 && !isScheduled) {
       const expiresAt = new Date(Date.now() + OFFER_TTL_SECONDS * 1000).toISOString();
       const { error: offerError } = await service.from('offers').insert(
         driverIds.map((driverId) => ({

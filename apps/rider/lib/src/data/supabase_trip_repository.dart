@@ -3,6 +3,7 @@ import 'package:mng_core/mng_core.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'booked_trip.dart';
+import '../trip/trip_copy.dart';
 import 'function_failure.dart';
 import 'location_service.dart';
 import 'trip_repository.dart';
@@ -59,7 +60,12 @@ class SupabaseTripRepository implements TripRepository {
       .map((rows) => Trip.fromJson(rows.first));
 
   @override
-  Future<List<BookedTrip>> history({int limit = 50}) async {
+  Future<List<BookedTrip>> history({
+    int limit = 50,
+    TripState? state,
+    DateTime? since,
+    String? search,
+  }) async {
     final user = _client.auth.currentUser;
     if (user == null) return const [];
     // Same two-arm RLS problem `activeTrip` documents, and the same fix. The
@@ -70,13 +76,44 @@ class SupabaseTripRepository implements TripRepository {
     // `limit` is bound by the caller-supplied value, so it is clamped rather
     // than passed through: an unbounded `.select()` on a rider with a long
     // history is a response the phone cannot hold, and this is a list view.
-    final rows = await _client
+    // dynamic on purpose. The client's type is inferred from the first call in
+    // the chain as PostgrestTransformBuilder, which has no eq -- the filter
+    // methods appear on the builder you get *back*. So a non-dynamic variable
+    // cannot be reassigned to .eq(...) and the filters below cannot compile.
+    dynamic query = _client
         .from('trips')
         .select()
         .eq('rider_id', user.id)
         .order('created_at', ascending: false)
         .limit(limit.clamp(1, 200));
-    return rows.map(BookedTrip.fromRow).toList();
+
+    if (state != null) {
+      query = query.eq('state', state.name);
+    }
+    if (since != null) {
+      query = query.gte('created_at', since.toUtc().toIso8601String());
+    }
+    // PostgREST `like`, not `ilike`, on an embedded jsonb column would need the
+    // arrow operators and the column is nested. Filtering on the two place names
+    // is therefore done **here**, after the rows come back, rather than in the
+    // query.
+    //
+    // That is a deliberate trade and it is only sound because of the limit: the
+    // database still returns at most 200 rows, so filtering afterwards is
+    // filtering a bounded set. It is not sound without the clamp, which is why
+    // the clamp is not a default the caller can widen past 200.
+    final rows = await query;
+    final all = rows.map(BookedTrip.fromRow).toList();
+    final needle = search?.trim().toLowerCase() ?? '';
+    if (needle.isEmpty) return all;
+    return all.where((ride) {
+      // `stopLabel` and not `.label`: some rows in this database carry a
+      // coordinate string where a label belongs, and a search box is the one
+      // place that string would be shown to a rider to explain a missing result.
+      final pickup = stopLabel(ride.trip.pickup).toLowerCase();
+      final dropoff = stopLabel(ride.trip.dropoff).toLowerCase();
+      return pickup.contains(needle) || dropoff.contains(needle);
+    }).toList();
   }
 
   @override
@@ -85,6 +122,7 @@ class SupabaseTripRepository implements TripRepository {
     required TripStop dropoff,
     required RideCategory category,
     String? promoCode,
+    DateTime? scheduledFor,
   }) async {
     // The flattened `lat`/`lng` are what `parseRideRequest` reads; the nested
     // `point` rides along for free and `request-ride` normalises the stored
@@ -97,6 +135,10 @@ class SupabaseTripRepository implements TripRepository {
         body: {
           'category': category.name,
           'promoCode': promoCode,
+          // Null means "right now". The server stores null and the trip is
+          // offerable immediately, so an ordinary booking takes exactly the
+          // path it always did.
+          'scheduledFor': scheduledFor?.toUtc().toIso8601String(),
           'pickup': {...pickup.toJson(), ...pickup.point.toJson()},
           'dropoff': {...dropoff.toJson(), ...dropoff.point.toJson()},
         },

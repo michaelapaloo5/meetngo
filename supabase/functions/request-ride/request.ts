@@ -13,6 +13,15 @@ export interface RideRequest {
   dropoff: Pin;
   surge: number;
   promoCode: string | null;
+  /**
+   * When this ride should start entering the offer pool, ISO in UTC, or null
+   * for an immediate ride.
+   *
+   * Null is the ordinary case and is not a second code path: the column is
+   * nullable, `trips_is_offerable` treats null as "now", and an ordinary booking
+   * is written and offered exactly as it was before scheduling existed.
+   */
+  scheduledFor: string | null;
 }
 
 export type RideRequestResult =
@@ -97,6 +106,23 @@ export function parseRideRequest(body: unknown): RideRequestResult {
     return refuse('promoCode must be a string');
   }
 
+  // When this ride should start entering the offer pool. Null is "now", which is
+  // the ordinary case and takes exactly the path it took before this existed.
+  //
+  // Validated rather than passed through: an unparseable date would otherwise be
+  // stored as null by the driver and quietly turn a scheduled ride into an
+  // immediate one, which is the one failure a scheduling feature cannot have.
+  const rawScheduled = body.scheduledFor;
+  let scheduledFor: string | null = null;
+  if (rawScheduled !== undefined && rawScheduled !== null) {
+    if (typeof rawScheduled !== 'string') return refuse('scheduledFor must be an ISO timestamp');
+    const parsedDate = new Date(rawScheduled);
+    if (Number.isNaN(parsedDate.getTime())) return refuse('scheduledFor is not a date');
+    // Stored in UTC. Everything else in this function compares timestamps and a
+    // local-time string would compare wrongly against `now()`.
+    scheduledFor = parsedDate.toISOString();
+  }
+
   return {
     ok: true,
     value: {
@@ -105,6 +131,7 @@ export function parseRideRequest(body: unknown): RideRequestResult {
       dropoff: dropoff.value,
       surge,
       promoCode: promoCode ? promoCode.toUpperCase() : null,
+      scheduledFor,
     },
   };
 }
