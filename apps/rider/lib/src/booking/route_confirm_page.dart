@@ -65,7 +65,7 @@ String defaultPlaceName(String address, {int maxLength = 40}) {
   final first = trimmed.split(',').first.trim();
   final name = first.isEmpty ? trimmed : first;
   if (name.length <= maxLength) return name;
-  return name.substring(0, maxLength - 1).trimRight() + '…';
+  return '${name.substring(0, maxLength - 1).trimRight()}…';
 }
 
 /// The dialog that names a saved place.

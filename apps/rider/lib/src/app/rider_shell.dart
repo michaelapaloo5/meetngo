@@ -177,6 +177,40 @@ class _RiderShellState extends State<RiderShell> {
         initialTrip: fresh,
       );
       _startPolling();
+    } else if (_stage == _Stage.finding && fresh.state.isTerminal) {
+      // **The ride ended before anybody accepted it.**
+      //
+      // This branch did not exist, and its absence is the bug the rider reported:
+      // the finding screen said "Finding your driver" over a trip the database
+      // had already marked completed. `finding` only ever advanced on
+      // `hasDriver`, and a trip that reaches `completed` or `cancelled` without
+      // one matched nothing -- so the shell sat on that screen, polling every
+      // three seconds, for a ride that was over. Two screens of truth, and the
+      // rider had no way off it: the nav bar is hidden while a trip stage is
+      // showing.
+      //
+      // `completed` with no driver is rare but real -- a demo trip settled by an
+      // admin, or a trip completed through `complete-trip` by a rider who was
+      // not its driver. `cancelled` with no driver is the ordinary case: nobody
+      // accepted before the offer window closed.
+      //
+      // Out of the ride first, then say what happened. Same ordering as
+      // [_openReceipt], for the same reason: the stage is cleared before
+      // anything is pushed, so an early return or a throw cannot strand the
+      // rider on a screen with no way back.
+      _stopPolling();
+      flow.reset();
+      setState(() {
+        _trip = null;
+        _stage = _Stage.idle;
+      });
+      if (!mounted) return;
+      _toast(
+        fresh.state == TripState.cancelled
+            ? 'Nobody accepted that ride, so it was cancelled. No charge.'
+            : 'Your ride has finished.',
+      );
+      unawaited(_loadRecentRides());
     } else if (_stage == _Stage.tracking &&
         fresh.state == TripState.completed) {
       _stopPolling();
