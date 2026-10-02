@@ -123,6 +123,23 @@ class HangingRoute implements RouteRepository {
   }
 }
 
+/// A routing repository the test completes by hand.
+///
+/// Exists because a fetch that finishes before the widget is built proves
+/// nothing about whether the widget listens for the fetch finishing. The state
+/// under test is "the banner is already on screen when the route arrives".
+class _PendingRoute implements RouteRepository {
+  _PendingRoute(this._route);
+
+  final TripRoute _route;
+  final _completer = Completer<TripRoute>();
+
+  void complete() => _completer.complete(_route);
+
+  @override
+  Future<TripRoute> route(GeoPoint from, GeoPoint to) => _completer.future;
+}
+
 void main() {
   const start = GeoPoint(5.6037, -0.1870);
   const end = GeoPoint(5.6057, -0.1870);
@@ -680,6 +697,65 @@ void main() {
       expect(find.byKey(const Key('turnBannerDistance')), findsOneWidget);
       expect(find.text('14:12'), findsOneWidget);
     });
+
+    testWidgets(
+      'shows the instruction when the route lands after the banner is up',
+      (tester) async {
+        useDesignSurface(tester);
+
+        // The fetch is completed by hand, so it is genuinely still in flight while
+        // the banner is on screen. Every other test in this group awaits `start`
+        // *before* pumping the banner, which is why they never noticed that
+        // `TurnBanner` was not listening to the controller at all: they only ever
+        // saw a banner drawn after the route had already arrived.
+        //
+        // This is the state the driver is in for the whole of the call -- and on
+        // the handset it left the banner saying "Working out the route" forever,
+        // because the trip screen only rebuilt on a position fix, and a parked
+        // phone does not produce one.
+        final pending = _PendingRoute(straightRoute());
+        final c = NavigationController(
+          from: start,
+          to: end,
+          repository: pending,
+          speech: RecordingSpeech(),
+          clock: () => DateTime(2026, 9, 30, 14, 5),
+        );
+
+        await tester.pumpWidget(
+          appHarness(Scaffold(body: TurnBanner(controller: c))),
+        );
+        await tester.pump();
+        expect(find.byKey(const Key('turnBannerMessage')), findsOneWidget);
+
+        unawaited(c.start());
+        await tester.pump();
+        expect(
+          find.byKey(const Key('turnBannerMessage')),
+          findsOneWidget,
+          reason: 'the fetch is still open',
+        );
+
+        pending.complete();
+        // Two pumps: the first turns the event queue over so the awaited future
+        // resumes and notifies, the second draws the frame that shows it.
+        await tester.pump();
+        await tester.pump();
+
+        expect(
+          find.byKey(const Key('turnBannerMessage')),
+          findsNothing,
+          reason:
+              'the banner must rebuild when the controller notifies, with '
+              'nothing else in the app having changed',
+        );
+        expect(
+          find.textContaining('Head north', findRichText: true),
+          findsOneWidget,
+        );
+        expect(find.byKey(const Key('turnBannerDistance')), findsOneWidget);
+      },
+    );
 
     testWidgets('is one line, not two', (tester) async {
       useDesignSurface(tester);

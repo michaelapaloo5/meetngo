@@ -150,38 +150,9 @@ class _ChatScreenState extends State<ChatScreen> {
               },
             ),
           ),
-          _Composer(controller: _composer, onSend: _send),
+          _Composer(field: _composer, chat: widget.controller, onSend: _send),
         ],
       ),
-      // Listens to the composer as well as the controller, and that is not
-      // redundancy.
-      //
-      // The first version animated on the controller alone, so typing never
-      // rebuilt the button: `TextEditingController` notifies its own listeners,
-      // not the `ChatController`, and nothing else changes when a character is
-      // typed. The send button therefore stayed disabled for the whole of a
-      // message and the driver could not send anything at all -- a screen that
-      // looks complete, has a working field, and has no working button.
-      floatingActionButton: ListenableBuilder(
-        listenable: Listenable.merge([widget.controller, _composer]),
-        builder: (context, _) {
-          final sendable =
-              ChatController.isSendable(_composer.text) &&
-              !widget.controller.sending;
-          return Padding(
-            padding: EdgeInsets.only(
-              bottom: MediaQuery.of(context).viewInsets.bottom,
-            ),
-            child: FloatingActionButton.small(
-              key: const Key('chatSendButton'),
-              onPressed: sendable ? _send : null,
-              tooltip: 'Send',
-              child: const Icon(Icons.send),
-            ),
-          );
-        },
-      ),
-      floatingActionButtonLocation: FloatingActionButtonLocation.endFloat,
     );
   }
 }
@@ -315,66 +286,109 @@ class _Bubble extends StatelessWidget {
   }
 }
 
-/// The message field.
+/// The message field, and the button that sends it.
+///
+/// The send button is **in this row**, not a floating action button over it.
+///
+/// That was a floating button, padded by `MediaQuery.viewInsets.bottom` to keep
+/// it clear of the keyboard -- and the `Scaffold` had *already* lifted it above
+/// the keyboard, because `resizeToAvoidBottomInset` is on by default. The inset
+/// was counted twice, so with the keyboard up the button flew to the top of the
+/// screen: verified on the handset, where it sat over the app bar on the
+/// opposite side of the thread from the field it was sending.
+///
+/// In the row it cannot be displaced at all -- the keyboard shrinks the column
+/// that holds this, the button goes with it -- and it is where a thumb already
+/// is. The row was shaped for it: an `Expanded` field and nothing after it.
+///
+/// Listening to both [field] and [chat] is not redundancy. A
+/// `TextEditingController` notifies its own listeners and not the
+/// `ChatController`, so a composer animated on the chat controller alone never
+/// rebuilt on a keystroke and the button stayed disabled for the whole of a
+/// message: a screen that looks complete, has a working field, and has no
+/// working button.
 class _Composer extends StatelessWidget {
-  const _Composer({required this.controller, required this.onSend});
+  const _Composer({
+    required this.field,
+    required this.chat,
+    required this.onSend,
+  });
 
-  final TextEditingController controller;
+  final TextEditingController field;
+  final ChatController chat;
   final Future<void> Function() onSend;
 
   @override
   Widget build(BuildContext context) {
     final theme = MngTheme.light.textTheme;
-    return AnimatedBuilder(
-      // The composer is animated, not the screen, so typing rebuilds one field
-      // rather than the whole thread. On a slow phone with twenty messages in it
-      // that is the difference between typing and not typing.
-      animation: controller,
-      builder: (context, _) => SafeArea(
-        top: false,
-        child: Container(
-          padding: EdgeInsets.fromLTRB(12.w, 8.h, 12.w, 8.h),
-          decoration: const BoxDecoration(
-            color: MngColors.surface,
-            border: Border(top: BorderSide(color: MngColors.divider)),
-          ),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.end,
-            children: [
-              Expanded(
-                child: TextField(
-                  key: const Key('chatComposer'),
-                  controller: controller,
-                  minLines: 1,
-                  maxLines: 4,
-                  maxLength: ChatController.kMaxLength,
-                  textCapitalization: TextCapitalization.sentences,
-                  textInputAction: TextInputAction.newline,
-                  // The return key inserts a newline on purpose: a driver holding
-                  // a phone one-handed with a passenger cannot hit Send without
-                  // letting go of the wheel to look for it, and the send button is
-                  // right there for the messages that matter.
-                  keyboardType: TextInputType.multiline,
-                  inputFormatters: [
-                    LengthLimitingTextInputFormatter(ChatController.kMaxLength),
-                  ],
-                  decoration: InputDecoration(
-                    hintText: 'Message',
-                    counterText: '',
-                    isDense: true,
-                    // Was `x == null ? null : x`, which is just `x` -- and called
-                    // `problemFor` twice to reach one answer. `errorText` takes null
-                    // to mean "no error", and `?? ''` would not: an empty string
-                    // still reserves the error line under the field.
-                    errorText: ChatController.problemFor(controller.text),
-                    errorStyle: theme.labelSmall,
+    return ListenableBuilder(
+      // The composer is rebuilt, not the whole thread. On a slow phone with
+      // twenty messages in it that is the difference between typing and not
+      // typing.
+      listenable: Listenable.merge([field, chat]),
+      builder: (context, _) {
+        final sendable = ChatController.isSendable(field.text) && !chat.sending;
+        return SafeArea(
+          top: false,
+          child: Container(
+            padding: EdgeInsets.fromLTRB(12.w, 8.h, 12.w, 8.h),
+            decoration: const BoxDecoration(
+              color: MngColors.surface,
+              border: Border(top: BorderSide(color: MngColors.divider)),
+            ),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                Expanded(
+                  child: TextField(
+                    key: const Key('chatComposer'),
+                    controller: field,
+                    minLines: 1,
+                    maxLines: 4,
+                    maxLength: ChatController.kMaxLength,
+                    textCapitalization: TextCapitalization.sentences,
+                    textInputAction: TextInputAction.newline,
+                    // The return key inserts a newline on purpose: a driver
+                    // holding a phone one-handed with a passenger cannot hit
+                    // Send without letting go of the wheel to look for it, and
+                    // the button is right there for the messages that matter.
+                    keyboardType: TextInputType.multiline,
+                    inputFormatters: [
+                      LengthLimitingTextInputFormatter(
+                        ChatController.kMaxLength,
+                      ),
+                    ],
+                    decoration: InputDecoration(
+                      hintText: 'Message',
+                      counterText: '',
+                      isDense: true,
+                      // Was `x == null ? null : x`, which is just `x` -- and
+                      // called `problemFor` twice to reach one answer.
+                      // `errorText` takes null to mean "no error", and `?? ''`
+                      // would not: an empty string still reserves the error
+                      // line under the field.
+                      errorText: ChatController.problemFor(field.text),
+                      errorStyle: theme.labelSmall,
+                    ),
                   ),
                 ),
-              ),
-            ],
+                SizedBox(width: 4.w),
+                // `IconButton`, so the disabled state is greyed rather than
+                // merely inert -- a driver needs to see *why* nothing happens.
+                IconButton(
+                  key: const Key('chatSendButton'),
+                  onPressed: sendable ? onSend : null,
+                  tooltip: 'Send',
+                  icon: Icon(
+                    Icons.send,
+                    color: sendable ? MngColors.primary : MngColors.textSub,
+                  ),
+                ),
+              ],
+            ),
           ),
-        ),
-      ),
+        );
+      },
     );
   }
 }

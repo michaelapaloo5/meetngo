@@ -44,6 +44,38 @@ class TurnBanner extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Listen to the controller here, rather than expecting every caller to
+    // remember to.
+    //
+    // This is the third bug of this exact shape in this app -- a value read in
+    // `build` with nothing listening for the thing that changes it -- and it is
+    // the one that made navigation look broken on the handset. `TurnBanner` reads
+    // `currentStep`, `failure`, `distanceToStepM`, `now` and `speakInstructions`
+    // off the controller, and it was a `StatelessWidget` reading all of them with
+    // no listener at all.
+    //
+    // `ActiveTripScreen` put its `ListenableBuilder` on the *host*, and the host
+    // notifies once, before the fetch is awaited. The route then arrived and the
+    // controller notified *its own* listeners, of which there were none. The
+    // banner kept whatever it last drew.
+    //
+    // It worked often enough to look fine. The trip screen also rebuilds on every
+    // position fix, so while the driver is moving the banner refreshed by
+    // accident and picked up the instruction. Parked, GPS stops ticking, and the
+    // banner sat on "Working out the route" indefinitely -- verified on the
+    // handset, with the `route` function answering 200 in 200 ms over the same
+    // network and the phone demonstrably not rebuilding.
+    //
+    // Fixed inside the widget, not at the call site. The two earlier instances of
+    // this bug were each fixed where they happened to be found, and the third
+    // turned up somewhere else entirely -- which is what a call-site fix costs.
+    return ListenableBuilder(
+      listenable: controller,
+      builder: (context, _) => _banner(context),
+    );
+  }
+
+  Widget _banner(BuildContext context) {
     final text = MngTheme.light.textTheme;
     final step = controller.currentStep;
 

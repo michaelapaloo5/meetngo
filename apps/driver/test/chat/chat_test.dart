@@ -92,9 +92,14 @@ void main() {
     test('the limit is the same number the composer enforces', () {
       // 500 in two places -- `problemFor` and the `maxLength` on the field --
       // would drift, and the drift is a driver who cannot type what they wrote.
-      expect(ChatController.problemFor('a' * ChatController.kMaxLength), isNull);
-      expect(ChatController.problemFor('a' * (ChatController.kMaxLength + 1)),
-          contains('Too long'));
+      expect(
+        ChatController.problemFor('a' * ChatController.kMaxLength),
+        isNull,
+      );
+      expect(
+        ChatController.problemFor('a' * (ChatController.kMaxLength + 1)),
+        contains('Too long'),
+      );
     });
 
     test('a problem is a sentence, not a flag', () {
@@ -120,7 +125,11 @@ void main() {
       // failure mode the real stream does not have.
       expect(c.loading, isFalse);
       expect(c.messages, isEmpty);
-      expect(seen, contains(true), reason: 'the listener was told it was loading');
+      expect(
+        seen,
+        contains(true),
+        reason: 'the listener was told it was loading',
+      );
     });
 
     test('a message arriving while the thread is open shows up', () async {
@@ -183,7 +192,11 @@ void main() {
       // The realtime stream delivers this driver's own insert a moment later. A
       // local copy would be visible as the same text twice, for exactly as long
       // as the network is slow.
-      expect(c.messages, isEmpty, reason: 'the stream owns the list, not the send');
+      expect(
+        c.messages,
+        isEmpty,
+        reason: 'the stream owns the list, not the send',
+      );
     });
 
     test('appears once, when the stream reports it', () async {
@@ -211,17 +224,20 @@ void main() {
       expect(c.problem, 'Could not reach the server.');
     });
 
-    test('an unsendable body is refused without touching the network', () async {
-      final c = controller();
-      await c.load();
-      // Let the subscription attach before pushing anything: a broadcast
-      // stream drops an event that has no listener, so rrive on the next
-      // line without this is a message that never existed.
-      await pumpEventQueue();
-      expect(await c.send('   '), isFalse);
-      expect(repo.sentBodies, isEmpty);
-      expect(c.problem, 'Type a message');
-    });
+    test(
+      'an unsendable body is refused without touching the network',
+      () async {
+        final c = controller();
+        await c.load();
+        // Let the subscription attach before pushing anything: a broadcast
+        // stream drops an event that has no listener, so rrive on the next
+        // line without this is a message that never existed.
+        await pumpEventQueue();
+        expect(await c.send('   '), isFalse);
+        expect(repo.sentBodies, isEmpty);
+        expect(c.problem, 'Type a message');
+      },
+    );
 
     test('clears a previous failure on the next successful send', () async {
       repo.sendError = const ChatFailure('nope');
@@ -273,7 +289,9 @@ void main() {
       await tester.pump();
     }
 
-    testWidgets('names the rider, so a thread is not just avatars', (tester) async {
+    testWidgets('names the rider, so a thread is not just avatars', (
+      tester,
+    ) async {
       useDesignSurface(tester);
       await openChat(tester, controller());
       expect(find.text('Ama'), findsWidgets);
@@ -304,7 +322,11 @@ void main() {
       expect(find.byKey(const Key('chatBody_m2')), findsOneWidget);
       // Once each. The stream re-emits the whole list on every change, so a
       // list that appended would show two of each after the second event.
-      repo.arrive([msg('m1', them, 'I am here'), msg('m2', me, 'Coming up'), msg('m3', them, 'ok')]);
+      repo.arrive([
+        msg('m1', them, 'I am here'),
+        msg('m2', me, 'Coming up'),
+        msg('m3', them, 'ok'),
+      ]);
       // Two pumps: the first turns the event queue over so the
       // stream's generator delivers, the second draws the frame that shows it.
       await tester.pump();
@@ -329,45 +351,89 @@ void main() {
       expect(find.text('I am at the gate'), findsOneWidget);
     });
 
-    testWidgets('the send button is disabled until there is something to send', (
+    testWidgets(
+      'the send button is disabled until there is something to send',
+      (tester) async {
+        useDesignSurface(tester);
+        await openChat(tester, controller());
+
+        // `onPressed` rather than a hit test, because a disabled `IconButton`
+        // still occupies its slot and `tester.tap` on it would warn about
+        // missing the hit rather than reporting the real state.
+        bool enabled() =>
+            tester
+                .widget<IconButton>(find.byKey(const Key('chatSendButton')))
+                .onPressed !=
+            null;
+
+        expect(enabled(), isFalse, reason: 'nothing typed');
+
+        await tester.enterText(find.byKey(const Key('chatComposer')), 'hello');
+        await tester.pump();
+        expect(enabled(), isTrue);
+
+        // And back off when the text becomes unsendable again.
+        await tester.enterText(find.byKey(const Key('chatComposer')), '  ');
+        await tester.pump();
+        expect(enabled(), isFalse, reason: 'whitespace is not a message');
+      },
+    );
+
+    testWidgets('the send button stays in the composer when the keyboard is up', (
       tester,
     ) async {
       useDesignSurface(tester);
+      // The keyboard, as the platform reports it. This is the state that broke
+      // it: the send button used to be a floating action button padded by
+      // `viewInsets.bottom`, and the `Scaffold` had already lifted it above the
+      // keyboard, so the inset was counted twice and the button flew to the top
+      // of the screen. Verified on the handset, not inferred.
+      tester.view.viewInsets = const FakeViewPadding(bottom: 400);
+      addTearDown(tester.view.reset);
+
       await openChat(tester, controller());
-
-      // `onPressed` rather than a hit test, because a disabled
-      // `FloatingActionButton` still occupies its slot and `tester.tap` on it
-      // would warn about missing the hit rather than reporting the real state.
-      bool enabled() =>
-          tester
-                  .widget<FloatingActionButton>(
-                    find.byKey(const Key('chatSendButton')),
-                  )
-                  .onPressed !=
-              null;
-
-      expect(enabled(), isFalse, reason: 'nothing typed');
-
       await tester.enterText(find.byKey(const Key('chatComposer')), 'hello');
       await tester.pump();
-      expect(enabled(), isTrue);
 
-      // And back off when the text becomes unsendable again.
-      await tester.enterText(find.byKey(const Key('chatComposer')), '  ');
-      await tester.pump();
-      expect(enabled(), isFalse, reason: 'whitespace is not a message');
+      final send = tester.getRect(find.byKey(const Key('chatSendButton')));
+      final field = tester.getRect(find.byKey(const Key('chatComposer')));
+
+      // Same row, to the right of the field, which is the whole assertion: the
+      // button is part of the composer rather than floating at the other end of
+      // the thread. Not `overlaps` -- the field is `Expanded`, so the button sits
+      // beside it and by construction never overlaps it.
+      expect(
+        send.center.dx,
+        greaterThan(field.center.dx),
+        reason: 'the button belongs to the right of the field',
+      );
+      expect(
+        send.center.dy,
+        greaterThan(field.top),
+        reason: "and on the field's own line, not above the app bar",
+      );
+      expect(
+        send.center.dy,
+        lessThan(field.bottom),
+        reason: "and on the field's own line, not below the composer",
+      );
     });
 
     testWidgets('typing then sending clears the composer', (tester) async {
       useDesignSurface(tester);
       await openChat(tester, controller());
-      await tester.enterText(find.byKey(const Key('chatComposer')), 'I am here');
+      await tester.enterText(
+        find.byKey(const Key('chatComposer')),
+        'I am here',
+      );
       await tester.pump();
       await tester.tap(find.byKey(const Key('chatSendButton')));
       await tester.pump();
       await tester.pump();
 
-      final field = tester.widget<TextField>(find.byKey(const Key('chatComposer')));
+      final field = tester.widget<TextField>(
+        find.byKey(const Key('chatComposer')),
+      );
       expect(field.controller?.text, isEmpty);
       expect(repo.sentBodies, ['I am here']);
     });
@@ -378,7 +444,10 @@ void main() {
       useDesignSurface(tester);
       repo.sendError = const ChatFailure('Could not reach the server.');
       await openChat(tester, controller());
-      await tester.enterText(find.byKey(const Key('chatComposer')), 'I am here');
+      await tester.enterText(
+        find.byKey(const Key('chatComposer')),
+        'I am here',
+      );
       await tester.pump();
       await tester.tap(find.byKey(const Key('chatSendButton')));
       await tester.pump();
@@ -386,7 +455,9 @@ void main() {
 
       // The message is still unsent. Clearing the composer on a failed send makes
       // the driver retype a sentence to somebody waiting at a kerb.
-      final field = tester.widget<TextField>(find.byKey(const Key('chatComposer')));
+      final field = tester.widget<TextField>(
+        find.byKey(const Key('chatComposer')),
+      );
       expect(field.controller?.text, 'I am here');
     });
 
