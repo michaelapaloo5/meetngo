@@ -239,11 +239,36 @@ class SupabaseTripRepository implements TripRepository {
       throw TripRequestFailure(describeFunctionFailure(e));
     }
 
-    final vehicle = body['vehicle'];
+    // **The driver lives under `driver`, not at the top level.**
+    //
+    // This read the whole payload flat, and two fields happened to be flat as
+    // well -- `name` and `phone` are duplicated at the top level for the
+    // convenience of the other direction -- so the card rendered the driver's
+    // name and nothing else. No car, no plate, no rating, no photo, and nothing
+    // anywhere saying why: every field it looked for was absent rather than
+    // wrong, so `DriverContact` was built successfully with five empty strings.
+    //
+    // The rider reported this as "the driver's profile details don't appear". The
+    // function has been returning them the whole time. Measured live with
+    // toolchain/probe-contact.mjs:
+    //
+    //   {"role":"driver","name":"...","phone":"...","callable":true,
+    //    "driver":{"name":"...","photoUrl":"","rating":5,
+    //              "vehicle":{"make":"Toyota","model":"Corolla","plate":"ACCEPT-CHECK"}}}
+    //
+    // So: prefer the nested object, fall back to the top level. The fallback is
+    // not dead code -- it is what the flat convenience fields are for, and it
+    // keeps the read working if the shape is ever flattened again.
+    final nested = body['driver'];
+    final who = nested is Map ? nested.cast<String, dynamic>() : null;
+    final vehicle = who?['vehicle'] ?? body['vehicle'];
     final car = vehicle is Map ? vehicle.cast<String, dynamic>() : null;
 
     return DriverContact(
-      name: _text(body['name']),
+      // The nested name first, then the flat one: the same driver, and reading
+      // the flat copy first would make a future change to the nested name look
+      // like it had no effect.
+      name: _text(who?['name'] ?? body['name']),
       phone: _text(body['phone']),
       // Checked here rather than trusted from the payload. `callable` on the
       // server is "the number is non-empty"; whether it is *dialable* is a
@@ -255,8 +280,8 @@ class SupabaseTripRepository implements TripRepository {
       carMake: _text(car?['make']),
       carModel: _text(car?['model']),
       plate: _text(car?['plate']),
-      photoUrl: _text(body['photoUrl']),
-      rating: (body['rating'] as num?)?.toDouble(),
+      photoUrl: _text(who?['photoUrl'] ?? body['photoUrl']),
+      rating: ((who?['rating'] ?? body['rating']) as num?)?.toDouble(),
     );
   }
 

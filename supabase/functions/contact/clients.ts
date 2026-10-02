@@ -92,17 +92,17 @@ export function buildContactLookup(
     // that can be right about *which* car is coming -- a driver who changes
     // vehicle between trips must not have the old plate shown.
     //
-    // Then the driver's current `profiles.vehicle_id`, and that fallback is not
-    // a convenience: **nothing in this product writes `trips.vehicle_id`.** No
-    // Edge Function, no trigger, no client. Grep finds only this read and the
-    // admin page's own driver query. So without the fallback the column is
-    // permanently null and a rider never sees a car or a plate on any trip --
-    // which is exactly what the first live check of this function found:
-    // `vehicle: null` on a trip whose driver had a registered, approved vehicle.
+    // Then the driver's current `profiles.vehicle_id`. That fallback used to be
+    // the *only* way a rider could see a car at all, and the comment here said
+    // so -- "nothing in this product writes `trips.vehicle_id`. No Edge Function,
+    // no trigger, no client." That was true when it was written and stopped being
+    // true when migration 20260930000011 added the `trips_take_driver_vehicle`
+    // trigger, which populates the column when a driver is put on a trip.
     //
-    // Populating the trip column when a driver accepts is a real gap rather than
-    // a style preference. Until then this fallback is the only path that gives a
-    // rider the one detail they can read off a windscreen.
+    // So the first read is now usually the one that answers, and this is the
+    // fallback for trips that predate the trigger. Kept deliberately: a trip row
+    // written before the migration still has a null vehicle, and a rider looking
+    // at it should still get a plate.
     const vehicleId = tripRow.vehicle_id ?? profile?.vehicle_id ?? null;
     let vehicle: { make: string; model: string; plate: string } | null = null;
     if (vehicleId) {
