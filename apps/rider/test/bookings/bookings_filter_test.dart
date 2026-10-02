@@ -132,6 +132,51 @@ void main() {
       expect(labels.toSet().length, labels.length);
     });
 
+    test('only a completed ride is badged "Done"', () {
+      // The bug this catches: `state.isActive ? 'Live' : 'Done'` badged a
+      // **cancelled** ride "Done", on the same card whose own heading read "Trip
+      // cancelled". Two labels in one row disagreeing, and a rider has to pick
+      // which to believe.
+      //
+      // Stated over the whole enum rather than over `cancelled` alone: the
+      // invariant is that "Done" means the ride happened, and a state added
+      // later must not be able to break it by being quietly terminal.
+      for (final s in TripState.values.where((s) => s != TripState.completed)) {
+        expect(
+          TripStateBadge.labelFor(s),
+          isNot(equals('Done')),
+          reason: '$s is badged "Done" but the ride did not complete',
+        );
+      }
+      expect(TripStateBadge.labelFor(TripState.completed), 'Done');
+      expect(TripStateBadge.labelFor(TripState.cancelled), 'Cancelled');
+      for (final s in TripState.values.where((s) => s.isActive)) {
+        expect(TripStateBadge.labelFor(s), 'Live', reason: '$s is running');
+      }
+    });
+
+    test('a cancelled ride does not read as if it were under the Done chip', () {
+      // "Done" means two things a few centimetres apart: on the chip it is "show
+      // me completed rides", on a badge it is "this ride is over". Only
+      // `completed` may wear the word -- which the test above walks the whole
+      // enum for. This is the same claim from the other side, so that a future
+      // change to the chip labels cannot quietly reintroduce the collision
+      // without one of the two failing.
+      expect(
+        TripStateBadge.labelFor(TripState.cancelled).toLowerCase(),
+        isNot(equals('done')),
+        reason: 'a cancelled ride badged "Done" looks like it is in the Done filter',
+      );
+      expect(
+        TripStateBadge.labelFor(TripState.cancelled).toLowerCase(),
+        anyOf(
+          equals('cancelled'),
+          // Or it says something that is not a chip label at all, which is fine.
+          isNot(anyOf(equals('all'), equals('live'), equals('done'))),
+        ),
+      );
+    });
+
     test('sameAs compares the question, not the label', () {
       // Two chips could be worded differently and ask the same thing; skipping
       // the reload then is right. Equal questions with different labels must

@@ -251,11 +251,35 @@ class TripRow extends StatelessWidget {
   }
 }
 
-/// The filled pill that tells a completed ride from one still running.
+/// The filled pill that tells a running ride from a finished one, and a
+/// completed ride from one that was cancelled.
 class TripStateBadge extends StatelessWidget {
   const TripStateBadge({super.key, required this.state});
 
   final TripState state;
+
+  /// What the pill says.
+  ///
+  /// It used to be `state.isActive ? 'Live' : 'Done'`, which called a
+  /// **cancelled** ride "Done" -- on the same card whose own title read "Trip
+  /// cancelled". Two labels in one row contradicting each other, and a rider
+  /// reading it has to decide which one to believe.
+  ///
+  /// It also collides with the "Done" *filter chip* above the list: "Done" on a
+  /// badge means "this ride is over" while "Done" on a chip means "show me the
+  /// completed ones", so the same word meant two things a few centimetres apart.
+  /// Cancelled now says so.
+  ///
+  /// Terminal states are named individually rather than collapsed, because the
+  /// only two terminal states mean opposite things to the person who rode.
+  static String labelFor(TripState state) {
+    if (state.isActive) return 'Live';
+    if (state == TripState.cancelled) return 'Cancelled';
+    if (state == TripState.completed) return 'Done';
+    // A state that is neither active nor terminal should not exist, and saying
+    // the word for it is better than claiming a finished ride that is not one.
+    return tripStateLabel(state);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -267,7 +291,7 @@ class TripStateBadge extends StatelessWidget {
         borderRadius: BorderRadius.circular(MngRadius.small),
       ),
       child: Text(
-        state.isActive ? 'Live' : 'Done',
+        labelFor(state),
         style: MngTheme.light.textTheme.bodySmall?.copyWith(
           color: tripStateTextColor(state),
           fontSize: 11.sp,
