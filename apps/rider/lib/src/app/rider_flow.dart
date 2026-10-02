@@ -17,6 +17,10 @@ import '../trip/trip_controller.dart';
 // The offer is withdrawn rather than reduced. Keeping it at 3% would keep two
 // calculations alive -- the gross and the net -- and the only thing that number
 /// was for was to be wrong.
+///
+/// The parameter is gone from `TripRepository.requestRide` as well as from the
+/// screen: a repository that still accepted a promo code is a repository whose
+/// caller can believe the discount still exists.
 
 /// The ride flow, from tapping search to seeing a receipt.
 ///
@@ -65,6 +69,11 @@ class RiderFlow extends ChangeNotifier {
         pickup: draft.pickup,
         dropoff: draft.dropoff,
         category: draft.category,
+        // Forwarded rather than dropped. A draft that carried a schedule and a
+        // flow that ignored it would show the rider a confirmation for a time
+        // they chose and book them a car for now, which is the kind of thing that
+        // looks like a working feature and is not one.
+        scheduledFor: draft.scheduledFor,
       );
       return trip;
     } on Object catch (e) {

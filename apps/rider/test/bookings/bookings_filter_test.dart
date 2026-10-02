@@ -77,7 +77,7 @@ class _FakeTrips implements TripRepository {
     required TripStop pickup,
     required TripStop dropoff,
     required RideCategory category,
-    String? promoCode,
+    DateTime? scheduledFor,
   }) => throw UnimplementedError();
   @override
   Future<void> cancelTrip(String tripId) async {}

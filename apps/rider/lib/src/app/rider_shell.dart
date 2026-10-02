@@ -28,6 +28,7 @@ import '../profile/rider_phone_gate_screen.dart';
 import '../tracking/tracking_controller.dart';
 import '../tracking/tracking_screen.dart';
 import '../bookings/trip_detail_screen.dart';
+import '../data/saved_place_repository.dart';
 import '../data/trip_report_repository.dart';
 import '../trip/receipt_screen.dart';
 import 'rider_flow.dart';
@@ -218,6 +219,11 @@ class _RiderShellState extends State<RiderShell> {
         builder: (_) => DestinationSearchPage(
           places: context.read<PlaceService>(),
           recent: _recentDestinations(),
+          // Read once here rather than inside the page, because the page is
+          // constructed in a route that outlives this frame and `context.read`
+          // inside its own `build` would be a lookup per rebuild for a value
+          // that never changes.
+          saved: context.read<SavedPlaceRepository>(),
         ),
       ),
     );
@@ -235,6 +241,7 @@ class _RiderShellState extends State<RiderShell> {
           ? null
           : pickupFromFix(reading.point!, label: _place?.line),
       dropoff: TripStop('Dropoff', destination.point, destination.label),
+      saved: context.read<SavedPlaceRepository>(),
       onSubmit: _openCarChoice,
     );
 

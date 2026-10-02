@@ -93,7 +93,7 @@ class _StubTrips implements TripRepository {
     required TripStop pickup,
     required TripStop dropoff,
     required RideCategory category,
-    String? promoCode,
+    DateTime? scheduledFor,
   }) async => throw UnimplementedError();
 
   @override

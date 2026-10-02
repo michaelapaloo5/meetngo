@@ -41,31 +41,31 @@ PlaceName _name(String line) => PlaceName(locality: line);
 RouteDraft? submitted;
 
 Widget wrap(PlaceService places) => ScreenUtilInit(
-      designSize: const Size(390, 844),
-      minTextAdapt: true,
-      splitScreenMode: true,
-      builder: (_, _) => MaterialApp(
-        theme: MngTheme.light,
-        home: Scaffold(
-          body: RouteConfirmPage(
-            calc: FareCalculator(),
-            onSubmit: (draft) => submitted = draft,
-            places: places,
-            pickup: pickupFromFix(const GeoPoint(5.6037, -0.1870)),
-            // A destination, because these tests are about the map picker and
-            // not about an unchosen destination -- and because a page with no
-            // destination is a page whose confirm button is disabled, which
-            // would make the "what the draft is submitted with" test below
-            // untestable for the wrong reason.
-            dropoff: const TripStop(
-              'Dropoff',
-              GeoPoint(5.6052, -0.1660),
-              'Airport Residential, Accra',
-            ),
-          ),
+  designSize: const Size(390, 844),
+  minTextAdapt: true,
+  splitScreenMode: true,
+  builder: (_, _) => MaterialApp(
+    theme: MngTheme.light,
+    home: Scaffold(
+      body: RouteConfirmPage(
+        calc: FareCalculator(),
+        onSubmit: (draft) => submitted = draft,
+        places: places,
+        pickup: pickupFromFix(const GeoPoint(5.6037, -0.1870)),
+        // A destination, because these tests are about the map picker and
+        // not about an unchosen destination -- and because a page with no
+        // destination is a page whose confirm button is disabled, which
+        // would make the "what the draft is submitted with" test below
+        // untestable for the wrong reason.
+        dropoff: const TripStop(
+          'Dropoff',
+          GeoPoint(5.6052, -0.1660),
+          'Airport Residential, Accra',
         ),
       ),
-    );
+    ),
+  ),
+);
 
 void main() {
   // MapLibre draws through a native platform view and `flutter test` has none,
@@ -85,10 +85,7 @@ void main() {
     await tester.tap(find.byKey(const Key('mapAction-pickup')));
     await tester.pump();
     expect(find.byKey(const Key('mapPicker')), findsOneWidget);
-    await tester.tap(
-      find.byKey(const Key('pickerMap')),
-      warnIfMissed: false,
-    );
+    await tester.tap(find.byKey(const Key('pickerMap')), warnIfMissed: false);
     await tester.pump();
   }
 
@@ -118,8 +115,9 @@ void main() {
       expect(find.textContaining('pickup point'), findsOneWidget);
     });
 
-    testWidgets('the drop-off button opens a map for the drop-off',
-        (tester) async {
+    testWidgets('the drop-off button opens a map for the drop-off', (
+      tester,
+    ) async {
       // The copy says which stop the map is setting. A rider who opened the
       // map and could not tell which of the two stops it would move would be
       // entitled to move the wrong one.
@@ -159,8 +157,9 @@ void main() {
   });
 
   group('a point tapped on the map', () {
-    testWidgets('moves the pickup and is what the draft is submitted with',
-        (tester) async {
+    testWidgets('moves the pickup and is what the draft is submitted with', (
+      tester,
+    ) async {
       // The point has to reach the server, not just the label. A picker that
       // updates the text and leaves `TripStop.point` alone would book the ride
       // to wherever the map was before it was opened.
@@ -171,15 +170,55 @@ void main() {
       expect(before, isNull);
       await tapTheMap(tester);
 
-      await tester.tap(find.byKey(const Key('confirmRouteButton')));
+      // Scrolled to first, because the page grew: the schedule picker went in
+      // above the submit button and with the map open the button no longer fits
+      // on a 390x844 screen. The page is a SingleChildScrollView so it is
+      // reachable, and a test that taps an off-screen widget is testing nothing
+      // -- `tap` warns and moves on, so this used to fail further down with
+      // "submitted is null" and blame the map picker.
+      final confirm = find.byKey(const Key('confirmRouteButton'));
+      await tester.ensureVisible(confirm);
+      await tester.pumpAndSettle();
+      await tester.tap(confirm);
       await tester.pump();
       expect(submitted, isNotNull);
       // The tapped point is whatever the stand-in map was given; what matters
       // is that it is no longer the original pickup.
-      expect(submitted!.pickup.address, isNot(pickupFromFix(
-        const GeoPoint(5.6037, -0.1870),
-      ).address));
+      expect(
+        submitted!.pickup.address,
+        isNot(pickupFromFix(const GeoPoint(5.6037, -0.1870)).address),
+      );
     });
+
+    testWidgets(
+      'the submit button is reachable with the map and the schedule open',
+      (tester) async {
+        // The two controls that add height to this page: the map picker and the
+        // schedule chips. Together they push the submit button off a 390x844
+        // screen. That is acceptable *only* because the page scrolls, and a
+        // confirm button that can no longer be reached is a booking screen that
+        // cannot book. So this asserts the button is still hittable, not merely
+        // still built.
+        useDesignSurface(tester);
+        await tester.pumpWidget(wrap(_StubPlaces()));
+        await tapTheMap(tester);
+        await tester.pumpAndSettle();
+
+        final confirm = find.byKey(const Key('confirmRouteButton'));
+        expect(confirm, findsOneWidget);
+        await tester.ensureVisible(confirm);
+        await tester.pumpAndSettle();
+
+        // `tap` would warn and continue if it missed, which is how a button that
+        // cannot be pressed passes a test. `hitTestable` asks whether anything
+        // there can actually receive the tap.
+        expect(
+          confirm.hitTestable(),
+          findsOneWidget,
+          reason: 'the submit button is off screen and cannot be pressed',
+        );
+      },
+    );
 
     testWidgets('asks the geocoder for the point it was given', (tester) async {
       // Without the lookup the field would say "Picked on the map" forever,
@@ -208,8 +247,9 @@ void main() {
       expect(find.text('Picked on the map'), findsNothing);
     });
 
-    testWidgets('a geocoder with no answer leaves an honest placeholder',
-        (tester) async {
+    testWidgets('a geocoder with no answer leaves an honest placeholder', (
+      tester,
+    ) async {
       // The ride is still bookable and still goes to the right pin. Replacing
       // the field with an error would suggest the ride could not be booked at
       // all, which is not what happened.
@@ -221,8 +261,9 @@ void main() {
       expect(find.text('Picked on the map'), findsOneWidget);
     });
 
-    testWidgets('an overtaken lookup does not overwrite the newer choice',
-        (tester) async {
+    testWidgets('an overtaken lookup does not overwrite the newer choice', (
+      tester,
+    ) async {
       // Nominatim is a volunteer service and a lookup takes real time, so a
       // rider can tap, tap again, and get the first answer back last. Without
       // this the pickup would silently become the place they just rejected.
@@ -236,8 +277,7 @@ void main() {
       await tester.tap(find.byKey(const Key('pickerMap')), warnIfMissed: false);
       await tester.pumpAndSettle();
 
-      expect(places.reversals.length, 2,
-          reason: 'both taps should have asked');
+      expect(places.reversals.length, 2, reason: 'both taps should have asked');
     });
 
     testWidgets('the drop-off map does not move the pickup', (tester) async {
@@ -254,14 +294,18 @@ void main() {
       await tester.tap(find.byKey(const Key('pickerMap')), warnIfMissed: false);
       await tester.pumpAndSettle();
 
-      expect(find.text('Your location'), findsOneWidget,
-          reason: 'the pickup must be untouched by a drop-off tap');
+      expect(
+        find.text('Your location'),
+        findsOneWidget,
+        reason: 'the pickup must be untouched by a drop-off tap',
+      );
     });
   });
 
   group('it does not break the rest of the sheet', () {
-    testWidgets('the fare still requotes over a map-picked route',
-        (tester) async {
+    testWidgets('the fare still requotes over a map-picked route', (
+      tester,
+    ) async {
       useDesignSurface(tester);
       await tester.pumpWidget(wrap(_StubPlaces()));
       final fareBefore = _fareText(tester);

@@ -7,19 +7,101 @@ import 'package:mng_core/mng_core.dart';
 import '../trip/trip_copy.dart';
 
 import '../data/place_service.dart';
+import '../data/saved_place_repository.dart';
 import '../home/widgets/category_chips.dart';
 import '../map/ride_map.dart';
+import 'schedule_picker.dart';
 
+/// Everything the rider decided on the confirm page, and nothing else.
+///
+/// A value rather than a callback per field, because the draft is handed back
+/// through `Navigator.pop` as well as to `onSubmit` and two routes carrying four
+/// fields each is four chances to forget one. Adding a fifth field here is one
+/// edit in one place.
+///
+/// [scheduledFor] null means now. It is local time as chosen, not UTC, because
+/// the rider picked a wall-clock moment and the conversion happens once, at the
+/// repository, in `toUtc()`.
 class RouteDraft {
   const RouteDraft({
     required this.pickup,
     required this.dropoff,
     required this.category,
+    this.scheduledFor,
   });
 
   final TripStop pickup;
   final TripStop dropoff;
   final RideCategory category;
+
+  /// When the rider wants it, or null for now.
+  final DateTime? scheduledFor;
+
+  /// Whether this draft books for later.
+  bool get isScheduled => scheduledFor != null;
+
+  /// The same draft, booked immediately.
+  RouteDraft asNow() =>
+      RouteDraft(pickup: pickup, dropoff: dropoff, category: category);
+}
+
+/// The dialog that names a saved place.
+///
+/// Owns its own controller so it can dispose it in [dispose], which happens
+/// after the route has finished animating out rather than the instant the caller
+/// sees the future complete. See [_RouteConfirmPageState._askForName].
+class _NamePlaceDialog extends StatefulWidget {
+  const _NamePlaceDialog({required this.address});
+
+  final String address;
+
+  @override
+  State<_NamePlaceDialog> createState() => _NamePlaceDialogState();
+}
+
+class _NamePlaceDialogState extends State<_NamePlaceDialog> {
+  late final TextEditingController _name = TextEditingController(
+    text: widget.address,
+  );
+
+  @override
+  void dispose() {
+    _name.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Save this place'),
+      content: TextField(
+        key: const Key('savedPlaceNameField'),
+        controller: _name,
+        autofocus: true,
+        maxLength: 60,
+        textCapitalization: TextCapitalization.words,
+        decoration: const InputDecoration(
+          labelText: 'Call it',
+          // "So you can tap it next time" -- which is what the name is for. A
+          // rider who thinks the name is the destination will type the whole
+          // address and then wonder why the chip is unreadable.
+          helperText: 'So you can tap it next time',
+        ),
+      ),
+      actions: [
+        TextButton(
+          key: const Key('cancelSavePlace'),
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          key: const Key('confirmSavePlace'),
+          onPressed: () => Navigator.of(context).pop(_name.text),
+          child: const Text('Save'),
+        ),
+      ],
+    );
+  }
 }
 
 /// Accra defaults used when the rider's own position is not available.
@@ -77,6 +159,8 @@ Future<RouteDraft?> pushRouteConfirmPage(
   required PlaceService places,
   TripStop? pickup,
   TripStop? dropoff,
+  SavedPlaceRepository? saved,
+  void Function(SavedPlace place)? onPlaceSaved,
 }) {
   return Navigator.of(context).push<RouteDraft>(
     MaterialPageRoute<RouteDraft>(
@@ -86,6 +170,8 @@ Future<RouteDraft?> pushRouteConfirmPage(
         places: places,
         pickup: pickup,
         dropoff: dropoff,
+        saved: saved,
+        onPlaceSaved: onPlaceSaved,
       ),
     ),
   );
@@ -99,6 +185,8 @@ class RouteConfirmPage extends StatefulWidget {
     required this.places,
     this.pickup,
     this.dropoff,
+    this.saved,
+    this.onPlaceSaved,
   });
 
   final FareCalculator calc;
@@ -123,6 +211,16 @@ class RouteConfirmPage extends StatefulWidget {
   /// is the outcome that default was dangerous for.
   final TripStop? dropoff;
 
+  /// Where "save this place" writes, or null for nowhere.
+  ///
+  /// Null hides the control. A rider on a build with no saved places would
+  /// otherwise get a bookmark button that opens a dialog and then does nothing,
+  /// which is the worst kind of feature: it looks finished and is a trap.
+  final SavedPlaceRepository? saved;
+
+  /// Called after a place is saved, so the destination screen's chips can be
+  /// there next time rather than one visit stale.
+  final void Function(SavedPlace place)? onPlaceSaved;
 
   @override
   State<RouteConfirmPage> createState() => _RouteConfirmPageState();
@@ -136,6 +234,13 @@ class _RouteConfirmPageState extends State<RouteConfirmPage> {
   // says what it wants, rather than quietly booking everyone to the airport.
   late TripStop? _dropoff = widget.dropoff;
   RideCategory _category = RideCategory.standard;
+
+  /// When the rider wants the ride, or null for now.
+  ///
+  /// Null is the default rather than "15 minutes from now" because a rider who
+  /// has not thought about it wants a car now, and a picker that opens on a
+  /// suggestion is a picker that books the wrong time.
+  DateTime? _scheduledFor;
 
   /// Whether the map picker is open over the fields.
   bool _pickingOnMap = false;
@@ -293,6 +398,7 @@ class _RouteConfirmPageState extends State<RouteConfirmPage> {
       pickup: _pickup,
       dropoff: destination,
       category: _category,
+      scheduledFor: _scheduledFor,
     );
     Navigator.of(context).pop<RouteDraft>(draft);
     widget.onSubmit(draft);
@@ -341,6 +447,81 @@ class _RouteConfirmPageState extends State<RouteConfirmPage> {
     _setStop(field, TripStop(label, point, name.line));
   }
 
+  /// Saves the destination under a name the rider picks.
+  ///
+  /// Here rather than on the search results, because this is the one moment the
+  /// rider has just agreed to go somewhere and is looking at the full address.
+  /// Saving it earlier would mean saving a place they had not checked.
+  ///
+  /// The **address** is what gets stored and what comes back onto the confirm
+  /// screen. The name is only what the rider calls it, and it belongs on the
+  /// chip. Storing the name as the address would put "Home" on a map pin.
+  Future<void> _savePlace() async {
+    final repository = widget.saved;
+    final destination = _dropoff;
+    if (repository == null || destination == null) return;
+
+    final address = stopLabel(destination);
+    final suggestion = await _askForName(context, address: address);
+    if (suggestion == null || !mounted) return;
+
+    final name = suggestion.trim();
+    if (name.isEmpty) return;
+    // Swallowed on purpose: the repository is upsert-shaped, so the only
+    // failure a rider can cause is one where nothing changed for them, and a
+    // "could not save" over a place that is already saved would be confusing
+    // rather than useful.
+    try {
+      final row = await repository.save(
+        SavedPlace(
+          id: '',
+          label: name,
+          address: address,
+          point: destination.point,
+        ),
+      );
+      if (!mounted || row == null) return;
+      widget.onPlaceSaved?.call(row);
+      ScaffoldMessenger.of(context)
+        ..clearSnackBars()
+        ..showSnackBar(
+          SnackBar(
+            key: const Key('placeSavedSnack'),
+            content: Text('$name saved'),
+          ),
+        );
+    } on Object {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+        ..clearSnackBars()
+        ..showSnackBar(
+          const SnackBar(
+            key: Key('placeSaveFailedSnack'),
+            content: Text('Could not save that. Try again.'),
+          ),
+        );
+    }
+  }
+
+  /// Asks what to call the place, defaulting to the place's own name.
+  ///
+  /// The default is the address rather than the empty string: a rider who taps
+  /// through still gets something useful, and "Home" typed first is one tap
+  /// fewer.
+  ///
+  /// Its own widget rather than an inline `AlertDialog`, because the controller
+  /// has to be disposed by whoever built the field and not by whoever awaited
+  /// the route. Doing it with `.whenComplete(controller.dispose)` disposed it the
+  /// instant the route future completed -- which is *before* the dialog has
+  /// finished animating out -- and the field threw
+  /// "A TextEditingController was used after being disposed" on every save.
+  Future<String?> _askForName(BuildContext context, {required String address}) {
+    return showDialog<String>(
+      context: context,
+      builder: (_) => _NamePlaceDialog(address: address),
+    );
+  }
+
   void _openMapFor(_Field field) {
     setState(() {
       _pickingOnMap = true;
@@ -367,7 +548,8 @@ class _RouteConfirmPageState extends State<RouteConfirmPage> {
     // server took 30% capped at GHS 40, so above GHS 133.33 the number agreed on
     // this screen was lower than the number billed. The offer is withdrawn, and
     // with it the only place in the app where the two could disagree.
-    final fare = full?.fareGhs;    return Scaffold(
+    final fare = full?.fareGhs;
+    return Scaffold(
       // Opaque white. A scrim over the map is what this page used to be, and a
       // rider confirming where they are going should be able to see it.
       backgroundColor: MngColors.page,
@@ -417,6 +599,22 @@ class _RouteConfirmPageState extends State<RouteConfirmPage> {
                       : () => _openMapFor(_Field.dropoff),
                   showMapAction: true,
                 ),
+                // Save the destination, once there is one to save.
+                //
+                // After the dropoff field rather than the pickup: a rider
+                // saving "Home" means where they are going home *to*, and putting
+                // it beside the pickup invites saving the wrong end of the trip.
+                if (widget.saved != null && _dropoff != null) ...[
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: TextButton.icon(
+                      key: const Key('savePlaceButton'),
+                      onPressed: _savePlace,
+                      icon: const Icon(Icons.bookmark_border, size: 18),
+                      label: const Text('Save this place'),
+                    ),
+                  ),
+                ],
                 if (_editing != null) ...[
                   SizedBox(height: 8.h),
                   _Results(
@@ -525,11 +723,25 @@ class _RouteConfirmPageState extends State<RouteConfirmPage> {
                   selected: _category,
                   onSelected: (c) => setState(() => _category = c),
                 ),
+                SizedBox(height: 14.h),
+                SchedulePicker(
+                  value: _scheduledFor,
+                  onChanged: (v) => setState(() => _scheduledFor = v),
+                ),
                 SizedBox(height: 20.h),
                 FilledButton(
                   key: const Key('confirmRouteButton'),
                   onPressed: _canSubmit ? _submit : null,
-                  child: const Text('Search for a ride'),
+                  // The label says what the button will do, which is the only
+                  // thing that keeps a scheduled booking from reading as an
+                  // immediate one. "Search for a ride" on a ride for tomorrow
+                  // morning is a lie the rider believes until the car does not
+                  // come.
+                  child: Text(
+                    _scheduledFor == null
+                        ? 'Search for a ride'
+                        : 'Book for ${formatScheduledMoment(_scheduledFor!)}',
+                  ),
                 ),
               ],
             ),

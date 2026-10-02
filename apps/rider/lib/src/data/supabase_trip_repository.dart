@@ -150,7 +150,6 @@ class SupabaseTripRepository implements TripRepository {
     required TripStop pickup,
     required TripStop dropoff,
     required RideCategory category,
-    String? promoCode,
     DateTime? scheduledFor,
   }) async {
     // The flattened `lat`/`lng` are what `parseRideRequest` reads; the nested
@@ -163,7 +162,6 @@ class SupabaseTripRepository implements TripRepository {
         'request-ride',
         body: {
           'category': category.name,
-          'promoCode': promoCode,
           // Null means "right now". The server stores null and the trip is
           // offerable immediately, so an ordinary booking takes exactly the
           // path it always did.

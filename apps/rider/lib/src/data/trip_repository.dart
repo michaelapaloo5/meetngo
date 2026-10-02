@@ -110,11 +110,22 @@ abstract class TripRepository {
     String? search,
   });
 
+  /// Asks for a ride on this route, now or later.
+  ///
+  /// [scheduledFor] books it for a time instead of immediately. Null means now,
+  /// which is the ordinary case and the only one that fans offers out to
+  /// drivers -- a scheduled trip is not offerable until its time, which the
+  /// database decides in `trips_is_offerable()` rather than being a separate trip
+  /// state.
+  ///
+  /// There is no `promoCode`. RIDE30 was withdrawn rather than reduced, and this
+  /// parameter outlived it: a repository that still accepts a promo code is a
+  /// repository whose caller can believe the discount exists.
   Future<Trip> requestRide({
     required TripStop pickup,
     required TripStop dropoff,
     required RideCategory category,
-    String? promoCode,
+    DateTime? scheduledFor,
   });
   Future<void> cancelTrip(String tripId);
 

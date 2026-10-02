@@ -6,6 +6,7 @@ import 'package:flutter_screenutil/flutter_screenutil.dart';
 import 'package:mng_core/mng_core.dart';
 
 import '../data/place_service.dart';
+import '../data/saved_place_repository.dart';
 
 /// Where would you go, as a whole screen rather than a panel over one.
 ///
@@ -33,6 +34,7 @@ class DestinationSearchPage extends StatefulWidget {
     required this.places,
     this.recent = const [],
     this.initialQuery = '',
+    this.saved,
   });
 
   /// The geocoder, injected so the page has no network of its own and a test
@@ -51,6 +53,14 @@ class DestinationSearchPage extends StatefulWidget {
   /// Pre-fills the field, so coming back from editing a destination does not
   /// clear what the rider had typed.
   final String initialQuery;
+
+  /// Where the rider's saved places come from, or null for nowhere.
+  ///
+  /// Null hides the section rather than showing an empty heading, for the reason
+  /// every optional thing in this app does: a section titled "Saved places" over
+  /// nothing is a promise the app cannot keep, and a rider who has never saved
+  /// one should not be shown a place to put it.
+  final SavedPlaceRepository? saved;
 
   @override
   State<DestinationSearchPage> createState() => _DestinationSearchPageState();
@@ -90,6 +100,7 @@ class _DestinationSearchPageState extends State<DestinationSearchPage> {
   void initState() {
     super.initState();
     unawaited(_raiseKeyboard());
+    unawaited(_loadSaved());
   }
 
   /// Focuses the field and brings the keyboard up.
@@ -132,17 +143,27 @@ class _DestinationSearchPageState extends State<DestinationSearchPage> {
   void _onChanged(String value) {
     _debounce?.cancel();
     final trimmed = value.trim();
-    if (trimmed.length < kMinPlaceSearchChars) {
-      setState(() {
+    // Rebuilt on every keystroke, not only on the short-query path.
+    //
+    // It used to `setState` only when the query was too short to search, and
+    // rely on `_runSearch` to rebuild once the answer landed. That left up to
+    // 450ms -- the debounce -- where the screen still showed the pre-typing
+    // state: the saved-places row stayed up while the rider typed a real query,
+    // and the heading still said "Where are you going?". A rider watching
+    // letters appear in a field with no reaction underneath has typed into a
+    // field they now suspect is broken.
+    //
+    // `_searching` is deliberately *not* set here. It is set when the request
+    // goes out, because a spinner that appears and disappears per character
+    // flickers and says nothing.
+    setState(() {
+      if (trimmed.length < kMinPlaceSearchChars) {
         _results = const [];
         _searching = false;
         _searchedFor = null;
-      });
-      return;
-    }
-    // "Searching" is set only once the request is actually going out, not on
-    // the keystroke. A spinner that appears and disappears per character
-    // flickers and says nothing.
+      }
+    });
+    if (trimmed.length < kMinPlaceSearchChars) return;
     _debounce = Timer(_searchDelay, () => _runSearch(trimmed));
   }
 
@@ -159,6 +180,103 @@ class _DestinationSearchPageState extends State<DestinationSearchPage> {
   }
 
   int _searchToken = 0;
+
+  /// The rider's saved places, or empty when there are none or nowhere to get
+  /// them from.
+  ///
+  /// A failed load leaves this empty and the section hidden, rather than an error
+  /// on the most important screen in the app. The rider can still type a place,
+  /// which is this page's actual job; saved places are a convenience on top of
+  /// search, and search does not need them.
+  List<SavedPlace> _saved = const [];
+
+  /// Reads the rider's saved places off the database.
+  ///
+  /// Started from `initState` alongside the keyboard rather than waited for:
+  /// this screen's job is search, and a rider who has to wait for a list of
+  /// their own places before they can type is a rider who types first and sees
+  /// the chips arrive underneath.
+  Future<void> _loadSaved() async {
+    final repository = widget.saved;
+    if (repository == null) return;
+    // Caught here rather than trusted to the repository.
+    //
+    // `SupabaseSavedPlaceRepository.all` does swallow its own errors, and this
+    // page was written assuming that. So the page had no `try` at all, which
+    // means it worked only as long as that one implementation did -- and the day
+    // someone wrote a second implementation, or the read started failing for a
+    // reason the repository does not recognise, the throw would escape
+    // `initState` and take the most important screen in the app with it.
+    //
+    // The outcome is the same either way: no row, and search still works.
+    List<SavedPlace> found;
+    try {
+      found = await repository.all();
+    } on Object {
+      return;
+    }
+    if (!mounted) return;
+    // Unroutable rows are dropped rather than offered: a place with no readable
+    // coordinate is a row nobody can send a car to, and a tap that selects it
+    // books nothing.
+    setState(() {
+      _saved = found.where((p) => p.isRoutable).toList();
+    });
+  }
+
+  /// Picks a saved place as the destination.
+  ///
+  /// Converted to a `PlaceSuggestion` rather than popped as a different type,
+  /// because the caller of this page is waiting for a `PlaceSuggestion` and
+  /// having two return shapes would mean a branch at every call site for one
+  /// kind of choice.
+  void _pickSaved(SavedPlace place) {
+    _focus.unfocus();
+    Navigator.of(context).pop(
+      PlaceSuggestion(
+        // The **address**, not the label the rider gave it.
+        //
+        // "Home" is what the rider calls it; it is not a place, and the confirm
+        // screen prints this string as the destination on the map pin, on the
+        // trip row and on the receipt. A rider who booked to "Home" and then saw
+        // "Home" on a map in Dansoman would have no way to check it. The label
+        // stays as the chip's own text, where it belongs.
+        label: place.address.trim().isNotEmpty ? place.address : place.label,
+        point: place.point,
+      ),
+    );
+  }
+
+  /// Removes a saved place and drops it from the list whether or not the write
+  /// lands.
+  ///
+  /// Removing it from the screen either way, because the alternative is a row
+  /// that stays until the page is reopened and looks like the delete failed.
+  /// `remove` swallows its own errors, so a row that was never deleted comes
+  /// back on the next open, which is recoverable; a row that never disappears is
+  /// not.
+  Future<void> _removeSaved(SavedPlace place) async {
+    setState(() {
+      _saved = _saved.where((p) => p.id != place.id).toList();
+    });
+    try {
+      await widget.saved?.remove(place.id);
+    } on Object {
+      // Swallowed on purpose, and the row stays gone either way. A throw here
+      // escapes an `onPressed` callback with nobody to catch it, so the rider
+      // would get an unhandled error from tapping an X rather than a chip that
+      // stopped being there. The place comes back on the next open if the write
+      // really failed, which is a thing they can see and act on.
+    }
+  }
+
+  /// Whether the saved section should be on screen.
+  ///
+  /// Only while the field is empty. Once a rider starts typing, the list they
+  /// are reading has to be results -- a "Saved places" block sitting above the
+  /// matches for what they typed is noise, and the matches are the answer.
+  bool get _showSaved =>
+      widget.saved != null && _saved.isNotEmpty && _query.text.trim().isEmpty;
 
   void _pick(PlaceSuggestion hit) {
     // Dismiss the keyboard before the page goes away, or it lingers over the
@@ -192,10 +310,7 @@ class _DestinationSearchPageState extends State<DestinationSearchPage> {
       return (items: const [], heading: 'Nothing matched "$_searchedFor"');
     }
     if (_query.text.trim().length == 1) {
-      return (
-        items: const [],
-        heading: 'Keep typing to search',
-      );
+      return (items: const [], heading: 'Keep typing to search');
     }
     if (_query.text.trim().length >= 2) {
       return (
@@ -204,10 +319,7 @@ class _DestinationSearchPageState extends State<DestinationSearchPage> {
       );
     }
     if (widget.recent.isEmpty) {
-      return (
-        items: const [],
-        heading: 'Where are you going?',
-      );
+      return (items: const [], heading: 'Where are you going?');
     }
     return (items: widget.recent, heading: 'Recent destinations');
   }
@@ -230,6 +342,34 @@ class _DestinationSearchPageState extends State<DestinationSearchPage> {
               onClear: _clear,
               onBack: () => Navigator.of(context).maybePop(),
             ),
+            if (_showSaved) ...[
+              // A horizontal row rather than a block above the list.
+              //
+              // Saved places are two or three words -- Home, Work, Airport -- and
+              // they belong where they cannot take a row from a search result. A
+              // vertical block would push the matches down and, worse, would need
+              // a second scroll view: a rider with nine saved places scrolling
+              // past them would scroll the results underneath at the same time.
+              // This row scrolls on its own axis and costs the results nothing.
+              SizedBox(
+                height: 48.h,
+                child: ListView.separated(
+                  key: const Key('savedPlacesRow'),
+                  scrollDirection: Axis.horizontal,
+                  padding: EdgeInsets.symmetric(horizontal: 20.w),
+                  itemCount: _saved.length,
+                  separatorBuilder: (_, _) => SizedBox(width: 8.w),
+                  itemBuilder: (_, i) {
+                    final place = _saved[i];
+                    return _SavedPlaceChip(
+                      place: place,
+                      onPick: () => _pickSaved(place),
+                      onRemove: () => _removeSaved(place),
+                    );
+                  },
+                ),
+              ),
+            ],
             Expanded(
               child: _DestinationList(
                 items: list.items,
@@ -241,6 +381,41 @@ class _DestinationSearchPageState extends State<DestinationSearchPage> {
           ],
         ),
       ),
+    );
+  }
+}
+
+/// One saved place, as a chip, with a way to remove it.
+///
+/// Removal is a separate small target rather than a long-press: long-press is
+/// undiscoverable, and a rider who wants a place gone has no reason to know
+/// they are supposed to hold the chip down first. Deleting somebody's "Home"
+/// by accident is also worse than an extra 24 pixels, so the two are not the
+/// same gesture.
+class _SavedPlaceChip extends StatelessWidget {
+  const _SavedPlaceChip({
+    required this.place,
+    required this.onPick,
+    required this.onRemove,
+  });
+
+  final SavedPlace place;
+  final VoidCallback onPick;
+  final VoidCallback onRemove;
+
+  @override
+  Widget build(BuildContext context) {
+    return InputChip(
+      key: Key('savedPlace-${place.id}'),
+      label: Text(place.label),
+      onPressed: onPick,
+      onDeleted: onRemove,
+      deleteIcon: const Icon(Icons.close, size: 16),
+      deleteButtonTooltipMessage: 'Remove ${place.label}',
+      // A chip's label is one line and the address is not shown: these are two or
+      // three words, and the full address belongs in the confirm screen where the
+      // rider is about to agree to it.
+      tooltip: place.address.trim().isEmpty ? place.label : place.address,
     );
   }
 }
@@ -283,11 +458,13 @@ class _SearchBar extends StatelessWidget {
               style: MngTheme.light.textTheme.titleMedium,
               decoration: InputDecoration(
                 hintText: 'Where to?',
-                hintStyle: MngTheme.light.textTheme.titleMedium
-                    ?.copyWith(color: MngColors.textSub),
+                hintStyle: MngTheme.light.textTheme.titleMedium?.copyWith(
+                  color: MngColors.textSub,
+                ),
                 prefixIcon: const Icon(Icons.search, color: MngColors.textSub),
                 suffixIcon: ValueListenableBuilder<TextEditingValue>(
-                  valueListenable: controller, builder: (_, value, _) => value.text.isEmpty
+                  valueListenable: controller,
+                  builder: (_, value, _) => value.text.isEmpty
                       ? const SizedBox.shrink()
                       : IconButton(
                           key: const Key('clearDestinationSearch'),
@@ -334,7 +511,8 @@ class _DestinationList extends StatelessWidget {
       key: const Key('destinationResults'),
       padding: EdgeInsets.fromLTRB(20.w, 8.h, 20.w, 24.h),
       itemCount: items.length + 1,
-      separatorBuilder: (_, _) => Divider(height: 1.h, color: MngColors.divider),
+      separatorBuilder: (_, _) =>
+          Divider(height: 1.h, color: MngColors.divider),
       itemBuilder: (context, i) {
         if (i == 0) {
           return Padding(
@@ -358,8 +536,11 @@ class _DestinationList extends StatelessWidget {
             maxLines: 2,
             overflow: TextOverflow.ellipsis,
           ),
-          trailing: const Icon(Icons.north_west,
-              size: 16, color: MngColors.textSub),
+          trailing: const Icon(
+            Icons.north_west,
+            size: 16,
+            color: MngColors.textSub,
+          ),
           onTap: () => onPick(hit),
         );
       },
