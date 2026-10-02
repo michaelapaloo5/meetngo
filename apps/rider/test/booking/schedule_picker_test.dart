@@ -343,6 +343,51 @@ void main() {
       );
     });
 
+    testWidgets('a chip never says "today" about a time that is not today', (
+      tester,
+    ) async {
+      // Found on the handset at 22:15: the four-hour chip read
+      // "Later today · tomorrow, 02:15". Two labels on one chip, contradicting
+      // each other, eight hours apart -- and the rider has to work out which is
+      // true before they can decide whether it suits them.
+      await pump(tester, onChanged: (_) {}, now: DateTime(2026, 10, 2, 22, 15));
+
+      for (final chip in ['30', '60', '240']) {
+        final label = tester
+            .widget<ChoiceChip>(find.byKey(Key('scheduleChip-$chip')))
+            .label
+            .toString();
+        expect(
+          label.toLowerCase(),
+          isNot(contains('today')),
+          reason: '"$label" claims today for a time past midnight',
+        );
+      }
+
+      // The four-hour chip is the one that actually crosses midnight from
+      // 22:15, and it has to fall back to naming the day -- without losing the
+      // clock time, because "Tomorrow" alone is not something anybody books a
+      // car against. The other two stay relative, which is right: 22:45 is
+      // genuinely still today.
+      final crossed = tester
+          .widget<ChoiceChip>(find.byKey(const Key('scheduleChip-240')))
+          .label
+          .toString();
+      expect(crossed, contains('tomorrow'));
+      expect(crossed, contains(RegExp(r'\d{2}:\d{2}')));
+      expect(find.text('In 30 min'), findsOneWidget);
+    });
+
+    testWidgets('the wording stays relative while the moment is today', (
+      t,
+    ) async {
+      // "In 30 min" is what a rider standing on a corner wants to read.
+      await pump(t, onChanged: (_) {}, now: DateTime(2026, 10, 2, 9, 0));
+      expect(find.text('In 30 min'), findsOneWidget);
+      expect(find.text('In 1 hour'), findsOneWidget);
+      expect(find.text('Now'), findsOneWidget);
+    });
+
     testWidgets('a time that is not a suggestion lights nothing', (t) async {
       // And that is correct: "In 30 min" from 09:00 is 09:30, so 09:45 is not
       // it. Claiming it is would light a chip that does not mean what it says.

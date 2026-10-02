@@ -106,27 +106,58 @@ class SupabaseSavedPlaceRepository implements SavedPlaceRepository {
     final user = _client.auth.currentUser;
     if (user == null) return null;
     if (place.label.trim().isEmpty) return null;
+    final row = {'rider_id': user.id, ...place.toRow()};
+
+    // A plain insert, then an update if it lost the race.
+    //
+    // This used to be `upsert(..., onConflict: 'rider_id')`. That does not work
+    // and never has: the unique index is on `(rider_id, lower(label))`, an
+    // expression, which PostgREST cannot be told about as a conflict target --
+    // so `onConflict: 'rider_id'` named an index that does not exist, every save
+    // errored, and the catch below returned whatever `_findByLabel` could find,
+    // which after a failed insert is nothing.
+    //
+    // The result was the worst version of this bug: the button opened a dialog,
+    // took the rider's name, and wrote nothing. Found by saving a place on the
+    // handset and reading `saved_places` back with zero rows. The file's own
+    // comment described the problem and then shipped the wrong answer to it.
+    //
+    // A plain insert is right anyway: it is one round trip in the ordinary case,
+    // and the unique index does the duplicate detection for free.
     try {
       final rows = await _client
           .from('saved_places')
-          .upsert(
-            {'rider_id': user.id, ...place.toRow()},
-            // The unique index is on `(rider_id, lower(label))`, which is not a
-            // column list, so it cannot be named as a conflict target. `onConflict`
-            // is left to PostgREST's default of "the primary key", which would
-            // insert a duplicate -- so the row is read back by label instead and
-            // the insert is guarded by the index rejecting the duplicate.
-            onConflict: 'rider_id',
-          )
+          .insert(row)
           .select('id, label, address, point');
       final first = (rows as List<dynamic>).firstOrNull;
       if (first == null) return null;
       return SavedPlace.fromRow(Map<String, dynamic>.from(first as Map));
-    } catch (_) {
-      // Saving the same place twice throws on the unique index. That is not a
-      // failure worth showing a rider: the outcome they asked for -- that place
-      // being saved -- is already true.
-      return await _findByLabel(place.label);
+    } on Object {
+      // Already saved under this name -- either because the rider just did it,
+      // or because they saved "Home" and are now saving "home". Update the row
+      // they already have rather than growing a list of two identical entries,
+      // which is what the `lower(label)` index exists to prevent.
+      return await _updateExisting(place);
+    }
+  }
+
+  /// Moves an already-saved place to [place]'s point, or returns null.
+  Future<SavedPlace?> _updateExisting(SavedPlace place) async {
+    final existing = await _findByLabel(place.label);
+    if (existing == null || existing.id.isEmpty) return null;
+    try {
+      final rows = await _client
+          .from('saved_places')
+          .update(place.toRow())
+          .eq('id', existing.id)
+          .select('id, label, address, point');
+      final first = (rows as List<dynamic>).firstOrNull;
+      if (first == null) return null;
+      return SavedPlace.fromRow(Map<String, dynamic>.from(first as Map));
+    } on Object {
+      // The row is the rider's own and the list reloads on the next open; a
+      // failed update leaves the old point, which is recoverable.
+      return null;
     }
   }
 

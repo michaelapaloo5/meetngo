@@ -78,7 +78,13 @@ class _NamePlaceDialogState extends State<_NamePlaceDialog> {
         key: const Key('savedPlaceNameField'),
         controller: _name,
         autofocus: true,
-        maxLength: 60,
+        // 120, not a rounder-looking smaller number, because the field opens
+        // pre-filled with the **address** and a Ghanaian one is routinely longer
+        // than 60 characters. The cap used to be 60, which made the dialog's own
+        // default value illegal: it opened showing a red "65/60" counter over an
+        // address the rider had not typed and had every reason to keep. The
+        // column is unbounded `text`, so nothing downstairs is counting either.
+        maxLength: 120,
         textCapitalization: TextCapitalization.words,
         decoration: const InputDecoration(
           labelText: 'Call it',

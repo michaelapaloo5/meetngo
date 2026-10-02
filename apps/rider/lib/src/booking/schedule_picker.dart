@@ -36,6 +36,12 @@ class SchedulePicker extends StatelessWidget {
 
   /// The four times offered, in the order offered.
   ///
+  /// The `label` is a *fallback* and the chip's real text is worked out from the
+  /// moment the offset lands on -- see [_labelFor]. "Later today" is a fixed
+  /// string, and four hours from 22:15 is 02:15 *tomorrow*, so the chip used to
+  /// read "Later today · tomorrow, 02:15": two labels on one chip, contradicting
+  /// each other, eight hours apart.
+  ///
   /// Rounded to the next quarter hour, because "in 15 minutes" for somebody
   /// standing on a street corner is a useful question and "in 17 minutes" is not.
   static List<({String label, Duration offset})> get options =>
@@ -43,8 +49,33 @@ class SchedulePicker extends StatelessWidget {
         (label: 'Now', offset: Duration.zero),
         (label: 'In 30 min', offset: Duration(minutes: 30)),
         (label: 'In 1 hour', offset: Duration(hours: 1)),
-        (label: 'Later today', offset: Duration(hours: 4)),
+        (label: 'Later', offset: Duration(hours: 4)),
       ];
+
+  /// The text on the chip for [offset].
+  ///
+  /// Relative wording while the moment is still today, because "in 30 minutes"
+  /// is what a rider standing on a corner wants to read. Once the offset crosses
+  /// midnight the relative wording becomes a lie and the chip says what the day
+  /// is instead.
+  String _labelFor(Duration offset) {
+    if (offset == Duration.zero) return 'Now';
+    final at = _at(offset);
+    return _sameDay(at, _now())
+        ? 'In ${_readable(offset)}'
+        : formatScheduledMoment(at);
+  }
+
+  /// Whether [a] and [b] fall on the same calendar day.
+  static bool _sameDay(DateTime a, DateTime b) =>
+      a.year == b.year && a.month == b.month && a.day == b.day;
+
+  /// "30 min" / "1 hour", so the chip does not read "In 1 hour".
+  static String _readable(Duration offset) {
+    if (offset.inMinutes < 60) return '${offset.inMinutes} min';
+    final hours = offset.inHours;
+    return hours == 1 ? '1 hour' : '$hours hours';
+  }
 
   /// The next quarter hour at or after [from].
   ///
@@ -97,7 +128,7 @@ class SchedulePicker extends StatelessWidget {
                 label: Text(
                   option.offset == Duration.zero
                       ? option.label
-                      : '${option.label} · ${formatScheduledMoment(_at(option.offset))}',
+                      : _labelFor(option.offset),
                 ),
                 selected: _isSelected(option.offset, chosen),
                 onSelected: (_) => onChanged(
