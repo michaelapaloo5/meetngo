@@ -26,26 +26,52 @@ import 'bookings_screen.dart' show TripStateBadge;
 /// The pickup code is shown for the same reason it is on the tracking screen:
 /// it is on the row, and a rider checking an old ride can see the four digits
 /// that trip used.
-class TripDetailScreen extends StatelessWidget {
+class TripDetailScreen extends StatefulWidget {
   const TripDetailScreen({
     super.key,
     required this.ride,
-    this.reports,
-    this.existingReport,
+    required this.reports,
   });
 
   final BookedTrip ride;
 
-  /// Where a report goes, or null when this build has nowhere to send one.
+  /// Where a report goes.
   ///
-  /// Null hides the button rather than showing a dead one. Every button on this
-  /// screen that used to be decorative has been wired, and the one lesson from
-  /// that run is that a live-looking control which does nothing is worse than
-  /// an absent one.
-  final TripReportRepository? reports;
+  /// **Required, and that is the point.** It was optional at first, and the row
+  /// in `BookingsScreen` did not pass it -- so the report button silently did not
+  /// exist on the most obvious way into this screen. Every decorative button in
+  /// the rider app has already been found and either wired or removed once; the
+  /// least useful thing this code could do is add another one that compiles. A
+  /// required parameter makes every call site state where reports go.
+  final TripReportRepository reports;
 
-  /// What this rider already reported, so the button can offer to add to it.
-  final RideReport? existingReport;
+  @override
+  State<TripDetailScreen> createState() => _TripDetailScreenState();
+}
+
+class _TripDetailScreenState extends State<TripDetailScreen> {
+  /// What this rider already reported about this ride, if anything.
+  RideReport? _existing;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadExisting();
+  }
+
+  /// Asks whether there is already a report, so the button can offer to add to it
+  /// instead of inviting a second one about the same journey.
+  ///
+  /// Fetched here rather than handed in, which is what keeps [TripDetailScreen]
+  /// down to one thing a caller must supply. The previous version took the
+  /// existing report as a second optional parameter; every call site then had two
+  /// chances to forget something, and one of them did.
+  Future<void> _loadExisting() async {
+    if (!_canReport) return;
+    final found = await widget.reports.reportFor(widget.ride.trip.id);
+    if (!mounted) return;
+    setState(() => _existing = found);
+  }
 
   /// Whether this ride is finished enough to report on.
   ///
@@ -53,12 +79,15 @@ class TripDetailScreen extends StatelessWidget {
   /// authority. Checked here only so the button is not offered on a ride it would
   /// be refused for.
   bool get _canReport {
-    final state = ride.trip.state;
+    final state = widget.ride.trip.state;
     return state == TripState.completed || state == TripState.cancelled;
   }
 
   @override
   Widget build(BuildContext context) {
+    final ride = widget.ride;
+    final reports = widget.reports;
+    final existingReport = _existing;
     final trip = ride.trip;
     final theme = MngTheme.light.textTheme;
     return Scaffold(
@@ -147,10 +176,11 @@ class TripDetailScreen extends StatelessWidget {
             // support ticket raised while the car is still arriving is something
             // nobody reads until it is over. The database says the same thing --
             // `trips_can_be_reported` refuses anything not `completed` or
-            // `cancelled` -- so the button and the rule cannot disagree, and a
-            // rider who got here through the home list rather than a live ride
-            // sees no dead control.
-            if (_canReport && reports != null) ...[
+            // `cancelled` -- so the button and the rule cannot disagree.
+            //
+            // Shown on both routes into this screen, because the repository is a
+            // required argument rather than an optional one.
+            if (_canReport) ...[
               SizedBox(height: 16.h),
               if (existingReport != null) ...[
                 Container(
@@ -166,7 +196,7 @@ class TripDetailScreen extends StatelessWidget {
                     children: [
                       Text('You reported this', style: theme.bodySmall),
                       SizedBox(height: 2.h),
-                      Text(existingReport!.reason, style: theme.titleSmall),
+                      Text(existingReport.reason, style: theme.titleSmall),
                     ],
                   ),
                 ),
@@ -179,7 +209,7 @@ class TripDetailScreen extends StatelessWidget {
                   onPressed: () => ReportProblemSheet.show(
                     context,
                     tripId: trip.id,
-                    repository: reports!,
+                    repository: reports,
                     existing: existingReport,
                   ),
                   icon: const Icon(Icons.flag_outlined),

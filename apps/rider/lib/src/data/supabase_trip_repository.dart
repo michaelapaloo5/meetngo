@@ -62,12 +62,18 @@ class SupabaseTripRepository implements TripRepository {
   @override
   Future<List<BookedTrip>> history({
     int limit = 50,
-    TripState? state,
+    Set<TripState>? states,
     DateTime? since,
     String? search,
   }) async {
     final user = _client.auth.currentUser;
     if (user == null) return const [];
+    // An empty state set is not "everything" and it is not a server error
+    // either: PostgREST's `in.()` with no members is a syntax error, so a filter
+    // built from an empty collection would turn into a failed screen. It asks
+    // for no rides, which is what an empty set of states means, so it is
+    // answered here without a round trip.
+    if (states != null && states.isEmpty) return const [];
     // Same two-arm RLS problem `activeTrip` documents, and the same fix. The
     // `rider_id` filter is what makes the name true: without it a rider who is
     // also the assigned driver on someone else's trip matches the driver arm
@@ -97,8 +103,13 @@ class SupabaseTripRepository implements TripRepository {
     // `dynamic` one, only noisier.
     Future<List<Map<String, dynamic>>> run() async {
       var q = _client.from('trips').select().eq('rider_id', user.id);
-      if (state != null) {
-        q = q.eq('state', state.name);
+      if (states != null) {
+        // `inFilter`, not a chain of `.or()` calls: the state names are enum
+        // values, so nothing the rider typed reaches this string, and a filter
+        // that composes its own query language is a filter that can be injected
+        // into. `.inFilter` sits on the same filter builder as `.eq`, so it
+        // belongs here with the other filters -- see the note on ordering below.
+        q = q.inFilter('state', states.map((s) => s.name).toList());
       }
       if (since != null) {
         q = q.gte('created_at', since.toUtc().toIso8601String());

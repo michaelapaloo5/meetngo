@@ -93,7 +93,7 @@ class FakeTripRepository implements TripRepository {
   @override
   Future<List<BookedTrip>> history({
     int limit = 50,
-    TripState? state,
+    Set<TripState>? states,
     DateTime? since,
     String? search,
   }) async => const [];

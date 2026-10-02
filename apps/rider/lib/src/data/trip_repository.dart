@@ -85,14 +85,6 @@ abstract class TripRepository {
   /// the exact pair of facts that let that ship.
   Future<DriverContact> driverContact(String tripId);
 
-  /// The rider's own trips, newest first.
-  ///
-  /// Scoped to `rider_id = auth.uid()` inside the implementation rather than
-  /// trusted from the caller, because `trips` carries two permissive SELECT
-  /// policies (`rider reads own trips` and `driver reads assigned trips`,
-  /// ORed together by RLS) and a rider who is also the assigned driver of
-  /// someone else's trip would otherwise get that trip into their booking
-  /// history.
   /// The rider's own trips, newest first, filtered.
   ///
   /// Every filter is nullable and they combine with AND, so a rider can ask for
@@ -100,13 +92,20 @@ abstract class TripRepository {
   /// string. The composition happens here, in Dart, where it can be tested --
   /// rather than in a PostgREST `.or()` that the rider's own typed text reaches.
   ///
+  /// [states] is a **set** rather than a single state because "Live" covers
+  /// several: a rider whose car is `arriving` must be able to find that ride.
+  /// Passing more than one asks PostgREST for `state=in.(...)` rather than for
+  /// any state at all -- the empty set is not "everything", because `in.()` with
+  /// no members is a syntax error rather than a match-all, so the UI must send
+  /// null for "no filter".
+  ///
   /// [search] matches the two place names, case-insensitively. It is escaped
   /// before it reaches the query: an unescaped `%` or `,` in a search box would
   /// otherwise change what the query means, and a rider typing "Accra, Kumasi"
   /// would get a syntax error rather than an empty list.
   Future<List<BookedTrip>> history({
     int limit = 50,
-    TripState? state,
+    Set<TripState>? states,
     DateTime? since,
     String? search,
   });

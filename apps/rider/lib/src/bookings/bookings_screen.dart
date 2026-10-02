@@ -4,6 +4,7 @@ import 'package:mng_core/mng_core.dart';
 import 'package:provider/provider.dart';
 
 import '../data/booked_trip.dart';
+import '../data/trip_report_repository.dart';
 import '../trip/trip_copy.dart';
 import 'bookings_controller.dart';
 import 'trip_detail_screen.dart';
@@ -46,36 +47,119 @@ class _BookingsScreenState extends State<BookingsScreen> {
         top: false,
         child: RefreshIndicator(
           onRefresh: c.load,
-          child: _body(c),
+          // The chips sit above the list rather than inside it, so they stay put
+          // when the rider scrolls and are reachable when the list is empty.
+          child: CustomScrollView(
+            slivers: [
+              SliverToBoxAdapter(child: _FilterChips(controller: c)),
+              ..._rowsSlivers(c),
+            ],
+          ),
         ),
       ),
     );
   }
 
-  Widget _body(BookingsController c) {
+  /// The list, or whichever of the three empty/failed states applies.
+  List<Widget> _rowsSlivers(BookingsController c) {
     if (c.state == BookingsStatus.loading) {
-      return const Center(child: CircularProgressIndicator());
+      return const [
+        SliverFillRemaining(
+          hasScrollBody: false,
+          child: Center(child: CircularProgressIndicator()),
+        ),
+      ];
     }
     if (c.state == BookingsStatus.failed) {
-      return _Message(
-        icon: Icons.cloud_off_outlined,
-        title: 'Your rides did not load',
-        body: c.error ?? 'Could not reach the server',
-        onRetry: c.load,
-      );
+      return [
+        SliverFillRemaining(
+          hasScrollBody: false,
+          child: _Message(
+            icon: Icons.cloud_off_outlined,
+            title: 'Your rides did not load',
+            body: c.error ?? 'Could not reach the server',
+            onRetry: c.load,
+          ),
+        ),
+      ];
     }
     if (c.trips.isEmpty) {
-      return const _Message(
-        icon: Icons.route_outlined,
-        title: 'No rides yet',
-        body: 'When you book a ride it will appear here, newest first.',
-      );
+      // "No rides yet" is only true when no filter is on. With "Cancelled"
+      // selected and nothing cancelled, that sentence tells a rider with 24
+      // rides that they have none, and they would act on it. The filtered case
+      // names the filter and offers the way back instead.
+      final filtered = !c.filter.sameAs(BookingsFilters.all);
+      return [
+        SliverFillRemaining(
+          hasScrollBody: false,
+          child: _Message(
+            icon: filtered
+                ? Icons.filter_alt_off_outlined
+                : Icons.route_outlined,
+            title: filtered
+                ? 'No ${c.filter.label.toLowerCase()} rides'
+                : 'No rides yet',
+            body: filtered
+                ? 'You have other rides. This filter is showing none of them.'
+                : 'When you book a ride it will appear here, newest first.',
+            actionLabel: filtered ? 'Show all rides' : null,
+            onAction: filtered ? () => c.setFilter(BookingsFilters.all) : null,
+          ),
+        ),
+      ];
     }
-    return ListView.separated(
-      padding: EdgeInsets.fromLTRB(20.w, 8.h, 20.w, 24.h),
-      itemCount: c.trips.length,
-      separatorBuilder: (_, _) => SizedBox(height: 12.h),
-      itemBuilder: (context, i) => TripRow(ride: c.trips[i]),
+    return [
+      SliverPadding(
+        padding: EdgeInsets.fromLTRB(20.w, 4.h, 20.w, 24.h),
+        sliver: SliverList.separated(
+          itemCount: c.trips.length,
+          separatorBuilder: (_, _) => SizedBox(height: 12.h),
+          itemBuilder: (context, i) => TripRow(ride: c.trips[i]),
+        ),
+      ),
+    ];
+  }
+}
+
+/// The row of chips that narrows the list to one kind of ride.
+///
+/// Between them the chips are exhaustive over `TripState.values`: every state
+/// that `isActive` is under "Live", and every finished state has its own chip. A
+/// state with no chip would be a ride that exists and cannot be found, which is
+/// worse than an extra chip. That is why "Live" is derived from the enum rather
+/// than written out -- see `BookingsFilters.active`.
+class _FilterChips extends StatelessWidget {
+  const _FilterChips({required this.controller});
+
+  final BookingsController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    final selected = controller.filter;
+    return SizedBox(
+      height: 52.h,
+      child: ListView(
+        scrollDirection: Axis.horizontal,
+        padding: EdgeInsets.symmetric(horizontal: 20.w),
+        children: [
+          for (final filter in BookingsFilters.offered)
+            Padding(
+              padding: EdgeInsets.only(right: 8.w),
+              child: FilterChip(
+                key: Key('filterChip-${filter.label}'),
+                label: Text(filter.label),
+                selected: filter.sameAs(selected),
+                // Disabled while a read is in flight so the row cannot be
+                // double-tapped into two overlapping requests. The controller
+                // ignores the second tap regardless; this makes the state
+                // visible rather than silent.
+                onSelected: controller.loading
+                    ? null
+                    : (_) => controller.setFilter(filter),
+              ),
+            ),
+        ],
+      ),
     );
   }
 }
@@ -96,7 +180,15 @@ class TripRow extends StatelessWidget {
       behavior: HitTestBehavior.opaque,
       onTap: () => Navigator.of(context).push(
         MaterialPageRoute<void>(
-          builder: (_) => TripDetailScreen(ride: ride),
+          // Read here, at the tap, rather than passed in from the list: this is
+          // the row's own navigation and the repository is one `context.read`
+          // away. It has to be supplied -- `TripDetailScreen` requires it -- and
+          // the point of a required argument is that this call site cannot
+          // quietly leave the report button off the list.
+          builder: (_) => TripDetailScreen(
+            ride: ride,
+            reports: context.read<TripReportRepository>(),
+          ),
         ),
       ),
       child: Container(
@@ -229,6 +321,8 @@ class _Message extends StatelessWidget {
     required this.title,
     required this.body,
     this.onRetry,
+    this.actionLabel,
+    this.onAction,
   });
 
   final IconData icon;
@@ -236,38 +330,68 @@ class _Message extends StatelessWidget {
   final String body;
   final Future<void> Function()? onRetry;
 
+  /// A way out of the state that is not "try the same thing again".
+  ///
+  /// For a filtered list that matched nothing the answer is to remove the filter,
+  /// and retrying the identical query would fail identically.
+  final String? actionLabel;
+  final VoidCallback? onAction;
+
   @override
   Widget build(BuildContext context) {
-    // Inside a RefreshIndicator, which needs a scrollable child to pull on.
-    return ListView(
-      padding: EdgeInsets.symmetric(horizontal: 32.w, vertical: 80.h),
-      children: [
-        Icon(icon, size: 40, color: MngColors.divider),
-        SizedBox(height: 12.h),
-        Text(
-          title,
-          textAlign: TextAlign.center,
-          style: MngTheme.light.textTheme.titleMedium,
-        ),
-        SizedBox(height: 4.h),
-        Text(
-          body,
-          textAlign: TextAlign.center,
-          style: MngTheme.light.textTheme.bodySmall,
-        ),
-        if (onRetry != null) ...[
-          SizedBox(height: 20.h),
-          OutlinedButton(
-            key: const Key('retryButton'),
-            onPressed: onRetry,
-            style: OutlinedButton.styleFrom(
-              minimumSize: const Size.fromHeight(48),
-            ),
-            child: const Text('Try again'),
+    // Deliberately **not** a `ListView`.
+    //
+    // This used to be one, back when the screen's body was the list itself and
+    // the `RefreshIndicator` needed a scrollable child. Now the state is a
+    // `SliverFillRemaining` inside a `CustomScrollView`, and a `ListView` here is
+    // a viewport inside a viewport: during layout Flutter asks the outer one for
+    // its intrinsic height, which it refuses to compute because that would mean
+    // instantiating every child -- `RenderViewport does not support returning
+    // intrinsic dimensions`. Every empty state on this screen threw on its way
+    // to the screen. Found by a test that tapped a filter matching nothing.
+    return Padding(
+      padding: EdgeInsets.symmetric(horizontal: 32.w, vertical: 60.h),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Icon(icon, size: 40, color: MngColors.divider),
+          SizedBox(height: 12.h),
+          Text(
+            title,
+            textAlign: TextAlign.center,
+            style: MngTheme.light.textTheme.titleMedium,
           ),
+          SizedBox(height: 4.h),
+          Text(
+            body,
+            textAlign: TextAlign.center,
+            style: MngTheme.light.textTheme.bodySmall,
+          ),
+          if (onRetry != null) ...[
+            SizedBox(height: 20.h),
+            OutlinedButton(
+              key: const Key('retryButton'),
+              onPressed: onRetry,
+              style: OutlinedButton.styleFrom(
+                minimumSize: const Size.fromHeight(48),
+              ),
+              child: const Text('Try again'),
+            ),
+          ],
+          if (actionLabel != null) ...[
+            SizedBox(height: 12.h),
+            FilledButton(
+              key: const Key('emptyStateAction'),
+              onPressed: onAction,
+              style: FilledButton.styleFrom(
+                minimumSize: const Size.fromHeight(48),
+              ),
+              child: Text(actionLabel!),
+            ),
+          ],
         ],
-      ],
+      ),
     );
   }
 }
-

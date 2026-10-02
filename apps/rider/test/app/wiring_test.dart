@@ -55,12 +55,23 @@ class _StubTrips implements TripRepository {
   @override
   Future<List<BookedTrip>> history({
     int limit = 50,
-    TripState? state,
+    Set<TripState>? states,
     DateTime? since,
     String? search,
   }) async {
     historyCalls++;
-    return pastTrips.take(limit).toList();
+    // The states filter is honoured rather than ignored, because the bookings
+    // chips ask for it and a stub that returned everything would make a filter
+    // test pass for the wrong reason -- the list would look right without the
+    // filter ever reaching a query.
+    //
+    // An empty set asks for no rides, which is the same reading the real
+    // repository gives it.
+    var rows = pastTrips;
+    if (states != null) {
+      rows = rows.where((r) => states.contains(r.trip.state)).toList();
+    }
+    return rows.take(limit).toList();
   }
 
   @override
