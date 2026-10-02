@@ -575,6 +575,14 @@ class _RiderShellState extends State<RiderShell> {
   void _leaveRideView() {
     if (!mounted) return;
     setState(() => _showingRideView = false);
+    // Re-read the ride list, so the ride they just stepped out of is on it.
+    //
+    // The documented way back into a ride is tapping it in Recent rides, and that
+    // only works if it is *there*. The list was loaded when the shell was built,
+    // so a ride booked a minute ago is not on it -- verified on the handset: back
+    // out of a live ride and home showed five older rides and nothing current,
+    // making the way back a one-way street after all.
+    unawaited(_loadRecentRides());
   }
 
   /// One of the four tabs, each with its own controller created here rather
