@@ -227,25 +227,39 @@ class TurnBanner extends StatelessWidget {
           ),
         ),
         SizedBox(width: 10.w),
-        Column(
-          crossAxisAlignment: CrossAxisAlignment.end,
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text(
-              leadText,
-              key: const Key('turnBannerDistance'),
-              style: text.titleLarge?.copyWith(
-                color: MngColors.onPrimary,
-                fontWeight: FontWeight.w800,
+        // Distance and arrival on one line, for the same reason as the
+        // instruction and the road name, and it was the half I missed first
+        // time: flattening the left half of the banner left this column
+        // stacked, so the banner was still two rows tall. Verified on the
+        // handset, where it read "7.7 km" over "03:11".
+        //
+        // The distance leads and stays the heavier of the two, because it is the
+        // number that changes as they drive and the clock is the one that does
+        // not move. Neither is dropped to make room -- there is room, and this
+        // corner is the one place on the banner with nothing else competing for
+        // it.
+        RichText(
+          key: const Key('turnBannerDistance'),
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          textAlign: TextAlign.right,
+          text: TextSpan(
+            children: [
+              TextSpan(
+                text: leadText,
+                style: text.titleLarge?.copyWith(
+                  color: MngColors.onPrimary,
+                  fontWeight: FontWeight.w800,
+                ),
               ),
-            ),
-            if (controller.arrivalAt != null)
-              Text(
-                formatArrivalClock(controller.now, controller.route!.durationS),
-                key: const Key('turnBannerArrival'),
-                style: text.labelSmall?.copyWith(color: MngColors.onPrimary),
-              ),
-          ],
+              if (controller.arrivalAt != null)
+                TextSpan(
+                  text:
+                      ' · ${formatArrivalClock(controller.now, controller.route!.durationS)}',
+                  style: text.labelSmall?.copyWith(color: MngColors.onPrimary),
+                ),
+            ],
+          ),
         ),
       ],
     );

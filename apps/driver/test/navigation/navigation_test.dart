@@ -695,7 +695,9 @@ void main() {
         findsOneWidget,
       );
       expect(find.byKey(const Key('turnBannerDistance')), findsOneWidget);
-      expect(find.text('14:12'), findsOneWidget);
+      // Distance and arrival share one line: the corner, not two rows.
+      expect(find.textContaining('14:12', findRichText: true), findsOneWidget);
+      expect(find.text('14:12'), findsNothing);
     });
 
     testWidgets(
@@ -763,16 +765,44 @@ void main() {
       await c.start();
       await show(tester, c);
 
-      // The whole reason the instruction and the road name are one paragraph
-      // rather than stacked: on a phone in a mount, two rows of the one thing a
-      // driver reads while driving is the cost that was not worth paying.
+      // On a phone in a mount, two rows of the one thing a driver reads while
+      // driving is the cost that was not worth paying. So the whole banner is
+      // one row -- both halves of it.
+      //
+      // The two keys that no longer exist are the assertion that matters: they
+      // were the stacked road name and the stacked arrival clock, and their
+      // absence is what "one line" means. `turnBannerRoad` I removed first time
+      // round; `turnBannerArrival` was still there, so the banner was still two
+      // rows tall and I called the job done. Found by looking at the handset,
+      // where it read "7.7 km" over "03:11".
       expect(find.byKey(const Key('turnBannerInstruction')), findsOneWidget);
       expect(find.byKey(const Key('turnBannerRoad')), findsNothing);
+      expect(find.byKey(const Key('turnBannerArrival')), findsNothing);
+
+      // And the height proves it rather than merely restating it. One row of
+      // title text plus the container's padding.
       final banner = tester.getSize(find.byKey(const Key('turnBanner')));
       expect(
         banner.height,
-        lessThan(90),
-        reason: 'a single line of title text plus its padding, not two rows',
+        lessThan(76),
+        reason: 'one row of text plus padding, not two',
+      );
+
+      // Both text groups on the same baseline band, which is what one line means
+      // for a driver glancing down: the instruction and the distance are read
+      // together, not as two rows.
+      final instruction = tester.getRect(
+        find.byKey(const Key('turnBannerInstruction')),
+      );
+      final distance = tester.getRect(
+        find.byKey(const Key('turnBannerDistance')),
+      );
+      expect(
+        distance.center.dy,
+        lessThan(instruction.bottom),
+        reason:
+            'the distance shares the instruction line rather than sitting '
+            'under it',
       );
     });
 
