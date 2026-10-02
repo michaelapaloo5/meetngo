@@ -300,7 +300,6 @@ class _DriverMapPanelState extends State<DriverMapPanel> {
 
   bool get following => _following;
 
-
   /// Re-centre on the driver and resume following.
   void recentre() {
     setState(() => _following = true);
@@ -450,7 +449,20 @@ class _DriverMapPanelState extends State<DriverMapPanel> {
     if (point == null) return;
     final bearing = widget.driverHeading ?? 0;
     await controller.addImage(kCarTopdownIconName, carTopdownPng());
-    await controller.addGeoJsonSource(kVehicleSourceId, {
+    // `setGeoJsonSource`, not `addGeoJsonSource`, and the difference is the whole
+    // reason the car never appeared.
+    //
+    // The style *declares* `vehicles` as an empty GeoJSON source, so it exists from
+    // the moment the style finishes loading. `addGeoJsonSource` creates, and
+    // MapLibre answers a create against an existing id by throwing "Source with id
+    // 'vehicles' already exists". Nothing here caught it, the callback that called
+    // this swallowed it, and the layer was left pointing at an empty feature
+    // collection -- so the icon was registered and the layer existed and the car
+    // was never drawn, on any screen, in any build.
+    //
+    // The route and pin sources are created by this panel and are not in the style,
+    // which is why `addGeoJsonSource` is right for those and wrong for this one.
+    await controller.setGeoJsonSource(kVehicleSourceId, {
       'type': 'FeatureCollection',
       'features': [
         {
