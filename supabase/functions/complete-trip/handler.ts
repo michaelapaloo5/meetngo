@@ -304,8 +304,45 @@ export async function handleComplete(input: {
   // completing a trip as a driver -- and a driver-less trip writes no ledger
   // and no payout below, so it settles at the standard rate and is not
   // recorded. Recording it would put a number on a trip that earned nothing.
+  //
+  // ## The second caller does not pay twice
+  //
+  // Every finished ride has two callers of this function: the driver, and then
+  // the rider's own app the moment the trip reads as completed. Measured against
+  // the live database -- `toolchain/verify-complete-trip-twice.mjs` -- the second
+  // call answered 200 with an *identical* settlement and wrote a second fare, a
+  // second commission and a second payout. Ledger 2 rows became 4, payouts 1
+  // became 2.
+  //
+  // That is why it survived. Both calls compute the same 51.20 and the same
+  // 43.52, so the rider's receipt was correct and nothing anywhere disagreed --
+  // the driver was simply credited twice, which no screen shows anybody. The
+  // rider app's own workaround for a missing receipt was covering for it.
+  //
+  // `trips.commission_rate` is the marker, and it is the right one because of
+  // the order it is written in below: last, on the charge path, and only there.
+  // A settlement that failed half way leaves it null, so a genuine retry still
+  // writes the money. A settlement that finished leaves it set, so a repeat does
+  // not.
+  const alreadySettled =
+    trip.commission_rate !== null && trip.commission_rate !== undefined;
   let commissionRate = STANDARD_COMMISSION_RATE;
-  if (trip.driver_id) {
+  if (trip.driver_id && alreadySettled) {
+    // Honour the rate that was decided rather than resolving a fresh one.
+    //
+    // The recorded number is the one in the ledger, and a retry that recomputed
+    // the rate from today's promo window would report a settlement that does not
+    // match what the driver was actually paid -- a correct-looking answer to the
+    // wrong question. So the recorded value wins, always.
+    const recorded = Number(trip.commission_rate);
+    if (!Number.isFinite(recorded)) {
+      // Settled, but the rate on the row is not a number. Something wrote money
+      // without recording why, and guessing here would silently change a payout
+      // that has already been made. Worth a 500.
+      return json(500, { error: 'trip is settled but its recorded commission rate is unreadable' });
+    }
+    commissionRate = recorded;
+  } else if (trip.driver_id) {
     const { window, error: promoError } = await deps.findPromoWindow(trip.driver_id);
     if (promoError) return json(500, { error: 'promo lookup failed' });
     // Dated from the trip's `completed_at`, falling back to now() only for a
@@ -372,7 +409,15 @@ export async function handleComplete(input: {
     if (paidError) return json(500, { error: 'payment write failed' });
     if (!paid) return json(404, { error: 'payment not found' });
   }
-  if (trip.driver_id) {
+  // `!alreadySettled` is the whole point of this branch being guarded.
+    //
+    // The comment above it says the retry path "is already idempotent on the
+    // payment so it will not pay twice", and that was true of the payment and
+    // nothing else. These three writes are plain inserts: the ledger took a second
+    // fare and commission and the payout a second row, and because the settlement
+    // recomputes identically both times, the response looked correct while the
+    // money did not. Verified live before and after this guard.
+    if (trip.driver_id && !alreadySettled) {
     // The money identity, and the kinds come from `decision.ledgerKinds` rather
     // than from a second hand-written list. The decision is what worked out what
     // this trip owes, so a copy of the two kinds written out here could disagree

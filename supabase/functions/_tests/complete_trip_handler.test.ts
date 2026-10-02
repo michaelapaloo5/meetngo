@@ -10,6 +10,7 @@ import {
   type TripRow,
 } from '../complete-trip/handler.ts';
 import { settleFare } from '../complete-trip/ledger.ts';
+import { STANDARD_COMMISSION_RATE } from '../_shared/promo.ts';
 
 // Every port is a recording fake, so a test can see what the handler *asked for*
 // and not only what it answered. Nothing here opens a socket or reads an
@@ -96,6 +97,17 @@ const harness = (options: Options = {}) => {
     promoLookups: [],
     commissionRates: [],
   };
+  // The row the fake *holds*, which `recordCommissionRate` writes back into.
+  //
+  // This models the database rather than a fixture, and it is the reason a double
+  // payout got through. In production `trips.commission_rate` is a column and the
+  // next call's `select('*')` reads back what the last call wrote. A `findTrip`
+  // that built a fresh literal on every read made every repeat look like a first
+  // call, so the second caller could never see that the trip was already settled
+  // -- and no test could catch that, because the fake did not have the state the
+  // bug lived in.
+  const stored: TripRow | null =
+    'row' in options ? options.row ?? null : row();
   // `Promise.resolve` rather than `async`: the ports are declared as returning a
   // Promise, and an `async` arrow with no `await` in it is a `require-await`
   // lint error.
@@ -111,10 +123,7 @@ const harness = (options: Options = {}) => {
     },
     findTrip: (tripId) => {
       calls.tripsRead.push(tripId);
-      return Promise.resolve({
-        row: 'row' in options ? options.row ?? null : row(),
-        error: options.tripError ?? null,
-      });
+      return Promise.resolve({ row: stored, error: options.tripError ?? null });
     },
     findOpenPayment: (tripId) => {
       calls.paymentsRead.push(tripId);
@@ -158,7 +167,12 @@ const harness = (options: Options = {}) => {
     },
     recordCommissionRate: (tripId, rate) => {
       calls.commissionRates.push({ tripId, rate });
-      return Promise.resolve({ ok: options.commissionRateOk ?? true, error: null });
+      const ok = options.commissionRateOk ?? true;
+      // Written back into the held row, so the next `findTrip` sees it. See the
+      // note on [stored]: without this the handler's "already settled" check can
+      // never be true in a test, which is exactly the case that was broken.
+      if (ok && stored) stored.commission_rate = rate;
+      return Promise.resolve({ ok, error: null });
     },
     writeRating: (input) => {
       calls.ratings.push(input);
@@ -455,6 +469,80 @@ Deno.test('a second call on a settled trip writes no money a second time', async
   assertEquals(calls.voided.length, 0);
   assertEquals(calls.ledger.length, 1);
   assertEquals(calls.payouts.length, 1);
+});
+
+Deno.test('a repeat call on a trip with no payment row writes no money a second time', async () => {
+  // The gap, and it is the one that mattered.
+  //
+  // The repeat test above makes the second payment `succeeded`, which sends that
+  // call down the void branch and never reaches the ledger at all. But most trips
+  // in this project have **no payment row**: `findOpenPayment` finds nothing,
+  // `paymentState` defaults to `pending`, and the charge path runs in full --
+  // payment, ledger, payout, commission rate.
+  //
+  // Before the `alreadySettled` guard, that path ran again on the rider's second
+  // call. Measured live against this project (toolchain/verify-complete-trip-twice.mjs)
+  // the second call answered 200 with an identical settlement and wrote a second
+  // fare, a second commission and a second payout: ledger 2 rows became 4,
+  // payouts 1 became 2. Both calls reported 51.20 and 43.52, so nothing in any
+  // response showed a problem -- the driver's ledger simply counted the ride
+  // twice.
+  const { deps, calls } = harness({ payment: null });
+  const first = await handleComplete({ deps, callerId: 'rider-1', tripId: 'trip-1' });
+  assertEquals(first.status, 200);
+  assertEquals(calls.ledger.length, 1);
+  assertEquals(calls.payouts.length, 1);
+  assertEquals(calls.commissionRates.length, 1);
+
+  // Same deps and no payment faked, because the second caller is the rider's own
+  // app reacting to the trip reading as completed.
+  const second = await handleComplete({ deps, callerId: 'rider-1', tripId: 'trip-1' });
+  assertEquals(second.status, 200);
+
+  // A settlement is still returned, because that is what the rider's receipt
+  // renders from and its absence is why this was looked at in the first place.
+  const payload = (await body(second)) as Record<string, Record<string, number>>;
+  assertEquals(payload.settlement.fareGhs, 20.4);
+  assertEquals(
+    payload.settlement.driverPayoutGhs,
+    20.4 * (1 - STANDARD_COMMISSION_RATE),
+  );
+
+  // And no money moved the second time.
+  assertEquals(calls.ledger.length, 1, 'a second fare was written');
+  assertEquals(calls.payouts.length, 1, 'the driver was paid twice');
+  assertEquals(calls.commissionRates.length, 1);
+});
+
+Deno.test('a settled trip reports the rate it was settled at, not today\'s', async () => {
+  // The retry must answer with the number in the ledger.
+  //
+  // Recomputing the rate from the driver's *current* promo window would be
+  // correct arithmetic about the wrong question: the money already written is
+  // the money that was decided, so a settlement claiming a different rate is a
+  // receipt disagreeing with the driver's payout. The recorded rate wins.
+  const settledAtTwenty = harness();
+  await handleComplete({ deps: settledAtTwenty.deps, callerId: 'rider-1', tripId: 'trip-1' });
+  const recorded = settledAtTwenty.calls.commissionRates[0].rate;
+  assertEquals(recorded, STANDARD_COMMISSION_RATE);
+
+  // The driver's window has since opened. The rate recorded on the trip is what
+  // is reported, not the one the window would now produce.
+  const promo = { endsAt: '2030-01-01T00:00:00.000Z' };
+  const drifted = harness({
+    payment: null,
+    row: row({ commission_rate: STANDARD_COMMISSION_RATE }),
+    promo,
+  });
+  const again = await handleComplete({ deps: drifted.deps, callerId: 'rider-1', tripId: 'trip-1' });
+  assertEquals(again.status, 200);
+  const payload = (await body(again)) as Record<string, Record<string, number>>;
+  assertEquals(
+    payload.settlement.driverPayoutGhs,
+    // At the standard rate, not the promo's.
+    20.4 * (1 - STANDARD_COMMISSION_RATE),
+  );
+  assertEquals(drifted.calls.commissionRates.length, 0, 'nothing was re-recorded');
 });
 
 Deno.test('a repeat call after a failed ledger write does not pay twice', async () => {
