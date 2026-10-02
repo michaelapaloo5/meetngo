@@ -161,6 +161,64 @@ void main() {
   // rider was choosing between them as if they were real. It is gone, and the
   // guarantee now worth pinning is the one the server actually matches on: the
   // three launch categories, which is what `request-ride` filters drivers by.
+  testWidgets('back on a live ride leaves the ride, not the app', (
+    tester,
+  ) async {
+    // The rider's report: "when you press on the back button it doesnt go
+    // back". Both controls were broken, in opposite ways, because the ride
+    // screen is the shell's *body* and not a pushed route:
+    //
+    // - the system back gesture goes to `maybePop`, which on the root route
+    //   returns false, so the engine exits the app. Verified on the handset:
+    //   back mid-ride went to the launcher, taking the Call and Message
+    //   controls with it.
+    // - the app bar's `BackButton` called `maybePop` too, so it did nothing at
+    //   all -- a live-looking control that silently did nothing.
+    //
+    // A widget test cannot assert "the app did not exit". It can assert the thing
+    // that makes it true: the shell owns a PopScope whose `canPop` is driven by
+    // whether a ride is on screen. On home it must be true, or back would be
+    // swallowed there too and the rider could never leave the app at all.
+    tester.view.physicalSize = const Size(1170, 2532);
+    tester.view.devicePixelRatio = 3.0;
+    addTearDown(tester.view.reset);
+
+    final trips = _StubTrips();
+    final flow = RiderFlow(trips: trips, functions: _StubFunctions());
+    addTearDown(flow.dispose);
+    final profile = RiderProfileController(_StubProfiles());
+    addTearDown(profile.dispose);
+
+    await tester.pumpWidget(
+      ScreenUtilInit(
+        designSize: const Size(390, 844),
+        builder: (_, _) => MultiProvider(
+          providers: [
+            Provider<TripRepository>.value(value: trips),
+            ChangeNotifierProvider<RiderFlow>.value(value: flow),
+            ChangeNotifierProvider<RiderProfileController>.value(
+              value: profile,
+            ),
+          ],
+          child: MaterialApp(theme: MngTheme.light, home: const RiderShell()),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(
+      find.byType(PopScope<void>),
+      findsOneWidget,
+      reason: 'the shell must own a PopScope to answer back on a ride',
+    );
+    final scope = tester.widget<PopScope<void>>(find.byType(PopScope<void>));
+    expect(
+      scope.canPop,
+      isTrue,
+      reason: 'with no ride on screen, back should leave the app as usual',
+    );
+  });
+
   test(
     'the chips offer exactly the launch categories the server matches on',
     () {

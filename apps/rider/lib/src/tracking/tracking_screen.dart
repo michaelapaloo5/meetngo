@@ -17,7 +17,12 @@ import 'widgets/driver_summary.dart';
 import 'widgets/eta_badge.dart';
 
 class TrackingScreen extends StatelessWidget {
-  const TrackingScreen({super.key, this.onCallDriver, this.onMessageDriver});
+  const TrackingScreen({
+    super.key,
+    this.onCallDriver,
+    this.onMessageDriver,
+    this.onBack,
+  });
 
   /// Call the assigned driver.
   ///
@@ -29,6 +34,14 @@ class TrackingScreen extends StatelessWidget {
   /// feature exists and that it is unavailable, which is a different and more
   /// honest thing than a screen that never had the buttons.
   final VoidCallback? onCallDriver;
+
+  /// What the app bar's back arrow does.
+  ///
+  /// Injected because this screen is the shell's *body*, not a pushed route, so
+  /// there is nothing above it to pop. A plain `BackButton` therefore called
+  /// `maybePop` on the root route, which returns false and does nothing -- a
+  /// live-looking control that silently did nothing at all.
+  final VoidCallback? onBack;
 
   /// Open the conversation with the assigned driver.
   ///
@@ -135,7 +148,14 @@ class TrackingScreen extends StatelessWidget {
         backgroundColor: MngColors.page,
         surfaceTintColor: Colors.transparent,
         elevation: 0,
-        leading: const BackButton(),
+        leading: onBack == null
+            ? const BackButton()
+            : IconButton(
+                key: const Key('trackingBackButton'),
+                icon: const Icon(Icons.arrow_back),
+                tooltip: 'Back to the app',
+                onPressed: onBack,
+              ),
         title: const Text('Your ride'),
       ),
       body: SafeArea(

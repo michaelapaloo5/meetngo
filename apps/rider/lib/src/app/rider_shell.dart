@@ -53,6 +53,14 @@ enum _Stage { idle, finding, tracking }
 class _RiderShellState extends State<RiderShell> {
   int _tab = 0;
   _Stage _stage = _Stage.idle;
+
+  /// Whether the ride screen is the thing on screen.
+  ///
+  /// Separate from [_stage] on purpose. [_stage] is the state machine -- it drives
+  /// the poll and decides when a receipt appears -- and collapsing "the rider
+  /// pressed back" into it would mean setting the stage to `idle` for a ride that
+  /// is still going, which is the bug this file had three of already.
+  bool _showingRideView = true;
   Trip? _trip;
   Timer? _poll;
   bool _completing = false;
@@ -373,6 +381,7 @@ class _RiderShellState extends State<RiderShell> {
     setState(() {
       _trip = trip;
       _stage = _Stage.finding;
+      _showingRideView = true;
       _tab = 0;
     });
     navigator.pop();
@@ -494,15 +503,36 @@ class _RiderShellState extends State<RiderShell> {
     }
 
     final Widget body;
+    // The ride screen is the shell's body, not a pushed route, so "where does
+    // back go" had no answer and both controls were wrong:
+    //
+    // - the system back gesture is handled by `maybePop`, and on the root route
+    //   with nothing above it that returns false, so the engine **exits the
+    //   app**. Verified on the handset: pressing back mid-ride took the rider to
+    //   the launcher, losing the Call and Message controls with it.
+    // - the `BackButton` in each screen's app bar calls `maybePop` too, so it
+    //   did nothing at all. A live-looking control that does nothing.
+    //
+    // Both now leave the ride *view* and keep the ride, which is what a rider
+    // pressing back on a map means. The trip is still tracked: `_stage` and
+    // `_trip` are untouched, so the poll keeps following it by id, completion
+    // still reaches the receipt, and tapping the live ride in Recent rides comes
+    // straight back here (`_openRide` routes by state).
+    final showingRideView =
+        _showingRideView &&
+        trip != null &&
+        (_stage == _Stage.finding || _stage == _Stage.tracking);
+
     if (busy) {
       body = const Center(child: CircularProgressIndicator());
-    } else if (_stage == _Stage.finding && trip != null) {
+    } else if (showingRideView && _stage == _Stage.finding) {
       body = FindingDriverScreen(
         trip: trip,
         location: _location,
         onCancelSearch: _cancelTrip,
+        onLeave: _leaveRideView,
       );
-    } else if (_stage == _Stage.tracking && trip != null) {
+    } else if (showingRideView) {
       // `.value`, not `create:`. The controller is owned by this State so the
       // three-second poll can reach it; a `create:` would build a second
       // instance every time this branch rebuilt and throw the first away, and
@@ -516,17 +546,35 @@ class _RiderShellState extends State<RiderShell> {
       } else {
         body = ChangeNotifierProvider<TrackingController>.value(
           value: tracking,
-          child: const TrackingScreen(),
+          child: TrackingScreen(onBack: _leaveRideView),
         );
       }
     } else {
       body = _tabBody();
     }
 
-    return Scaffold(
-      body: SafeArea(bottom: false, child: body),
-      bottomNavigationBar: _stage == _Stage.idle ? _nav() : null,
+    return PopScope<void>(
+      // Only while the ride screen is up. Everywhere else the default is right:
+      // the rider can leave the app.
+      canPop: !showingRideView,
+      onPopInvokedWithResult: (didPop, _) {
+        if (didPop) return;
+        _leaveRideView();
+      },
+      child: Scaffold(
+        body: SafeArea(bottom: false, child: body),
+        // The nav bar comes back with the home screen. It was hidden for the
+        // whole trip, which left a rider who wanted to check their bookings with
+        // no way to.
+        bottomNavigationBar: showingRideView ? null : _nav(),
+      ),
     );
+  }
+
+  /// Leaves the ride screen without leaving the ride.
+  void _leaveRideView() {
+    if (!mounted) return;
+    setState(() => _showingRideView = false);
   }
 
   /// One of the four tabs, each with its own controller created here rather
@@ -609,6 +657,10 @@ class _RiderShellState extends State<RiderShell> {
         setState(() {
           _trip = trip;
           _stage = _Stage.tracking;
+          // Tapping a live ride from home is the way back after pressing back on
+          // the ride screen, so it has to re-enter the view or that route is a
+          // one-way street.
+          _showingRideView = true;
         });
         _tracking?.dispose();
         _tracking = TrackingController(

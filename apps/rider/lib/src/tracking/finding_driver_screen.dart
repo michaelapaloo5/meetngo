@@ -14,10 +14,18 @@ class FindingDriverScreen extends StatefulWidget {
     required this.trip,
     required this.onCancelSearch,
     this.location,
+    this.onLeave,
   });
 
   final Trip trip;
   final VoidCallback onCancelSearch;
+
+  /// What the app bar's back arrow does.
+  ///
+  /// Injected for the same reason as `TrackingScreen.onBack`: this screen is the
+  /// shell's body rather than a pushed route, so a `BackButton` here had nothing
+  /// to pop and did nothing when pressed.
+  final VoidCallback? onLeave;
 
   /// The device fix, when there is one. Absent or refused still renders the
   /// map, centred on the pickup the rider actually booked, with a note saying
@@ -52,7 +60,14 @@ class _FindingDriverScreenState extends State<FindingDriverScreen> {
         backgroundColor: MngColors.page,
         surfaceTintColor: Colors.transparent,
         elevation: 0,
-        leading: const BackButton(),
+        leading: widget.onLeave == null
+            ? const BackButton()
+            : IconButton(
+                key: const Key('findingBackButton'),
+                icon: const Icon(Icons.arrow_back),
+                tooltip: 'Back to the app',
+                onPressed: widget.onLeave,
+              ),
         title: const Text('Finding a driver'),
       ),
       body: SafeArea(
