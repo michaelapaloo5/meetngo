@@ -79,6 +79,8 @@ class _StubTrips implements TripRepository {
       const DeviceLocation(LocationOutcome.denied);
   @override
   Future<Trip?> activeTrip() async => null;
+  @override
+  Future<Trip?> tripById(String tripId) async => null;
 
   @override
   Future<VehicleFix?> assignedDriverLocation(String? driverId) async => null;

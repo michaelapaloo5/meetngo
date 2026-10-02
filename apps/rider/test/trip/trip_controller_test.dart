@@ -9,52 +9,56 @@ import 'package:meetngo_rider/src/trip/trip_controller.dart';
 import 'package:mng_core/mng_core.dart';
 
 Trip tripInState(TripState state) => Trip(
-      id: 't1',
-      riderId: 'r1',
-      driverId: 'd1',
-      category: RideCategory.standard,
-      state: state,
-      pickup: const TripStop('P', GeoPoint(5.6037, -0.1870), 'Osu, Accra'),
-      dropoff: const TripStop('D', GeoPoint(5.6052, -0.1660), 'Airport Residential'),
-      distanceKm: 2.4,
-      fareGhs: 20.40,
-      isDemo: true,
-    );
+  id: 't1',
+  riderId: 'r1',
+  driverId: 'd1',
+  category: RideCategory.standard,
+  state: state,
+  pickup: const TripStop('P', GeoPoint(5.6037, -0.1870), 'Osu, Accra'),
+  dropoff: const TripStop(
+    'D',
+    GeoPoint(5.6052, -0.1660),
+    'Airport Residential',
+  ),
+  distanceKm: 2.4,
+  fareGhs: 20.40,
+  isDemo: true,
+);
 
 /// The body `complete-trip` answers with on a settled trip, written by hand to
 /// the shape its `json()` helper produces: a JSON object with `settlement` and
 /// `paymentState` in it, and the three money numbers as JSON numbers because
 /// that is what a `numeric` column serialises as.
 Map<String, dynamic> settledBody({String ratingState = 'skipped'}) => {
-      'trip': {
-        'id': 't1',
-        'rider_id': 'r1',
-        'driver_id': 'd1',
-        'category': 'standard',
-        'state': 'completed',
-        'pickup': {
-          'label': 'Osu',
-          'address': 'Osu, Accra',
-          'point': {'lat': 5.6037, 'lng': -0.1870},
-        },
-        'dropoff': {
-          'label': 'Airport',
-          'address': 'Airport Residential',
-          'point': {'lat': 5.6052, 'lng': -0.1660},
-        },
-        'distance_km': 2.4,
-        'fare_ghs': 20.4,
-        'is_demo': true,
-        'eta_minutes': null,
-      },
-      'settlement': const {
-        'fareGhs': 20.40,
-        'commissionGhs': 3.06,
-        'driverPayoutGhs': 17.34,
-      },
-      'paymentState': 'succeeded',
-      'ratingState': ratingState,
-    };
+  'trip': {
+    'id': 't1',
+    'rider_id': 'r1',
+    'driver_id': 'd1',
+    'category': 'standard',
+    'state': 'completed',
+    'pickup': {
+      'label': 'Osu',
+      'address': 'Osu, Accra',
+      'point': {'lat': 5.6037, 'lng': -0.1870},
+    },
+    'dropoff': {
+      'label': 'Airport',
+      'address': 'Airport Residential',
+      'point': {'lat': 5.6052, 'lng': -0.1660},
+    },
+    'distance_km': 2.4,
+    'fare_ghs': 20.4,
+    'is_demo': true,
+    'eta_minutes': null,
+  },
+  'settlement': const {
+    'fareGhs': 20.40,
+    'commissionGhs': 3.06,
+    'driverPayoutGhs': 17.34,
+  },
+  'paymentState': 'succeeded',
+  'ratingState': ratingState,
+};
 
 /// Records every call and answers from `answers`, so a test can see what the
 /// controller *asked for* and not only what it did with the answer.
@@ -71,7 +75,10 @@ class FakeTripFunctions implements TripFunctions {
   Map<String, dynamic>? answer;
 
   @override
-  Future<Map<String, dynamic>> invoke(String name, Map<String, dynamic> body) async {
+  Future<Map<String, dynamic>> invoke(
+    String name,
+    Map<String, dynamic> body,
+  ) async {
     calls.add((name: name, body: body));
     final pending = gate;
     if (pending != null) await pending.future;
@@ -89,7 +96,6 @@ class FakeTripRepository implements TripRepository {
   Future<DriverContact> driverContact(String tripId) async =>
       const DriverContact.unavailable();
 
-
   @override
   Future<List<BookedTrip>> history({
     int limit = 50,
@@ -101,6 +107,7 @@ class FakeTripRepository implements TripRepository {
   @override
   Future<DeviceLocation> locate() async =>
       const DeviceLocation(LocationOutcome.denied);
+
   /// Thrown by `activeTrip` when set.
   Object? refreshFailure;
 
@@ -117,6 +124,12 @@ class FakeTripRepository implements TripRepository {
     return active;
   }
 
+  /// The row `tripById` answers with. Null by default.
+  Trip? byId;
+
+  @override
+  Future<Trip?> tripById(String tripId) async => byId;
+
   @override
   Stream<Trip> watchTrip(String tripId) => const Stream<Trip>.empty();
 
@@ -126,11 +139,11 @@ class FakeTripRepository implements TripRepository {
     required TripStop dropoff,
     required RideCategory category,
     DateTime? scheduledFor,
-  }) async =>
-      tripInState(TripState.requested);
+  }) async => tripInState(TripState.requested);
 
   @override
-  Future<VehicleFix?> assignedDriverLocation(String? driverId) async => driverPoint;
+  Future<VehicleFix?> assignedDriverLocation(String? driverId) async =>
+      driverPoint;
   @override
   Future<void> cancelTrip(String tripId) async {}
 
@@ -150,40 +163,43 @@ TripController controllerWith({
   FakeTripFunctions? functions,
   FakeTripRepository? trips,
   Trip? initialTrip,
-}) =>
-    TripController(
-      trips: trips ?? FakeTripRepository(),
-      functions: functions ?? FakeTripFunctions(),
-      initialTrip: initialTrip ?? tripInState(TripState.completed),
-    );
+}) => TripController(
+  trips: trips ?? FakeTripRepository(),
+  functions: functions ?? FakeTripFunctions(),
+  initialTrip: initialTrip ?? tripInState(TripState.completed),
+);
 
-TripController controllerWithNoTrip(FakeTripFunctions functions) => TripController(
-      trips: FakeTripRepository(),
-      functions: functions,
-    );
+TripController controllerWithNoTrip(FakeTripFunctions functions) =>
+    TripController(trips: FakeTripRepository(), functions: functions);
 
 void main() {
   // --- complete() ---------------------------------------------------------
 
-  test('complete invokes complete-trip with the trip id and stores the settlement', () async {
-    final functions = FakeTripFunctions()..answer = settledBody();
-    final c = controllerWith(functions: functions);
+  test(
+    'complete invokes complete-trip with the trip id and stores the settlement',
+    () async {
+      final functions = FakeTripFunctions()..answer = settledBody();
+      final c = controllerWith(functions: functions);
 
-    await c.complete();
+      await c.complete();
 
-    expect(functions.calls.single.name, 'complete-trip');
-    expect(functions.calls.single.body, {'tripId': 't1'});
-    expect(c.settlement, isNotNull);
-    expect(c.settlement!.fareGhs, 20.40);
-    expect(c.settlement!.commissionGhs, 3.06);
-    expect(c.settlement!.driverPayoutGhs, 17.34);
-    expect(c.paymentState, PaymentState.succeeded);
-    expect(c.error, isNull);
-  });
+      expect(functions.calls.single.name, 'complete-trip');
+      expect(functions.calls.single.body, {'tripId': 't1'});
+      expect(c.settlement, isNotNull);
+      expect(c.settlement!.fareGhs, 20.40);
+      expect(c.settlement!.commissionGhs, 3.06);
+      expect(c.settlement!.driverPayoutGhs, 17.34);
+      expect(c.paymentState, PaymentState.succeeded);
+      expect(c.error, isNull);
+    },
+  );
 
   test('complete stores the trip row the function echoed back', () async {
     final functions = FakeTripFunctions()..answer = settledBody();
-    final c = controllerWith(functions: functions, initialTrip: tripInState(TripState.ongoing));
+    final c = controllerWith(
+      functions: functions,
+      initialTrip: tripInState(TripState.ongoing),
+    );
 
     await c.complete();
 
@@ -195,17 +211,24 @@ void main() {
     expect(c.trip!.pickup.address, 'Osu, Accra');
   });
 
-  test('a stars of 0, 6 or a negative is refused without a round trip', () async {
-    final functions = FakeTripFunctions()..answer = settledBody();
-    final c = controllerWith(functions: functions);
+  test(
+    'a stars of 0, 6 or a negative is refused without a round trip',
+    () async {
+      final functions = FakeTripFunctions()..answer = settledBody();
+      final c = controllerWith(functions: functions);
 
-    for (final stars in [0, 6, -1, 11]) {
-      await c.complete(stars: stars);
-      expect(functions.calls, isEmpty, reason: 'stars $stars reached the function');
-      expect(c.error, isNotNull, reason: 'stars $stars set no error');
-      expect(c.settlement, isNull, reason: 'stars $stars settled something');
-    }
-  });
+      for (final stars in [0, 6, -1, 11]) {
+        await c.complete(stars: stars);
+        expect(
+          functions.calls,
+          isEmpty,
+          reason: 'stars $stars reached the function',
+        );
+        expect(c.error, isNotNull, reason: 'stars $stars set no error');
+        expect(c.settlement, isNull, reason: 'stars $stars settled something');
+      }
+    },
+  );
 
   test('stars of 1 to 5 are forwarded with the comment', () async {
     final functions = FakeTripFunctions()..answer = settledBody();
@@ -247,22 +270,30 @@ void main() {
     expect(c.busy, isFalse);
   });
 
-  test('a transport failure the repository did not shape still says something', () async {
-    final functions = FakeTripFunctions()..failure = const FakeTransportException();
-    final c = controllerWith(functions: functions);
+  test(
+    'a transport failure the repository did not shape still says something',
+    () async {
+      final functions = FakeTripFunctions()
+        ..failure = const FakeTransportException();
+      final c = controllerWith(functions: functions);
 
-    await c.complete();
+      await c.complete();
 
-    expect(c.error, 'Could not reach the server');
-    expect(c.settlement, isNull);
-  });
+      expect(c.error, 'Could not reach the server');
+      expect(c.settlement, isNull);
+    },
+  );
 
   test('a response with no settlement in it stores nothing', () async {
     // A 2xx whose body carries neither money nor a payment state. Storing a
     // `GHS NaN` would be worse than storing nothing.
     final functions = FakeTripFunctions()
       ..answer = {
-        'settlement': {'fareGhs': 20.4, 'commissionGhs': 'three', 'driverPayoutGhs': 17.34},
+        'settlement': {
+          'fareGhs': 20.4,
+          'commissionGhs': 'three',
+          'driverPayoutGhs': 17.34,
+        },
         'paymentState': 'nonsense',
       };
     final c = controllerWith(functions: functions);
@@ -286,12 +317,11 @@ void main() {
     final body = settledBody();
     final echoed = <String, dynamic>{...body['trip']! as Map<String, dynamic>};
     echoed.remove('rider_id');
-    final functions = FakeTripFunctions()
-      ..answer = {
-        ...body,
-        'trip': echoed,
-      };
-    final c = controllerWith(functions: functions, initialTrip: tripInState(TripState.ongoing));
+    final functions = FakeTripFunctions()..answer = {...body, 'trip': echoed};
+    final c = controllerWith(
+      functions: functions,
+      initialTrip: tripInState(TripState.ongoing),
+    );
 
     await expectLater(c.complete(), completes);
 
@@ -329,15 +359,19 @@ void main() {
     expect(c.paymentState, PaymentState.succeeded);
   });
 
-  test('a duplicate rating is not an error, because the money is what mattered', () async {
-    final functions = FakeTripFunctions()..answer = settledBody(ratingState: 'duplicate');
-    final c = controllerWith(functions: functions);
+  test(
+    'a duplicate rating is not an error, because the money is what mattered',
+    () async {
+      final functions = FakeTripFunctions()
+        ..answer = settledBody(ratingState: 'duplicate');
+      final c = controllerWith(functions: functions);
 
-    await c.complete(stars: 3, comment: '');
+      await c.complete(stars: 3, comment: '');
 
-    expect(c.error, isNull);
-    expect(c.settlement, isNotNull);
-  });
+      expect(c.error, isNull);
+      expect(c.settlement, isNotNull);
+    },
+  );
 
   test('a complete with no trip sets an error and calls nothing', () async {
     final functions = FakeTripFunctions()..answer = settledBody();
@@ -435,7 +469,8 @@ void main() {
   });
 
   test('busy is cleared after a failure too', () async {
-    final functions = FakeTripFunctions()..failure = const TripRequestFailure('nope');
+    final functions = FakeTripFunctions()
+      ..failure = const TripRequestFailure('nope');
     final c = controllerWith(functions: functions);
 
     await c.pay(method: PayMethod.momo);
@@ -446,8 +481,12 @@ void main() {
   // --- refresh() ----------------------------------------------------------
 
   test('refresh stores the row the database holds', () async {
-    final trips = FakeTripRepository()..active = tripInState(TripState.completed);
-    final c = controllerWith(trips: trips, initialTrip: tripInState(TripState.ongoing));
+    final trips = FakeTripRepository()
+      ..active = tripInState(TripState.completed);
+    final c = controllerWith(
+      trips: trips,
+      initialTrip: tripInState(TripState.ongoing),
+    );
 
     await c.refresh();
 
@@ -456,8 +495,12 @@ void main() {
   });
 
   test('a failed refresh leaves the trip on screen and says why', () async {
-    final trips = FakeTripRepository()..refreshFailure = const TripRequestFailure('offline');
-    final c = controllerWith(trips: trips, initialTrip: tripInState(TripState.ongoing));
+    final trips = FakeTripRepository()
+      ..refreshFailure = const TripRequestFailure('offline');
+    final c = controllerWith(
+      trips: trips,
+      initialTrip: tripInState(TripState.ongoing),
+    );
 
     await c.refresh();
 

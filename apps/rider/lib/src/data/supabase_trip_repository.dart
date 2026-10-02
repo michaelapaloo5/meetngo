@@ -53,6 +53,26 @@ class SupabaseTripRepository implements TripRepository {
   }
 
   @override
+  Future<Trip?> tripById(String tripId) async {
+    final user = _client.auth.currentUser;
+    if (user == null || tripId.isEmpty) return null;
+    // No state filter, which is the entire point -- see [TripRepository.tripById].
+    //
+    // RLS still scopes this: `rider reads own trips` allows only `rider_id =
+    // auth.uid()`, so a rider cannot read somebody else's trip by guessing an id.
+    // A missing row and a refused one both answer empty, and both mean "there is
+    // nothing here to track".
+    final rows = await _client
+        .from('trips')
+        .select()
+        .eq('id', tripId)
+        .eq('rider_id', user.id)
+        .limit(1);
+    if (rows.isEmpty) return null;
+    return Trip.fromJson(rows.first);
+  }
+
+  @override
   Stream<Trip> watchTrip(String tripId) => _client
       .from('trips')
       .stream(primaryKey: ['id'])

@@ -46,6 +46,9 @@ class _RecordingTrips implements TripRepository {
 
   @override
   Future<Trip?> activeTrip() async => null;
+
+  @override
+  Future<Trip?> tripById(String tripId) async => null;
   @override
   Stream<Trip> watchTrip(String tripId) => const Stream<Trip>.empty();
   @override

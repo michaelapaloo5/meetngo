@@ -152,6 +152,12 @@ class FakeTripRepository implements TripRepository {
     return active;
   }
 
+  /// The row `tripById` answers with. Null by default.
+  Trip? byId;
+
+  @override
+  Future<Trip?> tripById(String tripId) async => byId;
+
   @override
   Stream<Trip> watchTrip(String tripId) => const Stream<Trip>.empty();
 
@@ -258,15 +264,15 @@ Widget wrapTracking(TrackingController c) => ScreenUtilInit(
 /// confirmation and the second raises the alert. confirm: false stops at the
 /// dialog, which is how a test asserts that a cancelled alert wrote nothing.
 Future<void> tapSos(WidgetTester tester, {bool confirm = true}) async {
-    await tester.ensureVisible(find.byKey(const Key('sosButton')));
-    await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const Key('sosButton')));
-    await tester.pumpAndSettle();
-    if (!confirm) return;
-    await tester.tap(find.byKey(const Key('sosConfirmSend')));
-    await tester.pump();
-    await tester.pump();
-  }
+  await tester.ensureVisible(find.byKey(const Key('sosButton')));
+  await tester.pumpAndSettle();
+  await tester.tap(find.byKey(const Key('sosButton')));
+  await tester.pumpAndSettle();
+  if (!confirm) return;
+  await tester.tap(find.byKey(const Key('sosConfirmSend')));
+  await tester.pump();
+  await tester.pump();
+}
 
 void main() {
   testWidgets('matched state shows the ride-confirmed headline', (
@@ -717,7 +723,7 @@ void main() {
       find.text('Help is on the way. Our team has your trip.'),
       findsNothing,
     );
-        // Twice: the banner on the screen and the snackbar that is now the
+    // Twice: the banner on the screen and the snackbar that is now the
     // receipt. The snackbar is what a rider actually reads, and it appears
     // only once the write has actually landed.
     expect(find.text('Not signed in'), findsNWidgets(2));

@@ -74,6 +74,16 @@ class DriverContact {
 
 abstract class TripRepository {
   Future<Trip?> activeTrip();
+
+  /// The trip with [tripId], whatever state it is in, or null when it is gone.
+  ///
+  /// Exists because [activeTrip] cannot answer the question the shell most needs
+  /// to ask. `activeTrip` filters to the four active states, so the instant a
+  /// ride ends it answers null -- which is precisely when the rider needs telling
+  /// -- and a poll built on it can never learn that the trip it was following is
+  /// over. The shell holds the trip by id, so it asks for it directly.
+  Future<Trip?> tripById(String tripId);
+
   Stream<Trip> watchTrip(String tripId);
 
   /// How the rider can reach the driver assigned to [tripId].

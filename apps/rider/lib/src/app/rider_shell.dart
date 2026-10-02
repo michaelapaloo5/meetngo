@@ -158,9 +158,30 @@ class _RiderShellState extends State<RiderShell> {
   }
 
   Future<void> _tick() async {
+    if (!mounted) return;
     final flow = context.read<RiderFlow>();
-    final fresh = await flow.refreshActive();
+    var fresh = await flow.refreshActive();
+    if (!mounted) return;
+
+    // **This is why the finding screen used to trap people**, and the branch
+    // below it could never have worked without it.
+    //
+    // `refreshActive` asks for the rider's *active* trip, which is filtered to
+    // `requested`, `matched`, `arriving` and `ongoing`. The moment a ride ends it
+    // answers null -- which is exactly when the rider needs to be told -- so the
+    // poll returned early on the one tick that mattered, every time. A branch for
+    // "the finding trip reached a terminal state" is dead code behind a null.
+    //
+    // The trip being followed is held here by id, so it is read back directly.
+    // Scoped to the finding stage on purpose: once a driver is assigned the
+    // tracking controller owns the ride's state, and having the shell re-read it
+    // as well would race that path to open a second receipt.
+    final held = _trip;
+    if (fresh == null && _stage == _Stage.finding && held != null) {
+      fresh = await context.read<TripRepository>().tripById(held.id);
+    }
     if (!mounted || fresh == null) return;
+
     if (_stage == _Stage.finding && fresh.hasDriver) {
       setState(() {
         _trip = fresh;
