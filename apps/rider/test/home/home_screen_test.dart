@@ -5,7 +5,6 @@ import 'package:meetngo_rider/src/data/booked_trip.dart';
 import 'package:meetngo_rider/src/data/location_service.dart';
 import 'package:meetngo_rider/src/data/place_service.dart';
 import 'package:meetngo_rider/src/home/home_screen.dart';
-import 'package:meetngo_rider/src/home/widgets/promo_banner.dart';
 import 'package:mng_core/mng_core.dart';
 
 Widget wrap({
@@ -13,7 +12,7 @@ Widget wrap({
   DeviceLocation? location,
   PlaceName? place,
   List<BookedTrip>? recentRides,
-  void Function(BuildContext context, {bool promo})? onSearchTap,
+  void Function(BuildContext context)? onSearchTap,
   void Function(BuildContext context)? onNotificationsTap,
 }) =>
     ScreenUtilInit(
@@ -24,7 +23,6 @@ Widget wrap({
         theme: MngTheme.light,
         home: HomeScreen(
           riderName: riderName,
-          promoCode: 'RIDE30',
           location: location,
           place: place,
           recentRides: recentRides,
@@ -168,39 +166,6 @@ void main() {
     }
   });
 
-  testWidgets('the promo is a button and says it can be used', (tester) async {
-    useDesignSurface(tester);
-    var promoTaps = 0;
-    await tester.pumpWidget(
-      wrap(onSearchTap: (_, {bool promo = false}) {
-        if (promo) promoTaps++;
-      }),
-    );
-    expect(find.byKey(const Key('promoBanner')), findsOneWidget);
-    // "Code RIDE30" invited a rider to retype it. Pressing it now takes the
-    // offer, so the copy says so.
-    expect(find.text('Tap to use RIDE30'), findsOneWidget);
-    expect(find.text('Code RIDE30'), findsNothing);
-
-    await tester.tap(find.byKey(const Key('promoBanner')));
-    await tester.pump();
-    expect(promoTaps, 1, reason: 'the offer has to actually do something');
-  });
-
-  testWidgets('pressing the search field is not the promo', (tester) async {
-    useDesignSurface(tester);
-    bool sawPromo = true;
-    await tester.pumpWidget(
-      wrap(onSearchTap: (_, {bool promo = false}) => sawPromo = promo),
-    );
-    await tester.tap(find.byKey(const Key('searchField')));
-    await tester.pump();
-    // The two open the same page but mean different things, and the sheet
-    // needs to know which -- otherwise the 30% would be applied to every
-    // booking.
-    expect(sawPromo, isFalse);
-  });
-
   testWidgets('no invented car, plate or fake list is drawn', (tester) async {
     useDesignSurface(tester);
     await tester.pumpWidget(wrap());
@@ -306,24 +271,10 @@ void main() {
     }
   });
 
-  testWidgets('promo banner paints the 20px radius on the dark surface',
-      (tester) async {
-    useDesignSurface(tester);
-    await tester.pumpWidget(wrap());
-    final banner = find.byType(PromoBanner);
-    expect(tester.widget<PromoBanner>(banner).code, 'RIDE30');
-    final box = tester.widget<Container>(
-      find.descendant(of: banner, matching: find.byType(Container)).first,
-    );
-    final decoration = box.decoration! as BoxDecoration;
-    expect(decoration.color, MngColors.textPrimary);
-    expect(decoration.borderRadius, BorderRadius.circular(MngRadius.large));
-  });
-
   testWidgets('tapping the search field reports the tap', (tester) async {
     useDesignSurface(tester);
     var taps = 0;
-    await tester.pumpWidget(wrap(onSearchTap: (_, {bool promo = false}) => taps++));
+    await tester.pumpWidget(wrap(onSearchTap: (_) => taps++));
     await tester.tap(find.byKey(const Key('searchField')));
     expect(taps, 1);
   });

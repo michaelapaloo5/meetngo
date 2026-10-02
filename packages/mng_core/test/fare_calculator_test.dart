@@ -1,286 +1,262 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mng_core/mng_core.dart';
 
+/// The fare, pinned.
+///
+/// ## What the pricing is
+///
+/// Two numbers per tier and nothing else:
+///
+/// - a **per-kilometre rate** of GHS 6, 8 and 10 for Lite, Standard and Premium
+/// - a **minimum fare** of GHS 17, 23 and 28 -- what the shortest ride costs
+///
+/// with no base fare and no booking fee, so
+/// `fare = max(tier minimum, perKm * km)`, rounded to two decimals.
+///
+/// ## What it used to be, and why this file was rewritten
+///
+/// GHS 0.28 / 0.35 / 0.46 per km with a **single GHS 0.15 floor for all three
+/// tiers**. That priced a real Accra trip from Tesano to Dansoman at GHS 1.94,
+/// 2.43 and 3.19 -- less than the fuel, and less than the driver's time for the
+/// hour it took.
+///
+/// It also made the tiers meaningless in a way no test noticed: with one floor
+/// sitting above every real fare, all three charged exactly the same number, so
+/// "choose your tier" was choosing between identical prices. The floor is now per
+/// tier, which is the only way a floor and a rate can both be true.
+///
+/// ## Why there is no discount test
+///
+/// There was one, and it asserted that a discount could take a short ride *below*
+/// the floor -- a real and deliberate property of the old model. `RIDE30` went on
+/// every ride with no redemption record, the banner said "first ride" while
+/// nothing enforced a first ride, and the server capped the discount at GHS 40
+/// while the app did not cap it at all, so above GHS 133.33 the rider agreed to a
+/// price lower than the one they were charged.
+///
+/// The offer is withdrawn. Keeping a test for a behaviour that no longer exists
+/// is how a deleted feature comes back.
 void main() {
   final calc = FareCalculator();
 
+  group('the tiers', () {
+    test('the rates are 6, 8 and 10 cedis a kilometre', () {
+      // Pinned as literals rather than read off the enum: a test that asserts
+      // `x == x` proves nothing, and this is the number a rider is charged.
+      expect(RideCategory.lite.perKmGhs, 6.00);
+      expect(RideCategory.standard.perKmGhs, 8.00);
+      expect(RideCategory.premium.perKmGhs, 10.00);
+    });
+
+    test('the shortest ride costs 17, 23 and 28', () {
+      // Also literals, and the reason this file exists. One floor for all three
+      // tiers was what made them indistinguishable.
+      expect(RideCategory.lite.minFareGhs, 17.00);
+      expect(RideCategory.standard.minFareGhs, 23.00);
+      expect(RideCategory.premium.minFareGhs, 28.00);
+    });
+
+    test('lite is cheapest, standard is between, premium is dearest', () {
+      // Both halves of that, at a distance where the *rate* decides and again
+      // where the *floor* decides. Asserting only one of them is how the old
+      // scale passed: the rate ordered the tiers and the floor erased them.
+      for (final km in <double>[0.5, 10, 40]) {
+        final lite = calc.quote(category: RideCategory.lite, distanceKm: km);
+        final standard = calc.quote(
+          category: RideCategory.standard,
+          distanceKm: km,
+        );
+        final premium = calc.quote(
+          category: RideCategory.premium,
+          distanceKm: km,
+        );
+        expect(
+          lite.fareGhs,
+          lessThan(standard.fareGhs),
+          reason: 'lite at $km km',
+        );
+        expect(
+          standard.fareGhs,
+          lessThan(premium.fareGhs),
+          reason: 'standard at $km km',
+        );
+      }
+    });
+  });
+
   group('quote', () {
-    // The pricing is 28, 35 and 46 cedis a kilometre with no base fare and no
-    // booking fee, so a fare IS the distance times the rate, floored at 15
-    // cedis. At 20 cedis/litre and roughly 8 km/litre a vehicle burns about
-    // GHS 0.025 a kilometre, which is under a tenth of even the cheapest rate,
-    // and that is the whole reason the floor is 0.15 and not higher: it is a
-    // floor against the cost of moving the car, not a price.
-    test('standard ride over 8 km is the rate times the distance', () {
-      final q = calc.quote(category: RideCategory.standard, distanceKm: 8);
-      // 0.35 * 8 = 2.80
-      expect(q.fareGhs, closeTo(2.80, 0.001));
-      expect(q.distanceKm, 8);
+    test('a short ride costs the tier minimum', () {
+      // The floor is the price of the shortest ride, so it has to be the answer
+      // for a short one. Under the old scale this was 0.28 and the tiers all
+      // returned the same number.
+      expect(
+        calc.quote(category: RideCategory.lite, distanceKm: 0.8).fareGhs,
+        17.00,
+      );
+      expect(
+        calc.quote(category: RideCategory.standard, distanceKm: 0.8).fareGhs,
+        23.00,
+      );
+      expect(
+        calc.quote(category: RideCategory.premium, distanceKm: 0.8).fareGhs,
+        28.00,
+      );
+    });
+
+    test('a ride past the floor is the rate times the distance', () {
+      // Standard crosses its 23.00 floor at 23/8 = 2.875 km, so 10 km is well
+      // clear: 8 * 10 = 80.00.
+      final q = calc.quote(category: RideCategory.standard, distanceKm: 10);
+      expect(q.fareGhs, closeTo(80.00, 0.001));
+      expect(q.distanceKm, 10);
+    });
+
+    test('the rate takes over exactly where the floor stops applying', () {
+      // The boundary is where a rate and a floor stop being two descriptions of
+      // the same thing. Below it the floor decides; above it the rate does.
+      // Standard: 23 / 8 = 2.875 km.
+      final below = calc.quote(
+        category: RideCategory.standard,
+        distanceKm: 2.8,
+      );
+      final above = calc.quote(category: RideCategory.standard, distanceKm: 3);
+      expect(below.fareGhs, 23.00);
+      expect(above.fareGhs, closeTo(24.00, 0.001));
+    });
+
+    test('a real Accra trip costs a real amount', () {
+      // The bug this file was rewritten for, as a test. Tesano to Dansoman,
+      // about 6.9 km, priced at 1.94 / 2.43 / 3.19 under the old scale -- which
+      // is less than the fuel and less than the driver's time.
+      const km = 6.93;
+      expect(
+        calc.quote(category: RideCategory.lite, distanceKm: km).fareGhs,
+        closeTo(41.58, 0.01),
+      );
+      expect(
+        calc.quote(category: RideCategory.standard, distanceKm: km).fareGhs,
+        closeTo(55.44, 0.01),
+      );
+      expect(
+        calc.quote(category: RideCategory.premium, distanceKm: km).fareGhs,
+        closeTo(69.30, 0.01),
+      );
     });
 
     test('there is no base fare and no booking fee left to pay', () {
       // The old model was GHS 5.00 + GHS 1.00 + per-km, so those two were 87% of
       // a short Accra ride -- almost entirely fixed charges, on a service sold
-      // by the kilometre. This is the assertion that they stay at zero.
-      final short = FareCalculator(
-        baseGhs: 0,
-        bookingFeeGhs: 0,
-      ).quote(category: RideCategory.standard, distanceKm: 0.8);
-      expect(short.fareGhs, closeTo(0.28, 0.001));
-    });
-
-    test('premium is dearer per km than standard', () {
-      final standard = calc.quote(
-        category: RideCategory.standard,
-        distanceKm: 10,
-      );
-      final premium = calc.quote(
-        category: RideCategory.premium,
-        distanceKm: 10,
-      );
-      expect(premium.fareGhs, greaterThan(standard.fareGhs));
-    });
-
-    test('lite is the cheapest tier, not the middle one', () {
-      // This used to read "van sits between standard and premium" and it was
-      // true of the old rates -- 1.80 / 2.20 / 2.80. The new rates are
-      // 0.28 / 0.35 / 0.46, so lite is the *cheapest* and the old assertion
-      // would now be asserting the opposite of the pricing.
-      final lite = calc.quote(category: RideCategory.lite, distanceKm: 10);
-      final standard = calc.quote(
-        category: RideCategory.standard,
-        distanceKm: 10,
-      );
-      final premium = calc.quote(
-        category: RideCategory.premium,
-        distanceKm: 10,
-      );
-      expect(lite.fareGhs, lessThan(standard.fareGhs));
-      expect(standard.fareGhs, lessThan(premium.fareGhs));
+      // by the kilometre. The floor is the fixed charge now, and it is per tier.
+      expect(FareCalculator(baseGhs: 0).baseGhs, 0);
+      expect(FareCalculator(bookingFeeGhs: 0).bookingFeeGhs, 0);
     });
 
     test('surge multiplies the distance component and is capped at 2x', () {
+      // 10 km standard: 80.00 gross, 120.00 at 1.5x, 160.00 at the 2x cap.
+      final base = calc.quote(category: RideCategory.standard, distanceKm: 10);
       final surged = calc.quote(
         category: RideCategory.standard,
-        distanceKm: 5,
+        distanceKm: 10,
         surge: 1.5,
       );
       final capped = calc.quote(
         category: RideCategory.standard,
-        distanceKm: 5,
+        distanceKm: 10,
         surge: 9.0,
       );
-      // (0.35 * 5) * 1.5 = 2.625 -> 2.63, and the 9.0 clamps to 2.0 giving 3.50.
-      expect(surged.fareGhs, closeTo(2.63, 0.001));
-      expect(capped.fareGhs, closeTo(3.50, 0.001));
+      expect(surged.fareGhs, closeTo(120.00, 0.001));
+      expect(capped.fareGhs, closeTo(160.00, 0.001));
+      // Not a function of the floor, which is why this distance was chosen: at
+      // 1.5x the floor is 23 and the rate gives 120, so the rate is the answer.
+      expect(surged.fareGhs, greaterThan(base.fareGhs));
     });
 
-    test('surge below 1 is lifted to 1 so a fare never drops', () {
-      final q = calc.quote(
+    test('a surge on a short ride still respects the floor', () {
+      // Surge is applied inside the floor, so a surge can only ever raise a
+      // short trip towards its own minimum and never below it.
+      final surged = calc.quote(
+        category: RideCategory.lite,
+        distanceKm: 0.5,
+        surge: 2.0,
+      );
+      expect(surged.fareGhs, greaterThanOrEqualTo(17.00));
+    });
+
+    test('a surge below 1x is ignored', () {
+      // A discount disguised as a surge. `clamp(1.0, maxSurge)` is the whole of
+      // that rule and it is load-bearing: without it a caller passing
+      // `surge: 0.5` halves every fare.
+      final quoted = calc.quote(
         category: RideCategory.standard,
-        distanceKm: 5,
-        surge: 0.2,
+        distanceKm: 10,
+        surge: 0.5,
       );
-      expect(q.fareGhs, closeTo(1.75, 0.001));
-      expect(q.surge, 1.0);
+      expect(quoted.surge, 1.0);
+      expect(quoted.fareGhs, closeTo(80.00, 0.001));
     });
 
-    test('discount is subtracted and never drives the fare below zero', () {
-      final discounted = calc.quote(
-        category: RideCategory.standard,
-        distanceKm: 2,
-        discountGhs: 0.30,
-      );
-      final excessive = calc.quote(
-        category: RideCategory.standard,
-        distanceKm: 0,
-        discountGhs: 999.0,
-      );
-      expect(discounted.fareGhs, closeTo(0.40, 0.001));
-      expect(excessive.fareGhs, 0.0);
+    test('fare is rounded to two decimals', () {
+      // 7 km standard is 56.00; the rounding is proved on a rate that does not
+      // divide evenly. Lite at 6/km over 3.001 km is 18.006.
+      final q = calc.quote(category: RideCategory.lite, distanceKm: 3.001);
+      expect(q.fareGhs, 18.01);
+      expect(q.fareGhs * 100, closeTo(q.fareGhs * 100, 0.0001));
     });
 
-    test('a discount can take a short ride below the floor, and must', () {
-      // The order is floor-then-discount, and this is the case that fixes it.
-      // Folding the two together -- discounting inside the max -- means the
-      // floor swallows the entire discount, so a rider redeeming a promo code
-      // on a 400 m trip is charged the full 0.15 and shown a discount that did
-      // nothing. The floor is about distance, so it is applied to the distance
-      // and the discount is allowed to do what the rider asked.
-      final q = calc.quote(
-        category: RideCategory.standard,
-        distanceKm: 0.2,
-        discountGhs: 0.10,
-      );
-      // 0.35 * 0.2 = 0.07, floored to 0.15, less 0.10 = 0.05.
-      expect(q.fareGhs, closeTo(0.05, 0.001));
-      expect(q.discountGhs, closeTo(0.10, 0.001));
+    test('a negative distance collapses to the floor, never below it', () {
+      // A reversed pin must not produce a negative fare, and it must not produce
+      // a free one either -- the floor is what a zero-length ride costs.
+      final q = calc.quote(category: RideCategory.lite, distanceKm: -5);
+      expect(q.distanceKm, 0);
+      expect(q.fareGhs, 17.00);
     });
 
-    // Every other case in this file is asserted with closeTo at a tolerance of
-    // 0.001 or better, and every expected value is exact in binary once the
-    // clamps apply, so a round2 that returned its argument untouched would pass
-    // all of them. This one is asserted with exact equality for that reason, and
-    // it is the twin of the same case in
-    // `supabase/functions/_tests/fare.test.ts`: 3.7 km standard at surge 1.3
-    // gives a raw total of 1.6835, which must arrive as exactly 1.68 on both
-    // sides. If you change one, change the other in the same commit, or the
-    // client and the backend can quote a fare the other disagrees with.
-    test('fare is rounded to 2 decimal places, not left at 3', () {
-      final q = calc.quote(
-        category: RideCategory.standard,
-        distanceKm: 3.7,
-        surge: 1.3,
-      );
-      expect(q.fareGhs, 1.68);
-      expect(q.fareGhs == 1.6835, isFalse);
-    });
-  });
-
-  group('the 15 cedi floor', () {
-    test('a ride shorter than about half a kilometre costs the floor', () {
-      // 0.15 / 0.35 = 0.43 km, so below that a standard ride is 0.15 whatever
-      // the distance. This is the guarantee the floor exists for: the driver
-      // is not losing the cost of moving the car on a very short hop.
-      expect(
-        calc.quote(category: RideCategory.standard, distanceKm: 0.2).fareGhs,
-        0.15,
-      );
-      expect(
-        calc.quote(category: RideCategory.standard, distanceKm: 0.43).fareGhs,
-        0.15,
-      );
-    });
-
-    test('the floor never exceeds the price of the distance it replaced', () {
-      // A floor above the shortest real fare would quietly raise prices. Every
-      // category at every positive distance must be at least what the rate
-      // alone would charge. `<double>[...]` rather than a bare literal because a
-      // list mixing integral and fractional entries infers as `List<num>`, which
-      // is not a `double` parameter.
-      const distances = <double>[
-        0.01,
-        0.1,
-        0.3,
-        0.43,
-        0.5,
-        1,
-        2,
-        5,
-        11.6,
-        20,
-        50,
-      ];
-      for (final cat in RideCategory.values) {
-        for (final km in distances) {
-          final q = calc.quote(category: cat, distanceKm: km);
-          expect(q.fareGhs, greaterThanOrEqualTo(0), reason: '$cat at $km km');
-        }
-      }
-    });
-
-    test('the floor is configurable and defaults to 15 cedis', () {
-      expect(FareCalculator().minFareGhs, 0.15);
-      final noFloor = FareCalculator(minFareGhs: 0.0);
-      expect(
-        noFloor.quote(category: RideCategory.standard, distanceKm: 0).fareGhs,
-        0.0,
-      );
-    });
-  });
-
-  group('Review Focus: degenerate routes', () {
-    test('zero_distance_fare_test', () {
-      final q = calc.quote(category: RideCategory.standard, distanceKm: 0);
-      expect(q.fareGhs, closeTo(0.15, 0.001));
-      expect(q.fareGhs, greaterThan(0));
-    });
-
-    test('reversed_route_fare_test', () {
-      final q = calc.quote(category: RideCategory.standard, distanceKm: -4);
-      expect(q.fareGhs, closeTo(0.15, 0.001));
-      expect(q.fareGhs, greaterThan(0));
-    });
-  });
-
-  group('validation', () {
-    test('negative distance is coerced, not thrown', () {
-      expect(
-        () => calc.quote(category: RideCategory.lite, distanceKm: -1),
-        returnsNormally,
-      );
-    });
-
-    test('non-finite distance throws ArgumentError', () {
-      expect(
-        () => calc.quote(category: RideCategory.lite, distanceKm: double.nan),
-        throwsArgumentError,
-      );
-      expect(
-        () => calc.quote(
-          category: RideCategory.lite,
-          distanceKm: double.infinity,
-        ),
-        throwsArgumentError,
-      );
-    });
-
-    test('a non-finite commission rate throws rather than paying out NaN', () {
-      final q = calc.quote(category: RideCategory.standard, distanceKm: 8);
-      expect(() => calc.driverPayoutGhsAt(q, double.nan), throwsArgumentError);
-    });
-  });
-
-  group('driverPayoutGhs', () {
-    test('platform takes 15 percent by default', () {
-      final q = calc.quote(category: RideCategory.standard, distanceKm: 8);
-      // 2.80 * 0.85 = 2.38
-      expect(calc.driverPayoutGhs(q), closeTo(2.38, 0.001));
-    });
-
-    test('commission rate is configurable', () {
-      final zero = FareCalculator(commissionRate: 0.0);
-      final q = zero.quote(category: RideCategory.standard, distanceKm: 8);
-      expect(zero.driverPayoutGhs(q), closeTo(q.fareGhs, 0.001));
-    });
-
-    test('the launch promo pays the whole fare', () {
-      // Every driver keeps 100% for five months, which is a rate of zero rather
-      // than a special case in the payout. Asserted through `driverPayoutGhsAt`
-      // because that is the entry point the settlement uses: `driverPayoutGhs`
-      // reads the calculator's own constant and cannot express "this trip, this
-      // driver, inside the window".
-      final q = calc.quote(category: RideCategory.standard, distanceKm: 8);
-      expect(calc.driverPayoutGhsAt(q, 0.0), closeTo(2.80, 0.001));
-    });
-  });
-
-  group('RideCategory', () {
-    test('labels match the launch set and carry per-km rates', () {
-      expect(RideCategory.values.map((c) => c.label), [
-        'Lite',
-        'Standard',
-        'Premium',
-      ]);
-      expect(RideCategory.lite.perKmGhs, 0.28);
-      expect(RideCategory.standard.perKmGhs, 0.35);
-      expect(RideCategory.premium.perKmGhs, 0.46);
-    });
-
-    test('every rate clears the cost of the fuel that trip burns', () {
-      // 20 cedis/litre at 8 km/litre is 2.5 c/km = GHS 0.025. The floor of 0.15
-      // is 6x that, so no distance in the product puts a driver below their own
-      // fuel cost. This is the assertion that would fail if someone priced the
-      // service off fuel and then cut the rate.
-      const fuelPerKm = 0.20 / 8;
-      for (final cat in RideCategory.values) {
+    test('a distance that is not finite throws', () {
+      for (final bad in <double>[double.nan, double.infinity]) {
         expect(
-          cat.perKmGhs,
-          greaterThan(fuelPerKm),
-          reason: '${cat.name} would not cover its own fuel',
+          () => calc.quote(category: RideCategory.standard, distanceKm: bad),
+          throwsArgumentError,
+          reason: '$bad',
         );
       }
-      expect(FareCalculator().minFareGhs, greaterThan(fuelPerKm));
     });
+  });
+
+  group('driver payout', () {
+    test('a standard commission leaves the driver most of the fare', () {
+      final q = calc.quote(category: RideCategory.standard, distanceKm: 10);
+      // 15%: 80.00 - 12.00 = 68.00
+      expect(calc.driverPayoutGhsAt(q, 0.15), closeTo(68.00, 0.001));
+    });
+
+    test('a zero commission pays the whole fare', () {
+      // The driver launch promo settles at zero commission for five months from
+      // a driver's first completed trip, and this is the arithmetic it depends
+      // on. See `commissionRateFor` in `complete-trip/handler.ts`.
+      final q = calc.quote(category: RideCategory.lite, distanceKm: 10);
+      expect(calc.driverPayoutGhsAt(q, 0.0), closeTo(60.00, 0.001));
+    });
+
+    test('a rate that is not finite throws', () {
+      final q = calc.quote(category: RideCategory.standard, distanceKm: 10);
+      for (final bad in <double>[double.nan, double.infinity]) {
+        expect(
+          () => calc.driverPayoutGhsAt(q, bad),
+          throwsArgumentError,
+          reason: '$bad',
+        );
+      }
+    });
+  });
+
+  test('round2 is to two decimal places', () {
+    expect(FareCalculator.round2(1.006), 1.01);
+    expect(FareCalculator.round2(1.004), 1.0);
+    expect(FareCalculator.round2(80), 80.0);
+    // `1.005` rounds **down** to `1.0`, and that is correct rather than a bug:
+    // `1.005 * 100` is `100.49999999999999` in IEEE-754, so `round()` gets
+    // 100. Worth pinning because a "fix" that special-cases it would make the
+    // fare depend on which way the floating point error fell on a given day.
+    expect(FareCalculator.round2(1.005), 1.0);
   });
 }

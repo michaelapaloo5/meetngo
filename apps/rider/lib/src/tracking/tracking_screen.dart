@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
 import 'package:mng_core/mng_core.dart';
+
+import '../trip/trip_copy.dart';
 import 'package:provider/provider.dart';
 
 import '../data/chat_repository.dart';
@@ -155,6 +157,13 @@ class TrackingScreen extends StatelessWidget {
                 key: const Key('trackingMap'),
                 pickup: trip.pickup.point,
                 dropoff: trip.dropoff.point,
+                // The two place names, printed beside their pins. `stopLabel`
+                // rather than `.label` directly: some rows in this database
+                // carry a coordinate string where the label belongs, and
+                // `stopLabel` is the one function in this app that refuses to
+                // print one.
+                pickupLabel: stopLabel(trip.pickup),
+                dropoffLabel: stopLabel(trip.dropoff),
                 location: c.location,
                 // The driver, with the heading they published, so the car turns
                 // as it approaches instead of sitting pointed at north. Null

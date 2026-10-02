@@ -47,6 +47,11 @@ class TripDetailScreen extends StatelessWidget {
             RideMap(
               pickup: trip.pickup.point,
               dropoff: trip.dropoff.point,
+              // On a past ride the rider is asking "where was that?", and a bare
+              // coloured dot cannot answer it. The names are what they are
+              // looking for.
+              pickupLabel: stopLabel(trip.pickup),
+              dropoffLabel: stopLabel(trip.dropoff),
               height: 200,
             ),
             SizedBox(height: 20.h),
@@ -94,7 +99,10 @@ class TripDetailScreen extends StatelessWidget {
                   value: formatGhs(trip.fareGhs),
                   valueKey: const Key('fareValue'),
                 ),
-                _Fact(label: 'Distance', value: '${trip.distanceKm.toStringAsFixed(1)} km'),
+                _Fact(
+                  label: 'Distance',
+                  value: '${trip.distanceKm.toStringAsFixed(1)} km',
+                ),
                 _Fact(label: 'Category', value: trip.category.label),
                 if (trip.pickupOtp != null)
                   _Fact(
@@ -188,9 +196,7 @@ class _Line extends StatelessWidget {
       children: [
         Icon(icon, size: iconSize, color: iconColor),
         SizedBox(width: 10.w),
-        Expanded(
-          child: Text(text, style: MngTheme.light.textTheme.bodyMedium),
-        ),
+        Expanded(child: Text(text, style: MngTheme.light.textTheme.bodyMedium)),
       ],
     );
   }

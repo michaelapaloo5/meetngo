@@ -41,19 +41,16 @@ TripStop _dest() => const TripStop(
 Widget wrapWithDestination({
   void Function(RouteDraft draft)? onSubmit,
   PlaceService? places,
-  bool promoApplied = false,
 }) => wrap(
   onSubmit: onSubmit,
   places: places,
   dropoff: _dest(),
-  promoApplied: promoApplied,
 );
 
 Widget wrap({
   void Function(RouteDraft draft)? onSubmit,
   PlaceService? places,
   TripStop? dropoff,
-  bool promoApplied = false,
 }) => ScreenUtilInit(
   designSize: const Size(390, 844),
   minTextAdapt: true,
@@ -66,7 +63,6 @@ Widget wrap({
         onSubmit: onSubmit ?? (_) {},
         places: places ?? _StubPlaces(),
         dropoff: dropoff,
-        promoApplied: promoApplied,
       ),
     ),
   ),
@@ -123,10 +119,12 @@ void main() {
     useDesignSurface(tester);
     await tester.pumpWidget(wrapWithDestination());
     // Haversine over the two Accra constants, R = 6371.0088: 2.3299 km.
-    // 0.35 * 2.3299 = 0.815465 -> GHS 0.82. The old figure was 10.19, from
+    // 8 * 2.3299 = 18.64, floored to the standard minimum of 23.00.
     // (5.00 + 1.80 * 2.3299) + 1.00, before the base fare and booking fee went.
     expect(find.text('2.3 km  ·  ~6 min drive'), findsOneWidget);
-    expect(find.text('GHS 0.82'), findsOneWidget);
+        // 8 * 2.3299 = 18.64, floored to the standard minimum of 23.00. Under the
+    // old 0.35/km scale this was 0.82.
+    expect(find.text('GHS 23.00'), findsOneWidget);
   });
 
   testWidgets('changing the category requotes the fare', (tester) async {
@@ -134,12 +132,11 @@ void main() {
     await tester.pumpWidget(wrapWithDestination());
     await tester.tap(find.byKey(const Key('chip-lite')));
     await tester.pump();
-    // 0.28 * 2.3299 = 0.652372 -> GHS 0.65. `lite` is the *cheaper* tier, so
-    // tapping it has to lower the quote -- the assertion below is only
-    // meaningful because of that, and the old expectation of 11.13 was higher
-    // than the standard fare because `lite` used to be `van` at 2.20/km.
-    expect(find.text('GHS 0.65'), findsOneWidget);
-    expect(find.text('GHS 0.82'), findsNothing);
+    // 6 * 2.3299 = 13.98, floored to the lite minimum of 17.00. lite is the
+    // *cheaper* tier and has the *lowest* floor, so tapping it has to lower the
+    // quote -- which is only meaningful because of both of those.
+    expect(find.text('GHS 17.00'), findsOneWidget);
+    expect(find.text('GHS 23.00'), findsNothing);
   });
 
   testWidgets('confirm submits the draft with the chosen stops', (
@@ -351,7 +348,7 @@ void main() {
 
     // GHS 0.82 is the fare for the 2.3 km demo route. Accra to Kumasi is about
     // 200 km, so this must not be it.
-    expect(find.text('GHS 0.82'), findsNothing);
+    expect(find.text('GHS 23.00'), findsNothing);
     expect(find.textContaining('km'), findsOneWidget);
   });
 

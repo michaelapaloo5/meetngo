@@ -6,36 +6,17 @@ import '../data/trip_functions.dart';
 import '../data/trip_repository.dart';
 import '../trip/trip_controller.dart';
 
-const kPromoCode = 'RIDE30';
-
-/// The launch offer, as the *server* applies it.
-///
-/// These four numbers and `promoDiscountGhs` below are the whole of `RIDE30`, and
-/// they exist here because the client has to show the price the rider will be
-/// charged. `supabase/functions/request-ride/fare.ts` holds the same pair in
-/// `PROMOS`/`promoDiscountGhs`; if one changes the other has to, and the test
-/// below is what notices.
-///
-/// The cap is the part that was missing. The server takes
-/// `min(gross * 30 / 100, 40.00)` and subtracts that from the gross. The client
-/// used to compute `gross * 0.7` with no cap at all, so on any fare above
-/// **GHS 133.33** the rider agreed to a number lower than the one they were
-/// charged. That is the bug this fixes, and the reason the cap is a named
-/// constant rather than a literal inside a widget.
-const kPromoPercentOff = 30.0;
-const kPromoMaxDiscountGhs = 40.0;
-
-/// What `RIDE30` takes off [gross], capped exactly as the server caps it.
-///
-/// `math.min` on the percentage and then `round2`, in that order, because that is
-/// the order in `promoDiscountGhs`. Rounding the percentage down first and the
-/// total second would be a different number on many fares.
-double promoDiscountGhs(double gross) {
-  final uncapped = gross * kPromoPercentOff / 100.0;
-  return FareCalculator.round2(
-    uncapped > kPromoMaxDiscountGhs ? kPromoMaxDiscountGhs : uncapped,
-  );
-}
+/// There is no promo code.
+//
+// RIDE30 was here and it was wrong in three separate ways: it went on every
+// ride with no redemption record, the banner said "first ride" while nothing
+// enforced a first ride, and the server capped the discount at GHS 40 while the
+// app did not cap it at all -- so above GHS 133.33 the rider agreed to a number
+// lower than the one they were charged.
+//
+// The offer is withdrawn rather than reduced. Keeping it at 3% would keep two
+// calculations alive -- the gross and the net -- and the only thing that number
+/// was for was to be wrong.
 
 /// The ride flow, from tapping search to seeing a receipt.
 ///
@@ -84,7 +65,6 @@ class RiderFlow extends ChangeNotifier {
         pickup: draft.pickup,
         dropoff: draft.dropoff,
         category: draft.category,
-        promoCode: kPromoCode,
       );
       return trip;
     } on Object catch (e) {

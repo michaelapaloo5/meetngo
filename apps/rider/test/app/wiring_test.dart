@@ -128,10 +128,10 @@ void main() {
     // reaching the calculator, so a wiring mistake in the injected instance
     // would otherwise only show up on a phone.
     //
-    // (0.35 * 5) * 1.5 = 2.625, so 2.63. The old value here was 22.00, from
-    // (5.00 + 1.80 * 5) * 1.5 + 1.00 -- the model with a GHS 5 base fare and a
-    // GHS 1 booking fee, both now zero.
-    expect(quote.fareGhs, 2.63);
+    // (8 * 5) * 1.5 = 60.00. The previous value was 2.63, from the old
+    // 0.35/km scale, and 22.00 before that, from a GHS 5 base fare plus a GHS 1
+    // booking fee.
+    expect(quote.fareGhs, 60.0);
     expect(flow.controller, isA<TripController>());
     expect(flow.requesting, isFalse);
     expect(flow.requestError, isNull);

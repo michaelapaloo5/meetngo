@@ -5,14 +5,12 @@ import 'package:mng_core/mng_core.dart';
 import '../data/booked_trip.dart';
 import '../data/location_service.dart';
 import '../data/place_service.dart';
-import 'widgets/promo_banner.dart';
 import 'widgets/recent_rides.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({
     super.key,
     required this.riderName,
-    required this.promoCode,
     this.location,
     this.place,
     this.recentRides,
@@ -29,9 +27,6 @@ class HomeScreen extends StatefulWidget {
   /// falls back rather than rendering ", ", because a screen that greets a
   /// rider with a comma is worse than one that does not name them.
   final String? riderName;
-
-  final String promoCode;
-
   /// The rider's own position, as read by the shell.
   ///
   /// Null until the first read comes back, which is a real state rather than a
@@ -63,7 +58,7 @@ class HomeScreen extends StatefulWidget {
   /// [promo] is true when the offer was the thing that was pressed, so the
   /// route page can apply the discount rather than making the rider remember
   /// the code they were shown.
-  final void Function(BuildContext context, {bool promo})? onSearchTap;
+  final void Function(BuildContext context)? onSearchTap;
 
   final void Function(BuildContext context)? onNotificationsTap;
 
@@ -174,17 +169,6 @@ class _HomeScreenState extends State<HomeScreen> {
                     ],
                   ),
                 ),
-              ),
-              // The promo is above the search field and is pressable.
-              //
-              // It was a decorative strip under three category chips, so the
-              // one thing on this screen that could change a fare was the one
-              // thing you could not touch. It is a button now: pressing it
-              // opens the route page with the discount already applied, so the
-              // offer does something instead of sitting there.
-              PromoBanner(
-                code: widget.promoCode,
-                onPressed: () => widget.onSearchTap?.call(context, promo: true),
               ),
               SizedBox(height: 12.h),
               // No category chips. Choosing Lite, Standard or Premium here was

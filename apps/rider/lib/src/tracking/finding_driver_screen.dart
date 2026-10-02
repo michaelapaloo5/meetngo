@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
 import 'package:mng_core/mng_core.dart';
+
+import '../trip/trip_copy.dart';
+
 import '../data/location_service.dart';
 import '../map/live_location_button.dart';
 import '../map/ride_map.dart';
@@ -70,6 +73,10 @@ class _FindingDriverScreenState extends State<FindingDriverScreen> {
                 child: RideMap(
                   key: _mapKey,
                   pickup: trip.pickup.point,
+                  // One label here, not two: there is no destination on this
+                  // screen yet, and a lone pickup name is exactly what a rider
+                  // waiting for a car wants to check they spelled right.
+                  pickupLabel: stopLabel(trip.pickup),
                   location: location,
                   fill: true,
                   // On, because nothing on this screen scrolls. The card is a

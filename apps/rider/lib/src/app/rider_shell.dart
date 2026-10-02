@@ -197,7 +197,7 @@ class _RiderShellState extends State<RiderShell> {
     }
   }
 
-  Future<void> _openRouteEntry({bool promo = false}) async {
+  Future<void> _openRouteEntry() async {
     final flow = context.read<RiderFlow>();
     // Asked for before the page opens rather than inside it, so the permission
     // dialog is not stacked under a pushed route on Android. A rider who says
@@ -233,7 +233,6 @@ class _RiderShellState extends State<RiderShell> {
           ? null
           : pickupFromFix(reading.point!, label: _place?.line),
       dropoff: TripStop('Dropoff', destination.point, destination.label),
-      promoApplied: promo,
       onSubmit: _openCarChoice,
     );
 
@@ -485,11 +484,10 @@ class _RiderShellState extends State<RiderShell> {
 
   Widget _home() => HomeScreen(
     riderName: context.watch<RiderProfileController>().greetingName,
-    promoCode: kPromoCode,
     location: _location,
     place: _place,
     recentRides: _recentRides,
-    onSearchTap: (_, {bool promo = false}) => _openRouteEntry(promo: promo),
+    onSearchTap: (_) => _openRouteEntry(),
     onNotificationsTap: (_) => _openNotifications(),
   );
 

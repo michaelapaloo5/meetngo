@@ -5,14 +5,14 @@ import 'package:mng_core/mng_core.dart';
 
 import '../data/location_service.dart';
 
-  /// The credit the OSM tile usage policy requires to be visible, matching
-  /// `kOsmAttribution` in the driver app's `DriverMapPanel`.
-  ///
-  /// Still required, and still drawn by this file's own widget. MapLibre's own
-  /// attribution option is off (`logoEnabled` and the attribution toggle),
-  /// because MapLibre by default prints a Mapbox-branded badge, which would be a
-  /// false claim about who drew the map and is not this app's to display.
-  const kOsmAttribution = '© OpenStreetMap contributors';
+/// The credit the OSM tile usage policy requires to be visible, matching
+/// `kOsmAttribution` in the driver app's `DriverMapPanel`.
+///
+/// Still required, and still drawn by this file's own widget. MapLibre's own
+/// attribution option is off (`logoEnabled` and the attribution toggle),
+/// because MapLibre by default prints a Mapbox-branded badge, which would be a
+/// false claim about who drew the map and is not this app's to display.
+const kOsmAttribution = '© OpenStreetMap contributors';
 
 /// How far the camera is tipped back from straight-down, in degrees.
 ///
@@ -62,7 +62,28 @@ class RideMap extends StatefulWidget {
     this.fill = false,
     this.interactive = false,
     this.onTapPoint,
+    this.pickupLabel,
+    this.dropoffLabel,
   });
+
+  /// The place name to print beside the pickup pin, when there is one.
+  ///
+  /// A pin with no label is a coloured dot the rider has to match to a street by
+  /// shape, and matching a dot to a street from memory is the one thing a map is
+  /// supposed to remove. The name comes from the trip's own `TripStop.label`,
+  /// which is a real place name and never a coordinate -- there is a regex in
+  /// `trip_copy.dart` whose entire job is to stop a coordinate reaching a rider.
+  ///
+  /// Null is a real state -- a trip row written before labels existed, and the
+  /// finding-a-driver screen which has a pickup but no destination yet -- and the
+  /// layer is simply not added, rather than drawing an empty label.
+  final String? pickupLabel;
+
+  /// The place name to print beside the dropoff pin.
+  ///
+  /// A null on both [pickupLabel] and [dropoffLabel] means no symbol layers are
+  /// added at all, so a caller that has nothing to say pays nothing.
+  final String? dropoffLabel;
 
   /// Where the assigned driver is and which way it is facing, when the trip has
   /// a driver with a position.
@@ -306,10 +327,9 @@ class RideMapState extends State<RideMap> {
 
   @override
   Widget build(BuildContext context) {
-    final from =
-        widget.pickup != null && RideMap.isPlottable(widget.pickup!)
-            ? widget.pickup
-            : null;
+    final from = widget.pickup != null && RideMap.isPlottable(widget.pickup!)
+        ? widget.pickup
+        : null;
     final to = widget.dropoff != null && RideMap.isPlottable(widget.dropoff!)
         ? widget.dropoff
         : null;
@@ -334,12 +354,7 @@ class RideMapState extends State<RideMap> {
               ? _MapStandIn(pickup: from, onTapPoint: widget.onTapPoint)
               : _buildMap(from: from, to: to, here: here),
         ),
-        const Positioned(
-          left: 0,
-          right: 0,
-          bottom: 0,
-          child: _Attribution(),
-        ),
+        const Positioned(left: 0, right: 0, bottom: 0, child: _Attribution()),
         if (note.isNotEmpty)
           Positioned(
             left: 8,
@@ -376,10 +391,7 @@ class RideMapState extends State<RideMap> {
     // nothing honest to draw.
     final style = _styleText;
     if (style == null || style.isEmpty) {
-      return _Fallback(
-        height: widget.height,
-        message: 'Loading the map',
-      );
+      return _Fallback(height: widget.height, message: 'Loading the map');
     }
 
     return MapLibreMap(
@@ -404,9 +416,8 @@ class RideMapState extends State<RideMap> {
       // `onMapClick` is delivered through the gesture layer, so it only fires
       // when those are on.
       onMapClick: widget.interactive && widget.onTapPoint != null
-          ? (_, latLng) => widget.onTapPoint!(
-                GeoPoint(latLng.latitude, latLng.longitude),
-              )
+          ? (_, latLng) =>
+                widget.onTapPoint!(GeoPoint(latLng.latitude, latLng.longitude))
           : null,
       // No Mapbox badge: this map is OpenStreetMap's data, drawn by MapLibre,
       // and a Mapbox logo on it would be a false claim about who did the work.
@@ -468,19 +479,13 @@ class RideMapState extends State<RideMap> {
     await controller.addCircleLayer(
       'pins-src-$_uid',
       'pin-halo-$_uid',
-      CircleLayerProperties(
-        circleRadius: 9,
-        circleColor: _css(MngColors.page),
-      ),
+      CircleLayerProperties(circleRadius: 9, circleColor: _css(MngColors.page)),
     );
     // The rider's own dot stays a dot: it is the rider, not a vehicle.
     await controller.addCircleLayer(
       'pins-src-$_uid',
       'device-core-$_uid',
-      CircleLayerProperties(
-        circleRadius: 5,
-        circleColor: _css(MngColors.info),
-      ),
+      CircleLayerProperties(circleRadius: 5, circleColor: _css(MngColors.info)),
       filter: _roleIs('device'),
     );
     await controller.addCircleLayer(
@@ -501,6 +506,35 @@ class RideMapState extends State<RideMap> {
       ),
       filter: _roleIs('dropoff'),
     );
+
+    // The place names, printed beside the pins.
+    //
+    // One source already carries a `name` property, so these are two symbol
+    // layers over the pins rather than a second source. Added after the circles
+    // so the text draws over them, and added only when there is something to
+    // print -- an empty label would render as an empty text box with a halo
+    // behind it, which is a grey smudge on a map.
+    //
+    // `text-allow-overlap` is off and `text-optional` on, so two labels that
+    // would collide drop one rather than overlapping each other's halos. The
+    // rider's own dot is not labelled: they know where they are, and a third
+    // label on a three-pin map is the one that collides first.
+    if ((widget.pickupLabel ?? '').isNotEmpty) {
+      await controller.addSymbolLayer(
+        'pins-src-$_uid',
+        'pin-label-$_uid',
+        _labelProperties(widget.pickupLabel!),
+        filter: _roleIs('pickup'),
+      );
+    }
+    if ((widget.dropoffLabel ?? '').isNotEmpty) {
+      await controller.addSymbolLayer(
+        'pins-src-$_uid',
+        'dropoff-label-$_uid',
+        _labelProperties(widget.dropoffLabel!),
+        filter: _roleIs('dropoff'),
+      );
+    }
 
     await _addVehicle(controller);
 
@@ -528,34 +562,79 @@ class RideMapState extends State<RideMap> {
     }
   }
 
+  /// How a place name is drawn beside its pin.
+  ///
+  /// Written once and used for both pins, because two hand-written copies of a
+  /// symbol layer's properties is two chances to give one of them a different
+  /// offset and have "the destination label is higher than the pickup label" be
+  /// a decision nobody remembers making.
+  ///
+  /// The three settings that matter, and why:
+  ///
+  /// - **`text-offset: [0, 1.2]`, `text-anchor: top`.** Below the dot, not above
+  ///   it. Above, the pickup's label would sit over the route line on a short
+  ///   ride and the rider would be reading the name of the place they are going
+  ///   to through the place they are leaving.
+  /// - **`text-halo-*`.** The map is pale grey roads on pale grey land, so an
+  ///   unhaloed name at this size is unreadable wherever it crosses anything.
+  ///   The halo is the label's background and costs no layout.
+  /// - **`text-max-width: 11`, `text-optional: true`.** A long place name is
+  ///   wrapped to two lines rather than run off the screen, and when two labels
+  ///   would collide one of them drops instead of overlapping. `text-optional` is
+  ///   what makes the drop happen; without it the second label is placed on top
+  ///   of the first and the rider reads the wrong place name.
+  SymbolLayerProperties _labelProperties(String fallback) =>
+      SymbolLayerProperties(
+        textField: [
+          'coalesce',
+          ['get', 'name'],
+          fallback,
+        ],
+        textFont: const ['Noto Sans Regular'],
+        textSize: 11,
+        textColor: _css(MngColors.textPrimary),
+        textHaloColor: _css(MngColors.page),
+        textHaloWidth: 1.4,
+        textOffset: const [0, 1.2],
+        // The string, not an enum: `SymbolLayerProperties.textAnchor` is
+        // `dynamic` and the plugin documents the values as MapLibre's own
+        // `top`/`bottom`/`left`/etc. Passing an `Alignment` here would be a
+        // type error at the platform channel, not at compile time.
+        textAnchor: 'top',
+        textMaxWidth: 11,
+        textOptional: true,
+        // Not set: `text-allow-overlap`. Off is what makes `text-optional`
+        // meaningful.
+      );
+
   /// A route as one GeoJSON `LineString`.
   Map<String, dynamic> _lineGeoJson(List<GeoPoint> points) => {
-        'type': 'Feature',
-        'properties': <String, dynamic>{},
-        'geometry': {
-          'type': 'LineString',
-          'coordinates': [
-            for (final p in points) [p.lng, p.lat],
-          ],
-        },
-      };
+    'type': 'Feature',
+    'properties': <String, dynamic>{},
+    'geometry': {
+      'type': 'LineString',
+      'coordinates': [
+        for (final p in points) [p.lng, p.lat],
+      ],
+    },
+  };
 
   /// The pins as one GeoJSON `MultiPoint`, tagged with a `role` so one source
   /// feeds three colour layers.
   Map<String, dynamic> _pinsGeoJson(List<GeoPoint> points) => {
-        'type': 'FeatureCollection',
-        'features': [
-          for (final entry in _pinRoles(points).entries)
-            {
-              'type': 'Feature',
-              'properties': {'role': entry.key},
-              'geometry': {
-                'type': 'Point',
-                'coordinates': [entry.value.lng, entry.value.lat],
-              },
-            },
-        ],
-      };
+    'type': 'FeatureCollection',
+    'features': [
+      for (final entry in _pinRoles(points).entries)
+        {
+          'type': 'Feature',
+          'properties': {'role': entry.key},
+          'geometry': {
+            'type': 'Point',
+            'coordinates': [entry.value.lng, entry.value.lat],
+          },
+        },
+    ],
+  };
 
   /// Which pin is which, in the order they are drawn.
   ///
@@ -578,7 +657,11 @@ class RideMapState extends State<RideMap> {
   /// name. A pin that silently loses its filter would render in the pickup's
   /// colour, which is exactly the kind of wrong-but-plausible map this file has
   /// already had one of.
-  static List<dynamic> _roleIs(String role) => ['==', ['get', 'role'], role];
+  static List<dynamic> _roleIs(String role) => [
+    '==',
+    ['get', 'role'],
+    role,
+  ];
 
   /// MapLibre takes colours as CSS strings, not `Color`, and it does not accept
   /// Flutter's `Color.toARGB32()` output for every channel order — so the hex
@@ -689,10 +772,7 @@ class _MapStandInState extends State<_MapStandIn> {
 
   @override
   Widget build(BuildContext context) {
-    const box = ColoredBox(
-      key: Key('rideMapStandIn'),
-      color: MngColors.muted,
-    );
+    const box = ColoredBox(key: Key('rideMapStandIn'), color: MngColors.muted);
     final tap = widget.onTapPoint;
     final anchor = widget.pickup;
     if (tap == null || anchor == null) return box;
@@ -710,8 +790,7 @@ class _MapStandInState extends State<_MapStandIn> {
             // matter where it was tapped could not tell a working tap handler
             // from a broken one.
             final dx = (details.localPosition.dx / width - 0.5) * _spanDegrees;
-            final dy =
-                (details.localPosition.dy / height - 0.5) * _spanDegrees;
+            final dy = (details.localPosition.dy / height - 0.5) * _spanDegrees;
             tap(GeoPoint(anchor.lat + dy, anchor.lng + dx));
           },
           child: box,
@@ -742,10 +821,7 @@ class _LocationNote extends StatelessWidget {
           const Icon(Icons.location_off_outlined, size: 16),
           SizedBox(width: 8.w),
           Expanded(
-            child: Text(
-              message,
-              style: MngTheme.light.textTheme.bodySmall,
-            ),
+            child: Text(message, style: MngTheme.light.textTheme.bodySmall),
           ),
         ],
       ),

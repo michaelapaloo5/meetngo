@@ -20,7 +20,6 @@ class FareCalculator {
   FareCalculator({
     this.baseGhs = 0.0,
     this.bookingFeeGhs = 0.0,
-    this.minFareGhs = 0.15,
     this.commissionRate = 0.15,
     this.maxSurge = 2.0,
   });
@@ -33,22 +32,34 @@ class FareCalculator {
   /// Zero, deliberately. See [baseGhs].
   final double bookingFeeGhs;
 
-  /// The floor: 15 cedis. A ride shorter than about half a kilometre costs
-  /// this, so the thinnest possible margin still covers the driver moving the
-  /// car.
-  final double minFareGhs;
+  // There is no `minFareGhs` here any more. It was a single 0.15 applied to
+  // every tier, and it was the reason the whole price scale was wrong: a
+  // per-kilometre rate of 0.28 with a floor of 0.15 means a real Accra trip costs
+  // whatever the distance says and nothing else, which priced Tesano to Dansoman
+  // at GHS 1.94. The floor is now per tier and lives on `RideCategory.minFareGhs`
+  // -- 17, 23 and 28 -- because one floor for all three tiers made the tiers
+  // indistinguishable.
+  //
+  // It is not optional and it is not a default here because a default is how it
+  // was wrong in the first place: a caller who forgot to set it got a 15-cedi
+  // floor and a price no driver would accept.
 
   final double commissionRate;
   final double maxSurge;
 
-  /// fare = max(minFare, (base + perKm * distance) * surge) + booking - discount.
+  /// fare = max(category minimum, (base + perKm * distance) * surge) + booking.
   ///
-  /// The floor goes on the distance-priced fare and the discount comes off
-  /// afterwards, in that order. Flooring last would let a promo push a fare
-  /// below the cost of the drive; flooring first and discounting inside the
-  /// `max` would make a promo code unable to reduce any short trip at all,
-  /// because the floor would swallow it and the rider would be told they paid
-  /// less when they did not.
+  /// The floor is the tier's own [RideCategory.minFareGhs] -- 17, 23 or 28 -- and
+  /// not one number for all of them. That is the change that makes the tiers
+  /// mean anything: with a single floor above every real fare, all three
+  /// charged exactly the same.
+  ///
+  /// There is no discount parameter any more. `RIDE30` took 30% off every ride
+  /// for every rider, capped at GHS 40 server-side and not at all client-side --
+  /// so above GHS 133.33 the rider agreed to a price lower than the one they
+  /// were charged. Removing the offer removes the second calculation, and with
+  /// it the only place in this app where the number on screen and the number on
+  /// the bill could disagree.
   ///
   /// A negative distance collapses to zero so a reversed pin never yields a
   /// negative fare. A non-finite distance is a caller bug and throws.
@@ -56,23 +67,23 @@ class FareCalculator {
     required RideCategory category,
     required double distanceKm,
     double surge = 1.0,
-    double discountGhs = 0.0,
   }) {
     if (distanceKm.isNaN || distanceKm.isInfinite) {
       throw ArgumentError.value(distanceKm, 'distanceKm', 'must be finite');
     }
     final km = math.max(0.0, distanceKm);
     final appliedSurge = surge.clamp(1.0, maxSurge).toDouble();
-    final discount = math.max(0.0, discountGhs);
+    // The floor is the tier's, and it is applied *inside* the surge so a
+    // surge-priced ride never dips below what the tier guarantees.
     final distanceFare = math.max(
-      minFareGhs,
+      category.minFareGhs,
       (baseGhs + category.perKmGhs * km) * appliedSurge,
     );
-    final raw = distanceFare + bookingFeeGhs - discount;
+    final raw = distanceFare + bookingFeeGhs;
     return FareQuote(
       fareGhs: round2(math.max(0.0, raw)),
       surge: appliedSurge,
-      discountGhs: discount,
+      discountGhs: 0,
       distanceKm: km,
     );
   }

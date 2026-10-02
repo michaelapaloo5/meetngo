@@ -34,22 +34,34 @@ export const BASE_GHS = 0.0;
 export const BOOKING_FEE_GHS = 0.0;
 export const MAX_SURGE = 2.0;
 
-// The floor. At 20 cedis/litre and roughly 8 km/litre a vehicle burns about
-// GHS 0.025 per km, so the cheapest per-km rate (lite, GHS 0.28) has fuel at
-// about 9% of the fare and the dearest (premium, GHS 0.46) at about 5% -- the
-// floor is below the fuel line at every distance, and it is here so that the
-// thinnest possible margin still covers the driver on a very short hop rather
-// than to set a price. GH¢0.15 is 15 cedis.
-export const MIN_FARE_GHS = 0.15;
+// The floor, per tier: **GHS 17, 23 and 28** -- what the shortest ride costs.
+//
+// This was a single GHS 0.15 for every tier, which is why the whole price scale
+// was wrong: a per-km rate of 0.28 with a 15-cedi floor means a real Accra trip
+// costs exactly what the distance says, which priced Tesano to Dansoman at
+// GHS 1.94 / 2.43 / 3.19. One floor for all three tiers also made the tiers
+// indistinguishable, because the floor sat above every real fare and all three
+// charged the same number.
+//
+// Mirrors `RideCategory.minFareGhs` in `packages/mng_core`. Both sides must
+// agree or the rider is quoted one price and billed another; `_tests/fare.test.ts`
+// and `fare_calculator_test.dart` pin the same three numbers.
+export const MIN_FARE_GHS: Record<RideCategoryName, number> = {
+  lite: 17.0,
+  standard: 23.0,
+  premium: 28.0,
+};
 
-// GH¢0.28, GH¢0.35 and GH¢0.46 per km -- 28, 35 and 46 cedis. `lite` replaces
-// the old `van` slot: it is the small-vehicle tier, renamed. Nothing in the
-// product reads `van` as a ride category any more, and the name was a poor one
-// for a tier that is about size and price rather than about a body style.
+// GHS 6.00, 8.00 and 10.00 per km. `lite` replaces the old `van` slot: it is the
+// small-vehicle tier, renamed. Nothing in the product reads `van` as a ride
+// category any more, and the name was a poor one for a tier that is about size
+// and price rather than about a body style.
+//
+// Mirrors `RideCategory.perKmGhs` in `packages/mng_core`.
 export const PER_KM: Record<RideCategoryName, number> = {
-  lite: 0.28,
-  standard: 0.35,
-  premium: 0.46,
+  lite: 6.0,
+  standard: 8.0,
+  premium: 10.0,
 };
 
 const round2 = (v: number) => Math.round(v * 100) / 100;
@@ -60,22 +72,30 @@ export function computeFare(input: FareInput): FareQuote {
   }
   const km = Math.max(0, input.distanceKm);
   const surge = Math.min(MAX_SURGE, Math.max(1, input.surge));
-  const discount = Math.max(0, input.discountGhs);
 
-  // The floor is applied to the distance-priced fare and *then* the discount
-  // comes off, not the other way round. Folding them together -- discounting
-  // first and flooring the result -- makes a promo code unable to reduce any
-  // short trip at all, because the floor swallows the whole discount and the
-  // rider is told they paid less when they did not. Flooring last would go the
-  // other way and let a discount push a fare below the cost of moving the car.
-  // The distance is what the floor is about, so it is applied to the distance.
-  const distanceFare = Math.max(MIN_FARE_GHS, (BASE_GHS + PER_KM[input.category] * km) * surge);
-  const raw = distanceFare + BOOKING_FEE_GHS - discount;
+  // The floor is the tier's own, and it goes on the distance-priced fare. There
+  // is no discount term any more.
+  //
+  // `RIDE30` took 30% off every ride from every rider with no redemption record,
+  // capped at GHS 40 here and not at all in the app, so above GHS 133.33 the
+  // rider agreed to a price lower than the one they were charged. Removing the
+  // offer removes the second calculation, and with it the only place in this
+  // product where the number on the screen and the number on the bill could
+  // disagree.
+  //
+  // `input.discountGhs` is still accepted and still floored at zero, so a caller
+  // that still passes one is ignored rather than silently pricing below the
+  // floor. Nothing does; the field is here so a stale call fails safe.
+  const distanceFare = Math.max(
+    MIN_FARE_GHS[input.category],
+    (BASE_GHS + PER_KM[input.category] * km) * surge,
+  );
+  const raw = distanceFare + BOOKING_FEE_GHS;
 
   return {
     fareGhs: round2(Math.max(0, raw)),
     surge,
-    discountGhs: discount,
+    discountGhs: 0,
     distanceKm: km,
   };
 }

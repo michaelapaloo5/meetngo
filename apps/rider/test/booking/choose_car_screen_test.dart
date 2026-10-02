@@ -97,11 +97,11 @@ void main() {
     // 3.68. The old figures here were 20.40 / 23.60 / 28.40, from the model with
     // a GHS 5.00 base and a GHS 1.00 booking fee.
     expect(
-      find.text('GHS 2.80'),
+      find.text('GHS 64.00'),
       findsWidgets,
     ); // standard, the default selection
-    expect(find.text('GHS 3.68'), findsOneWidget); // premium
-    expect(find.text('GHS 2.24'), findsOneWidget); // lite
+    expect(find.text('GHS 80.00'), findsOneWidget); // premium
+    expect(find.text('GHS 48.00'), findsOneWidget); // lite
   });
 
   testWidgets('seat counts are a property of the category', (tester) async {
@@ -127,25 +127,40 @@ void main() {
   testWidgets('the button quotes the selected category', (tester) async {
     useDesignSurface(tester);
     await tester.pumpWidget(wrap());
-    expect(find.text('Find driver  GHS 2.80'), findsOneWidget);
+    expect(find.text('Find driver  GHS 64.00'), findsOneWidget);
 
     await tester.tap(find.byKey(const Key('rideCard-lite')));
     await tester.pump();
 
     // 0.28 * 8 = 2.24, so selecting lite lowers the quote rather than raising it.
-    expect(find.text('Find driver  GHS 2.24'), findsOneWidget);
+    expect(find.text('Find driver  GHS 48.00'), findsOneWidget);
   });
 
   testWidgets('the fare is over the real distance, not a constant', (
     tester,
   ) async {
     useDesignSurface(tester);
-    await tester.pumpWidget(wrap(distanceKm: 2.4));
-    // 0.35 * 2.4 = 0.84
-    expect(find.text('GHS 0.84'), findsWidgets);
+    await tester.pumpWidget(wrap(distanceKm: 4.0));
+    // 8 * 4 = 32.00 for standard, and clear of the 23.00 floor -- which is the
+    // point of the distance being read at all. At 2.4 km this would have been the
+    // floor, and the assertion would pass against a constant.
+    expect(find.text('GHS 32.00'), findsWidgets);
     // The 8 km figure must be gone. This is the test that a distance is read at
     // all, rather than a fare pinned by a constant somewhere in the widget.
-    expect(find.text('GHS 2.80'), findsNothing);
+    expect(find.text('GHS 64.00'), findsNothing);
+  });
+
+  testWidgets('a short ride costs the tier minimum, not the rate', (
+    tester,
+  ) async {
+    useDesignSurface(tester);
+    // 2.4 km standard is 19.20 by the rate and 23.00 by the floor, so this pins
+    // which of the two won. Under the old 0.35/km scale this was 0.84 and there
+    // was no floor anywhere near it.
+    await tester.pumpWidget(wrap(distanceKm: 2.4));
+    expect(find.text('GHS 23.00'), findsWidgets);
+    expect(find.text('GHS 17.00'), findsWidgets); // lite
+    expect(find.text('GHS 28.00'), findsWidgets); // premium
   });
 
   testWidgets('confirm passes the selected category, not a vehicle', (
@@ -169,7 +184,7 @@ void main() {
     // 0.46 * 8 = 3.68, and premium must be the dearer of the two for the
     // "upstream selection is honoured" claim to be distinguishable from the
     // default being shown.
-    expect(find.text('Find driver  GHS 3.68'), findsOneWidget);
+    expect(find.text('Find driver  GHS 80.00'), findsOneWidget);
   });
 
   testWidgets('the selected card is marked and the others are not', (

@@ -4,7 +4,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
 import 'package:mng_core/mng_core.dart';
 
-import '../app/rider_flow.dart';
+import '../trip/trip_copy.dart';
+
 import '../data/place_service.dart';
 import '../home/widgets/category_chips.dart';
 import '../map/ride_map.dart';
@@ -76,7 +77,6 @@ Future<RouteDraft?> pushRouteConfirmPage(
   required PlaceService places,
   TripStop? pickup,
   TripStop? dropoff,
-  bool promoApplied = false,
 }) {
   return Navigator.of(context).push<RouteDraft>(
     MaterialPageRoute<RouteDraft>(
@@ -86,7 +86,6 @@ Future<RouteDraft?> pushRouteConfirmPage(
         places: places,
         pickup: pickup,
         dropoff: dropoff,
-        promoApplied: promoApplied,
       ),
     ),
   );
@@ -100,7 +99,6 @@ class RouteConfirmPage extends StatefulWidget {
     required this.places,
     this.pickup,
     this.dropoff,
-    this.promoApplied = false,
   });
 
   final FareCalculator calc;
@@ -125,12 +123,6 @@ class RouteConfirmPage extends StatefulWidget {
   /// is the outcome that default was dangerous for.
   final TripStop? dropoff;
 
-  /// The rider arrived here by pressing the offer on the home screen.
-  ///
-  /// Carries through to the fare as a 30% discount, so pressing "30% off" is
-  /// worth something. The banner used to advertise it and could not be pressed,
-  /// and a rider who tapped it got nothing and no reason why.
-  final bool promoApplied;
 
   @override
   State<RouteConfirmPage> createState() => _RouteConfirmPageState();
@@ -205,7 +197,23 @@ class _RouteConfirmPageState extends State<RouteConfirmPage> {
   /// not told a destination is missing will think the app lost what they typed.
   bool get _canSubmit => _dropoff != null;
 
-  /// Whether the drafted pair is a real ride rather than the two demo stops.
+  /// The name to print beside a pin being chosen, or null when that stop is not
+  /// set.
+  ///
+  /// Read off the stop rather than hard-coded, because these two fields are what
+  /// the rider is editing right now and the pin has to keep up with them. A stop
+  /// that has been picked on the map and not yet geocoded keeps its placeholder
+  /// text on the pin, which says something true.
+  ///
+  /// `stopLabel` rather than `.label`: some rows in this database carry a
+  /// coordinate string where a label belongs, and this is the one function in
+  /// the app that refuses to print one.
+  String? _labelFor(TripStop? stop) {
+    if (stop == null) return null;
+    final label = stopLabel(stop);
+    return label.isEmpty ? null : label;
+  }
+
   ///
   /// Both defaults are in the same neighbourhood of Accra, so a rider who
   /// never touches either field gets a fare and a map that are perfectly
@@ -352,36 +360,14 @@ class _RouteConfirmPageState extends State<RouteConfirmPage> {
     final full = km == null
         ? null
         : widget.calc.quote(category: _category, distanceKm: km);
-    // 30% off when the rider arrived by pressing the offer, applied here on
-    // the one screen that shows a fare rather than on the home screen where
-    // none is shown, so the discount is visible where it is spent.
+    // The fare the rider is quoted, and it is the fare they are charged.
     //
-    // Through the calculator as a `discountGhs`, not as `fare * 0.7`. Those are
-    // not the same number, and the difference is the whole of this fix:
-    //
-    // - the server computes `round2(min(gross * 30/100, 40.00))` and then
-    //   subtracts that from the gross (`functions/request-ride/fare.ts`,
-    //   `promoDiscountGhs`), so **the discount is capped at GHS 40**
-    // - `fare * 0.7` has no cap, so it is cheaper on the screen than on the bill
-    //   for every fare above GHS 133.33
-    // - and the two round differently even below the cap, so the last two
-    //   decimal places could disagree
-    //
-    // A rider confirming a price and then being charged a different one is the
-    // single most trust-destroying thing a ride app can do, and it was happening
-    // silently on the screen where the price is agreed.
-    final fare = full == null
-        ? null
-        : widget.calc
-              .quote(
-                category: _category,
-                distanceKm: full.distanceKm,
-                discountGhs: widget.promoApplied
-                    ? promoDiscountGhs(full.fareGhs)
-                    : 0,
-              )
-              .fareGhs;
-    return Scaffold(
+    // There is no second calculation here any more. There used to be: this
+    // screen multiplied by 0.7 for the "30% off first ride" offer while the
+    // server took 30% capped at GHS 40, so above GHS 133.33 the number agreed on
+    // this screen was lower than the number billed. The offer is withdrawn, and
+    // with it the only place in the app where the two could disagree.
+    final fare = full?.fareGhs;    return Scaffold(
       // Opaque white. A scrim over the map is what this page used to be, and a
       // rider confirming where they are going should be able to see it.
       backgroundColor: MngColors.page,
@@ -452,6 +438,10 @@ class _RouteConfirmPageState extends State<RouteConfirmPage> {
                     point: _mapField == _Field.pickup
                         ? _pickup.point
                         : _dropoff?.point ?? _pickup.point,
+                    pickupLabel: _labelFor(
+                      _mapField == _Field.pickup ? _pickup : _dropoff,
+                    ),
+                    dropoffLabel: _labelFor(_dropoff),
                     onPick: _pickOnMap,
                     onClose: () => setState(() => _pickingOnMap = false),
                   ),
@@ -482,15 +472,6 @@ class _RouteConfirmPageState extends State<RouteConfirmPage> {
                           'GHS ${fare!.toStringAsFixed(2)}',
                           style: MngTheme.light.textTheme.titleMedium,
                         ),
-                        if (widget.promoApplied)
-                          Padding(
-                            padding: EdgeInsets.only(left: 6.w),
-                            child: Text(
-                              '30% off',
-                              style: MngTheme.light.textTheme.bodySmall
-                                  ?.copyWith(color: MngColors.success),
-                            ),
-                          ),
                       ],
                     ),
                   )
@@ -587,11 +568,21 @@ class _MapPicker extends StatelessWidget {
   const _MapPicker({
     required this.field,
     required this.point,
+    this.pickupLabel,
+    this.dropoffLabel,
     required this.onPick,
     required this.onClose,
   });
 
   final _Field field;
+
+  /// The names to print on the pins, passed in rather than read from the stops.
+  ///
+  /// This widget is handed a point and nothing else -- it does not know about
+  /// the trip -- so the names have to arrive with it. A map picker that reached
+  /// back into the page for them would couple a dialog to the screen behind it.
+  final String? pickupLabel;
+  final String? dropoffLabel;
 
   /// The point the map is centred on. Never null: see the call site.
   final GeoPoint point;
@@ -620,6 +611,13 @@ class _MapPicker extends StatelessWidget {
             child: RideMap(
               key: const Key('pickerMap'),
               pickup: point,
+              // Named, because the rider is standing at a spot choosing it and
+              // an unlabelled dot is a dot they have to recognise. The name
+              // follows the field above it, so a stop that is still reading
+              // "Picked on the map" says exactly that on the pin -- honest
+              // about not having been geocoded rather than blank.
+              pickupLabel: pickupLabel,
+              dropoffLabel: dropoffLabel,
               interactive: true,
               onTapPoint: onPick,
               fill: true,
