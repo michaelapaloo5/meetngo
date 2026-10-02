@@ -190,7 +190,26 @@ class _DriverShellState extends State<DriverShell> {
   Future<void> _tick() async {
     if (!mounted) return;
     final flow = context.read<DriverFlow>();
-    final live = await flow.readActiveTrip();
+    // The poll is the app's heartbeat, so it has to survive a bad tick.
+    //
+    // `readActiveTrip` reaches PostgREST directly and a `ClientException` from a
+    // dropped connection is not a `DriverAuthFailure`, so it arrived as an
+    // unhandled async error -- and because the call is `await`ed, everything after
+    // it in this function was skipped. Watched on a handset that briefly lost DNS:
+    // the poll threw every three seconds, the trip was never refreshed, and the
+    // screen quietly stopped knowing where the driver was. One blip in a lift was
+    // enough to do that, and nothing on screen said so.
+    //
+    // Swallowing it is the right call rather than reporting it: the driver is not
+    // signed out and nothing needs fixing on their phone, so the next tick is the
+    // whole remedy. `activeTrip` is left to keep throwing rather than being wrapped
+    // here, so that a caller who wants to know about a read failure still can.
+    final Trip? live;
+    try {
+      live = await flow.readActiveTrip();
+    } on Object {
+      return;
+    }
     if (!mounted) return;
     if (live == null) {
       // A trip that has finished while the app was open closes the banner. Without

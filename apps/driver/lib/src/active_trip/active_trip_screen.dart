@@ -180,24 +180,43 @@ class ActiveTripScreen extends StatelessWidget {
           // The banner is above the map, not below it. A driver reads an
           // instruction and then looks at the road; the other order means reading
           // the road and then finding the instruction.
-          if (navigationHost?.isRunning ?? false)
-            Padding(
-              padding: EdgeInsets.fromLTRB(16.w, 12.h, 16.w, 0),
-              child: ListenableBuilder(
-                // On the host rather than the controller, so the banner rebuilds
-                // when the route or the step changes without the trip screen
-                // rebuilding the map on every position fix.
-                listenable: navigationHost!,
-                builder: (context, _) {
-                  final controller = navigationHost!.controller;
-                  if (controller == null) return const SizedBox.shrink();
-                  return TurnBanner(
+          // The `ListenableBuilder` wraps the *guard*, not just the banner. `isRunning`
+          // is read in `build`, and `build` only runs when something rebuilds
+          // this screen -- so a guard evaluated outside the listener decided
+          // "navigation is not running" from a stale read, and the banner was
+          // never even considered. Starting navigation notified the host, nothing
+          // was listening at the top level, and the driver pressed a button that
+          // demonstrably worked and got nothing.
+          //
+          // The symptom that gave it away: opening and dismissing the "Something
+          // left behind" sheet made Navigate start working, because popping a
+          // modal route rebuilds the route underneath. It is the second time this
+          // screen has had a value it read without listening for the thing that
+          // changes it.
+          // Null-checked rather than assumed. A build with no routing repository
+          // hands this screen a null host, and the listener has to exist on every
+          // build now that it wraps the guard -- so `navigationHost!` here took
+          // the whole trip screen down. The banner's absence is a missing feature,
+          // not a reason the driver cannot see their fare.
+          if (navigationHost == null)
+            const SizedBox.shrink()
+          else
+            ListenableBuilder(
+              listenable: navigationHost!,
+              builder: (context, _) {
+                if (!navigationHost!.isRunning) return const SizedBox.shrink();
+                final controller = navigationHost!.controller;
+                if (controller == null) return const SizedBox.shrink();
+                return Padding(
+                  padding: EdgeInsets.fromLTRB(16.w, 12.h, 16.w, 0),
+                  child: TurnBanner(
                     controller: controller,
-                    onMuteToggle: () =>
-                        navigationHost!.setSpeaking(!controller.speakInstructions),
-                  );
-                },
-              ),
+                    onMuteToggle: () => navigationHost!.setSpeaking(
+                      !controller.speakInstructions,
+                    ),
+                  ),
+                );
+              },
             ),
           SizedBox(height: 8.h),
           Padding(
@@ -267,10 +286,11 @@ class ActiveTripScreen extends StatelessWidget {
                       Expanded(
                         child: OutlinedButton.icon(
                           key: const Key('navigateButton'),
-                          onPressed: () => _startNavigation(context, controller),
+                          onPressed: () =>
+                              _startNavigation(context, controller),
                           icon: const Icon(Icons.navigation),
                           label: Text(
-                              navigationHost?.controller?.loading == true
+                            navigationHost?.controller?.loading == true
                                 // The label changes rather than only the spinner,
                                 // because a driver tapping a button and getting
                                 // nothing back assumes the app has frozen.
@@ -292,7 +312,10 @@ class ActiveTripScreen extends StatelessWidget {
                           // stranger's number wants both.
                           onPressed: contact.contact == null
                               ? null
-                              : () => ContactSheet.show(context, contact.contact!),
+                              : () => ContactSheet.show(
+                                  context,
+                                  contact.contact!,
+                                ),
                           icon: const Icon(Icons.call),
                           label: Text(
                             contact.contact?.actionLabel ??
@@ -354,9 +377,9 @@ class ActiveTripScreen extends StatelessWidget {
                 SizedBox(height: 12.h),
                 FilledButton(
                   key: const Key('primaryActionButton'),
-                  onPressed: controller.busy ||
-                          (!controller.canAdvance &&
-                              !controller.isFinished)
+                  onPressed:
+                      controller.busy ||
+                          (!controller.canAdvance && !controller.isFinished)
                       ? null
                       : () => _act(context, controller),
                   child: Text(controller.primaryActionLabel),
@@ -396,7 +419,8 @@ class ActiveTripScreen extends StatelessWidget {
       );
       return;
     }
-    final riderName = context.read<ContactController>().contact?.name ?? 'Rider';
+    final riderName =
+        context.read<ContactController>().contact?.name ?? 'Rider';
     Navigator.of(context).push(
       MaterialPageRoute<void>(
         builder: (_) => ChatScreen(
@@ -459,8 +483,9 @@ class ActiveTripScreen extends StatelessWidget {
     }
     await host.start(
       at: point,
-      destination:
-          trip.state == TripState.ongoing ? trip.dropoff.point : trip.pickup.point,
+      destination: trip.state == TripState.ongoing
+          ? trip.dropoff.point
+          : trip.pickup.point,
     );
   }
 

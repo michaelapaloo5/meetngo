@@ -6,11 +6,36 @@ import 'package:meetngo_driver/src/active_trip/active_trip_screen.dart';
 import 'package:meetngo_driver/src/contact/contact_controller.dart';
 import 'package:meetngo_driver/src/data/driver_repository.dart';
 import 'package:meetngo_driver/src/location/location_controller.dart';
+import 'package:meetngo_driver/src/navigation/navigation_controller.dart';
+import 'package:meetngo_driver/src/navigation/route_progress.dart';
 import 'package:meetngo_driver/src/navigation/navigation_host.dart';
+import 'package:meetngo_driver/src/navigation/turn_banner.dart';
 import 'package:provider/provider.dart';
 
 import '../support/fakes.dart';
 import '../support/harness.dart';
+
+/// A route repository that answers immediately with a straight two-point line.
+///
+/// `NavigationHost.start` returns early when it has no repository, so a host built
+/// bare never becomes "running" -- and a test asserting the banner appears would
+/// then pass or fail for the wrong reason.
+class _StubRoute implements RouteRepository {
+  @override
+  Future<TripRoute> route(GeoPoint from, GeoPoint to) async => TripRoute(
+        distanceM: 2000,
+        durationS: 600,
+        durationFreeFlowS: 600,
+        // GeoJSON order, `[lng, lat]`, not a pair of GeoPoints.
+        geometry: [
+          [from.lng, from.lat],
+          [to.lng, to.lat],
+        ],
+        steps: const [],
+        engine: 'osrm',
+        degraded: false,
+      );
+}
 
 /// The screen now draws the trip on a map, so it needs a
 /// [LocationController]. A stub reader with no fix is the case that matters
@@ -41,6 +66,15 @@ Widget wrap(
   /// False by default, because most tests here are about the trip and not about
   /// the map, and the screen routes from `location.point`.
   bool withLocation = false,
+
+  /// A specific navigation host, for a test that starts navigation itself and
+  /// then needs to see the screen react.
+  ///
+  /// Taking the host as an argument rather than always building a fresh one is what
+  /// makes "the banner appears when navigation starts" testable: the test holds
+  /// the same object the screen does, so it can start it the way the controller
+  /// does -- from outside the widget tree, with no rebuild in between.
+  NavigationHost? navigationHost,
 }) {
   // One source of truth, not two. `wrap` took both a repository and a contact,
   // and the controller was built from the repository and then had `contact`
@@ -58,7 +92,8 @@ Widget wrap(
       value: c,
       child: ActiveTripScreen(
         onFinished: onFinished ?? () {},
-        location: location ??
+        location:
+            location ??
             LocationController(
               withLocation
                   ? StubLocationReader(point: const GeoPoint(5.6037, -0.1870))
@@ -66,7 +101,8 @@ Widget wrap(
               StubDriverRepository(),
             ),
         contact: controller,
-        navigationHost: withNavigationHost ? NavigationHost() : null,
+        navigationHost:
+            navigationHost ?? (withNavigationHost ? NavigationHost() : null),
       ),
     ),
   );
@@ -104,7 +140,8 @@ void main() {
   test('no trip and a terminal trip both say there is nothing to do', () {
     expect(ActiveTripController(repo).primaryActionLabel, 'No action');
     expect(ActiveTripController(repo).headline, 'No active trip');
-    final cancelled = ActiveTripController(repo)..trip = tripIn(TripState.cancelled);
+    final cancelled = ActiveTripController(repo)
+      ..trip = tripIn(TripState.cancelled);
     expect(cancelled.primaryActionLabel, 'No action');
     expect(cancelled.canAdvance, isFalse);
   });
@@ -157,7 +194,11 @@ void main() {
     expect(await c.submitPickupOtp('0000'), isFalse);
     expect(c.trip!.state, TripState.arriving);
     expect(c.error, 'That code is not right');
-    expect(repo.moves, isEmpty, reason: 'a refused code must not start the trip');
+    expect(
+      repo.moves,
+      isEmpty,
+      reason: 'a refused code must not start the trip',
+    );
   });
 
   test('a short OTP is rejected before the network call', () async {
@@ -198,14 +239,17 @@ void main() {
   // `enforce_trip_transition` refuses an illegal move at the database, so this
   // is the transition rule answering, not a network fault, and it has to reach
   // the driver rather than being swallowed.
-  test('a rejected transition is surfaced and the state is not believed',
-      () async {
-    final rejecting = _RejectingTripRepository();
-    final c = ActiveTripController(rejecting)..trip = tripIn(TripState.matched);
-    expect(await c.advance(), isFalse);
-    expect(c.error, isNotNull);
-    expect(c.trip!.state, TripState.matched, reason: 'the row never moved');
-  });
+  test(
+    'a rejected transition is surfaced and the state is not believed',
+    () async {
+      final rejecting = _RejectingTripRepository();
+      final c = ActiveTripController(rejecting)
+        ..trip = tripIn(TripState.matched);
+      expect(await c.advance(), isFalse);
+      expect(c.error, isNotNull);
+      expect(c.trip!.state, TripState.matched, reason: 'the row never moved');
+    },
+  );
 
   test('nothing to advance is said plainly', () async {
     final c = ActiveTripController(repo);
@@ -213,8 +257,9 @@ void main() {
     expect(c.error, 'Nothing to advance');
   });
 
-  testWidgets('the screen shows the state, both stops, and the action',
-      (tester) async {
+  testWidgets('the screen shows the state, both stops, and the action', (
+    tester,
+  ) async {
     useDesignSurface(tester);
     final c = ActiveTripController(repo)..trip = tripIn(TripState.arriving);
     await tester.pumpWidget(wrap(c));
@@ -249,8 +294,9 @@ void main() {
   // come back: apart from the action button -- whose label is a different piece
   // of information, and legitimately repeats the headline for `completed` -- no
   // other text on the screen may equal the app bar's headline.
-  testWidgets('no text outside the action button repeats the headline',
-      (tester) async {
+  testWidgets('no text outside the action button repeats the headline', (
+    tester,
+  ) async {
     useDesignSurface(tester);
     for (final state in [
       TripState.matched,
@@ -309,8 +355,9 @@ void main() {
     expect(button.onPressed, isNotNull);
   });
 
-  testWidgets('the primary action is dead when there is nothing to advance',
-      (tester) async {
+  testWidgets('the primary action is dead when there is nothing to advance', (
+    tester,
+  ) async {
     useDesignSurface(tester);
     final c = ActiveTripController(repo)..trip = tripIn(TripState.cancelled);
     await tester.pumpWidget(wrap(c));
@@ -332,22 +379,29 @@ void main() {
     expect(find.byKey(const Key('pickupOtpConfirmButton')), findsOneWidget);
   });
 
-  testWidgets('the OTP sheet only takes digits and four of them',
-      (tester) async {
+  testWidgets('the OTP sheet only takes digits and four of them', (
+    tester,
+  ) async {
     useDesignSurface(tester);
     final c = ActiveTripController(repo)..trip = tripIn(TripState.arriving);
     await tester.pumpWidget(wrap(c));
     await tester.tap(find.byKey(const Key('primaryActionButton')));
     await tester.pumpAndSettle();
 
-    await tester.enterText(find.byKey(const Key('pickupOtpField')), 'ab12cd3456');
-    final field = tester.widget<TextField>(find.byKey(const Key('pickupOtpField')));
+    await tester.enterText(
+      find.byKey(const Key('pickupOtpField')),
+      'ab12cd3456',
+    );
+    final field = tester.widget<TextField>(
+      find.byKey(const Key('pickupOtpField')),
+    );
     expect(field.controller!.text.length, lessThanOrEqualTo(4));
     expect(field.controller!.text, matches(RegExp(r'^\d*$')));
   });
 
-  testWidgets('a correct OTP closes the sheet and starts the trip',
-      (tester) async {
+  testWidgets('a correct OTP closes the sheet and starts the trip', (
+    tester,
+  ) async {
     useDesignSurface(tester);
     final c = ActiveTripController(repo)..trip = tripIn(TripState.arriving);
     await tester.pumpWidget(wrap(c));
@@ -363,7 +417,9 @@ void main() {
     expect(find.text('On the way'), findsOneWidget);
   });
 
-  testWidgets('a wrong OTP keeps the sheet open with the reason', (tester) async {
+  testWidgets('a wrong OTP keeps the sheet open with the reason', (
+    tester,
+  ) async {
     useDesignSurface(tester);
     repo.otpPasses = false;
     final c = ActiveTripController(repo)..trip = tripIn(TripState.arriving);
@@ -411,7 +467,9 @@ void main() {
   // it is rather than doing nothing -- and never throws, because a crash here
   // would take down the screen a driver is running a live trip on.
   group('the Navigate button', () {
-    testWidgets('says it needs a location rather than doing nothing', (tester) async {
+    testWidgets('says it needs a location rather than doing nothing', (
+      tester,
+    ) async {
       useDesignSurface(tester);
       final c = ActiveTripController(repo)..trip = tripIn(TripState.matched);
       await tester.pumpWidget(wrap(c));
@@ -423,7 +481,9 @@ void main() {
       expect(find.textContaining('Waiting for your location'), findsOneWidget);
     });
 
-    testWidgets('does not throw when no navigation host is wired in', (tester) async {
+    testWidgets('does not throw when no navigation host is wired in', (
+      tester,
+    ) async {
       useDesignSurface(tester);
       final c = ActiveTripController(repo)..trip = tripIn(TripState.matched);
       await tester.pumpWidget(wrap(c, withNavigationHost: false));
@@ -431,10 +491,53 @@ void main() {
       await tester.pumpAndSettle();
       expect(tester.takeException(), isNull);
     });
+
+    testWidgets(
+      'the banner appears when navigation starts, without the screen rebuilding',
+      (tester) async {
+        // The bug, and the second time this screen read a value it did not
+        // listen for. `isRunning` was evaluated in `build`, with the
+        // `ListenableBuilder` *inside* the guard rather than around it, so
+        // starting navigation notified a host nothing was listening to at the top
+        // level. The guard kept saying "not running" from a stale read and the
+        // banner was never built.
+        //
+        // On a handset this read as a dead button: press Navigate, nothing.
+        // Open the "Something left behind" sheet, dismiss it, and Navigate works --
+        // because popping a modal route rebuilds the route underneath.
+        useDesignSurface(tester);
+        final host = NavigationHost(repository: _StubRoute());
+        final c = ActiveTripController(repo)..trip = tripIn(TripState.matched);
+        await tester.pumpWidget(wrap(c, navigationHost: host));
+
+        expect(
+          find.byKey(const Key('turnBannerMute')),
+          findsNothing,
+          reason: 'navigation has not started',
+        );
+
+        // Start it from outside the widget tree, exactly as the controller does,
+        // with no rebuild of the screen in between.
+        await host.start(
+          at: const GeoPoint(5.6037, -0.1870),
+          destination: const GeoPoint(5.6200, -0.1870),
+        );
+        await tester.pump();
+
+        expect(host.isRunning, isTrue, reason: 'the host really did start');
+        expect(
+          find.byType(TurnBanner),
+          findsOneWidget,
+          reason: 'and the screen must show that without being rebuilt',
+        );
+      },
+    );
   });
 
   group('the Call button', () {
-    testWidgets('is disabled when the rider has no number on file', (tester) async {
+    testWidgets('is disabled when the rider has no number on file', (
+      tester,
+    ) async {
       useDesignSurface(tester);
       final c = ActiveTripController(repo)..trip = tripIn(TripState.matched);
       await tester.pumpWidget(wrap(c));
@@ -448,18 +551,22 @@ void main() {
       expect(button.onPressed, isNull);
     });
 
-    testWidgets('opens the contact sheet when there is a number', (tester) async {
+    testWidgets('opens the contact sheet when there is a number', (
+      tester,
+    ) async {
       useDesignSurface(tester);
       final c = ActiveTripController(repo)..trip = tripIn(TripState.matched);
-      await tester.pumpWidget(wrap(
-        c,
-        contact: Contact(
-          role: ContactRole.rider,
-          phone: '0241234567',
-          callable: true,
-          name: 'Michael Apaloo',
+      await tester.pumpWidget(
+        wrap(
+          c,
+          contact: Contact(
+            role: ContactRole.rider,
+            phone: '0241234567',
+            callable: true,
+            name: 'Michael Apaloo',
+          ),
         ),
-      ));
+      );
 
       // The label names the rider, not just "Call": a driver about to dial a
       // stranger's number wants to see who.
@@ -471,7 +578,9 @@ void main() {
       expect(find.text('024 123 4567'), findsOneWidget);
     });
 
-    testWidgets('wakes when the number arrives after the first frame', (tester) async {
+    testWidgets('wakes when the number arrives after the first frame', (
+      tester,
+    ) async {
       // The bug this catches: the button is built once, with no contact, and
       // stays disabled for the rest of the trip. A driver who presses it then
       // concludes calling is broken -- which is exactly what the button said
@@ -479,19 +588,21 @@ void main() {
       useDesignSurface(tester);
       final c = ActiveTripController(repo)..trip = tripIn(TripState.matched);
       final controller = ContactController(_NoNumber());
-      await tester.pumpWidget(appHarness(
-        ChangeNotifierProvider<ActiveTripController>.value(
-          value: c,
-          child: ActiveTripScreen(
-            onFinished: () {},
-            location: LocationController(
-              StubLocationReader(pointThrows: 'no fix'),
-              repo,
+      await tester.pumpWidget(
+        appHarness(
+          ChangeNotifierProvider<ActiveTripController>.value(
+            value: c,
+            child: ActiveTripScreen(
+              onFinished: () {},
+              location: LocationController(
+                StubLocationReader(pointThrows: 'no fix'),
+                repo,
+              ),
+              contact: controller,
             ),
-            contact: controller,
           ),
         ),
-      ));
+      );
       expect(
         tester
             .widget<OutlinedButton>(find.byKey(const Key('callRiderButton')))
@@ -500,12 +611,14 @@ void main() {
       );
 
       // The answer arrives after the first build, as it always will.
-      controller.adopt(Contact(
-        role: ContactRole.rider,
-        phone: '0241234567',
-        callable: true,
-        name: 'Michael Apaloo',
-      ));
+      controller.adopt(
+        Contact(
+          role: ContactRole.rider,
+          phone: '0241234567',
+          callable: true,
+          name: 'Michael Apaloo',
+        ),
+      );
       await tester.pumpAndSettle();
 
       expect(
