@@ -21,12 +21,18 @@ import 'route_progress.dart';
 /// nothing, so the banner swaps it for the distance to the first real manoeuvre --
 /// which is the question they actually have at that moment.
 ///
-/// ## Why the road name is small
+/// ## Why it is one line
 ///
-/// Because it is context, not the instruction. A driver needs "turn left" before
-/// they need "into Ring Road West", and at a glance the bigger word is the one
-/// they read. It is also the part that changes while the driver is looking at it,
-/// which is a poor thing to make the biggest thing on the screen.
+/// The instruction and the road name were stacked, which made the banner two
+/// rows tall. On a phone in a mount, that is two rows of the one thing a driver
+/// reads while driving, and it put the road name -- the part that changes as they
+/// move -- directly under words they had already read, so the text they were
+/// part-way through reading moved out from under them.
+///
+/// The road name stays, after the instruction on the same line, because it is
+/// context a driver needs and not decoration. It is not the biggest thing on the
+/// banner and it is what gives way when the line is too long: it is on the map in
+/// front of them, and the instruction is not.
 class TurnBanner extends StatelessWidget {
   const TurnBanner({super.key, required this.controller, this.onMuteToggle});
 
@@ -49,14 +55,19 @@ class TurnBanner extends StatelessWidget {
         color: MngColors.primary,
         borderRadius: BorderRadius.circular(MngRadius.large),
         boxShadow: const [
-          BoxShadow(color: Color(0x33000000), blurRadius: 12, offset: Offset(0, 4)),
+          BoxShadow(
+            color: Color(0x33000000),
+            blurRadius: 12,
+            offset: Offset(0, 4),
+          ),
         ],
       ),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.center,
         children: [
           Expanded(child: _body(context, text, step)),
-          if (onMuteToggle != null) _MuteButton(controller: controller, onTap: onMuteToggle!),
+          if (onMuteToggle != null)
+            _MuteButton(controller: controller, onTap: onMuteToggle!),
         ],
       ),
     );
@@ -70,7 +81,10 @@ class TurnBanner extends StatelessWidget {
           const SizedBox(
             width: 18,
             height: 18,
-            child: CircularProgressIndicator(strokeWidth: 2, color: MngColors.onPrimary),
+            child: CircularProgressIndicator(
+              strokeWidth: 2,
+              color: MngColors.onPrimary,
+            ),
           ),
           SizedBox(width: 12.w),
           Text(
@@ -83,17 +97,17 @@ class TurnBanner extends StatelessWidget {
     }
 
     // A failure outranks the instruction.
-//
-// The one case this whole widget exists to avoid is a banner confidently telling a
-// driver to turn left when they have already left the route and the new one could
-// not be fetched. The line stays drawn -- a driver off-route is better off on a
-// stale line than with none -- but the instruction stops, because the instruction
-// is the thing that would be wrong.
-//
-// So this is `failure != null`, not `failure != null && route == null`. A route
-// that is present and a failure are not exclusive: they are exactly the situation
-// this branch is for.
-if (step == null || controller.failure != null) {
+    //
+    // The one case this whole widget exists to avoid is a banner confidently telling a
+    // driver to turn left when they have already left the route and the new one could
+    // not be fetched. The line stays drawn -- a driver off-route is better off on a
+    // stale line than with none -- but the instruction stops, because the instruction
+    // is the thing that would be wrong.
+    //
+    // So this is `failure != null`, not `failure != null && route == null`. A route
+    // that is present and a failure are not exclusive: they are exactly the situation
+    // this branch is for.
+    if (step == null || controller.failure != null) {
       final failure = controller.failure;
       return Row(
         children: [
@@ -105,7 +119,9 @@ if (step == null || controller.failure != null) {
               mainAxisSize: MainAxisSize.min,
               children: [
                 Text(
-                  failure == null ? 'Working out the route' : 'Route could not be updated',
+                  failure == null
+                      ? 'Working out the route'
+                      : 'Route could not be updated',
                   key: const Key('turnBannerMessage'),
                   style: text.titleMedium?.copyWith(color: MngColors.onPrimary),
                 ),
@@ -131,7 +147,9 @@ if (step == null || controller.failure != null) {
     // for the distance to the first real manoeuvre, which is what a driver is
     // actually asking at that moment -- and falls back to the leg's own distance
     // when there is no later step to measure to.
-    final toNextManoeuvre = isDepart ? _distanceToNextManoeuvre(controller) : null;
+    final toNextManoeuvre = isDepart
+        ? _distanceToNextManoeuvre(controller)
+        : null;
     final lead = toNextManoeuvre ?? controller.distanceToStepM;
     final leadText = formatDistance(lead);
 
@@ -141,31 +159,39 @@ if (step == null || controller.failure != null) {
         _ManoeuverIcon(maneuver: step.maneuver),
         SizedBox(width: 14.w),
         Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(
-                step.instruction,
-                key: const Key('turnBannerInstruction'),
-                style: text.titleLarge?.copyWith(
-                  color: MngColors.onPrimary,
-                  fontWeight: FontWeight.w700,
+          // One line, not two.
+          //
+          // The instruction and the road name were stacked, which made the
+          // banner two rows tall -- and on a phone in a mount, two rows of the
+          // one thing a driver reads while driving. It also put the road name,
+          // the part that changes as they move, directly under words they had
+          // already read, so the text they were part-way through reading moved
+          // out from under them.
+          //
+          // They are one paragraph on one line now, with the weight and colour
+          // that say which is the instruction and the road name after it. When
+          // the two will not both fit at driving size it is the road name that
+          // gives way: it is context, and it is on the map in front of them.
+          child: RichText(
+            key: const Key('turnBannerInstruction'),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            text: TextSpan(
+              children: [
+                TextSpan(
+                  text: step.instruction,
+                  style: text.titleLarge?.copyWith(
+                    color: MngColors.onPrimary,
+                    fontWeight: FontWeight.w700,
+                  ),
                 ),
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-              ),
-              if (step.name.isNotEmpty) ...[
-                SizedBox(height: 2.h),
-                Text(
-                  step.name,
-                  key: const Key('turnBannerRoad'),
-                  style: text.bodySmall?.copyWith(color: MngColors.onPrimary),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
+                if (step.name.isNotEmpty)
+                  TextSpan(
+                    text: ' \u00b7 ${step.name}',
+                    style: text.bodySmall?.copyWith(color: MngColors.onPrimary),
+                  ),
               ],
-            ],
+            ),
           ),
         ),
         SizedBox(width: 10.w),
@@ -205,8 +231,11 @@ if (step == null || controller.failure != null) {
     if (next >= route.steps.length) return null;
     // The steps' distances are legs in order, so what is left of this leg is what
     // is left of the route before the next manoeuvre.
-    final remainingInLeg = route.steps[progress.stepIndex].distanceM - progress.distanceToStepM;
-    final ahead = route.steps.sublist(next).fold<double>(0, (sum, s) => sum + s.distanceM);
+    final remainingInLeg =
+        route.steps[progress.stepIndex].distanceM - progress.distanceToStepM;
+    final ahead = route.steps
+        .sublist(next)
+        .fold<double>(0, (sum, s) => sum + s.distanceM);
     final total = remainingInLeg + ahead;
     return total.isFinite && total > 0 ? total : null;
   }
@@ -252,7 +281,9 @@ class _MuteButton extends StatelessWidget {
     return IconButton(
       key: const Key('turnBannerMute'),
       onPressed: onTap,
-      tooltip: controller.speakInstructions ? 'Turn voice off' : 'Turn voice on',
+      tooltip: controller.speakInstructions
+          ? 'Turn voice off'
+          : 'Turn voice on',
       icon: Icon(
         controller.speakInstructions ? Icons.volume_up : Icons.volume_off,
         color: MngColors.onPrimary,

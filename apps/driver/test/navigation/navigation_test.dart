@@ -670,23 +670,70 @@ void main() {
       await show(tester, c);
 
       expect(find.byKey(const Key('turnBanner')), findsOneWidget);
-      expect(find.textContaining('Head north'), findsOneWidget);
+      // `find.textContaining` because the instruction and the road name are one
+      // RichText paragraph now, so there is no separate `Text` holding either.
+      expect(find.byKey(const Key('turnBannerInstruction')), findsOneWidget);
+      expect(
+        find.textContaining('Head north', findRichText: true),
+        findsOneWidget,
+      );
       expect(find.byKey(const Key('turnBannerDistance')), findsOneWidget);
       expect(find.text('14:12'), findsOneWidget);
     });
 
-    testWidgets('names the road, but smaller than the instruction', (
-      tester,
-    ) async {
+    testWidgets('is one line, not two', (tester) async {
       useDesignSurface(tester);
       final c = withRoute();
       await c.start();
       await show(tester, c);
 
-      // The road name is context, and it is the part that changes while the driver
-      // is looking at it -- a poor thing to make the biggest thing on screen.
-      expect(find.text('Boundary Road'), findsOneWidget);
+      // The whole reason the instruction and the road name are one paragraph
+      // rather than stacked: on a phone in a mount, two rows of the one thing a
+      // driver reads while driving is the cost that was not worth paying.
+      expect(find.byKey(const Key('turnBannerInstruction')), findsOneWidget);
+      expect(find.byKey(const Key('turnBannerRoad')), findsNothing);
+      final banner = tester.getSize(find.byKey(const Key('turnBanner')));
+      expect(
+        banner.height,
+        lessThan(90),
+        reason: 'a single line of title text plus its padding, not two rows',
+      );
     });
+
+    testWidgets(
+      'names the road on the same line, smaller than the instruction',
+      (tester) async {
+        useDesignSurface(tester);
+        final c = withRoute();
+        await c.start();
+        await show(tester, c);
+
+        // The road name is context and it is the part that changes while the
+        // driver is looking at it, so it is not the biggest thing on the banner
+        // and it is not on a line of its own. Asserted through the paragraph
+        // because that is what it is: the instruction and the road name are one
+        // RichText, so `find.text('Boundary Road')` finds nothing.
+        final paragraph = tester.widget<RichText>(
+          find.byKey(const Key('turnBannerInstruction')),
+        );
+        final text = paragraph.text.toPlainText();
+        expect(text, contains('Boundary Road'));
+        // The whole line, in the reading order a driver reads it in.
+        expect(text, matches(RegExp(r'^Head north .*Boundary Road$')));
+
+        // `TextSpan`, not `InlineSpan`: `RichText.text` is typed as the base
+        // class, and only the concrete one carries `children`.
+        final spans = (paragraph.text as TextSpan).children!.cast<TextSpan>();
+        final instructionStyle = spans.first.style as TextStyle;
+        final roadStyle = spans.last.style as TextStyle;
+        expect(
+          roadStyle.fontSize! < instructionStyle.fontSize!,
+          isTrue,
+          reason:
+              'the instruction is the thing being read; the road is context',
+        );
+      },
+    );
     testWidgets('says the failure rather than stale directions', (
       tester,
     ) async {

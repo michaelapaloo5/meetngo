@@ -12,6 +12,7 @@ import '../report/left_item_sheet.dart';
 import '../location/location_banner.dart';
 import '../location/location_controller.dart';
 import '../map/driver_map_panel.dart';
+import '../map/fullscreen_map_screen.dart';
 import '../navigation/navigation_host.dart';
 import '../navigation/turn_banner.dart';
 import 'active_trip_controller.dart';
@@ -222,6 +223,11 @@ class ActiveTripScreen extends StatelessWidget {
           Padding(
             padding: EdgeInsets.symmetric(horizontal: 20.w),
             child: DriverMapPanel(
+              // Keyed so a test can measure this strip against the full-screen
+              // map it opens. `find.byType` cannot tell them apart: the pushed
+              // route and the route underneath are both in the tree, so the
+              // "bigger" assertion would compare a panel with itself.
+              key: const Key('tripStripMap'),
               // The driver, the pickup and the drop-off, with a line from the
               // driver to the pickup while collecting and from the pickup to
               // the drop-off once the rider is aboard.
@@ -239,6 +245,18 @@ class ActiveTripScreen extends StatelessWidget {
               // crosses buildings -- fine as a hint, wrong as directions.
               routeGeometry: navigationHost?.controller?.route?.points,
               height: 200.h,
+              // Tap to open it full screen. 200 pixels of map cannot show the
+              // junction the driver is about to take, so the panel is a
+              // thumbnail and this is the way past it. The same points go
+              // through, so what they see in the larger map is the same map.
+              onTapToExpand: () => FullscreenMapScreen.show(
+                context,
+                driverPoint: location.point,
+                driverHeading: location.heading,
+                pickup: trip.pickup.point,
+                dropoff: trip.dropoff.point,
+                routeGeometry: navigationHost?.controller?.route?.points,
+              ),
             ),
           ),
           SizedBox(height: 8.h),
@@ -419,8 +437,21 @@ class ActiveTripScreen extends StatelessWidget {
       );
       return;
     }
-    final riderName =
-        context.read<ContactController>().contact?.name ?? 'Rider';
+    // From the field, not from `context.read<ContactController>()`.
+    //
+    // There is no `Provider<ContactController>` in this app -- the controller
+    // arrives as an argument, because the screen has to be renderable in a test
+    // with no Supabase client. So the read threw `ProviderNotFoundException` on
+    // every single tap, on line one of this method and *before* the push, which
+    // is why the button did nothing at all: no route, no sheet, no snackbar.
+    //
+    // It was invisible on device for the worst possible reason. An exception
+    // thrown inside a gesture callback is reported to `FlutterError`, and a
+    // release build's console logs only the *secondary* failure Flutter throws
+    // while rendering its own error widget: "Another exception was thrown:
+    // Instance of 'DiagnosticsProperty<void>'". The real one -- the provider that
+    // does not exist -- never reached logcat at all.
+    final riderName = contact.contact?.name ?? 'Rider';
     Navigator.of(context).push(
       MaterialPageRoute<void>(
         builder: (_) => ChatScreen(

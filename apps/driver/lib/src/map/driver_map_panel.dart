@@ -58,6 +58,7 @@ class DriverMapPanel extends StatefulWidget {
     this.drawRoute = true,
     this.routeGeometry,
     this.startFollowing,
+    this.onTapToExpand,
   });
 
   /// Where the driver is, or null when there is no fix.
@@ -102,6 +103,21 @@ class DriverMapPanel extends StatefulWidget {
   /// the same as true.
   @visibleForTesting
   final bool? startFollowing;
+
+  /// Called when the driver taps the map, to open it full screen.
+  ///
+  /// Optional rather than always on, because a panel is not always a thumbnail.
+  /// On the offer queue it is a way of seeing several pins at once and there is
+  /// nothing larger to go to; on the trip screen it is 200 pixels of a route a
+  /// driver has to follow, and the whole of the next junction is off the bottom
+  /// of it.
+  ///
+  /// A tap and not a drag, so panning to look around -- which this panel
+  /// deliberately leaves enabled -- does not throw the map away halfway. The
+  /// gesture recognisers are siblings under the same arena: a drag is claimed by
+  /// the pan and the tap is rejected, and a finger that never moves is claimed
+  /// by the tap.
+  final VoidCallback? onTapToExpand;
 
   /// Replaces the live map engine with an inert stand-in, under test.
   ///
@@ -361,15 +377,41 @@ class _DriverMapPanelState extends State<DriverMapPanel> {
                           ? const _MapStandIn()
                           : _buildMap(points),
                     ),
+                    // The tap-to-open layer, *over* the map and *under* the
+                    // controls below it, so the recentre button and the
+                    // attribution stay tappable.
+                    //
+                    // `opaque` so the whole rectangle is a target rather than
+                    // only where a child happens to be. The map underneath is a
+                    // platform view, so there is no Flutter widget for it to hit
+                    // against, and without `opaque` this layer's hit test would
+                    // depend on a child it does not have.
+                    //
+                    // It does not block panning or pinching: this is a bare tap
+                    // recogniser and no pan recogniser, so a drag is claimed by
+                    // the map and the tap is rejected.
+                    if (widget.onTapToExpand != null)
+                      Positioned.fill(
+                        child: GestureDetector(
+                          key: const Key('expandMapGesture'),
+                          behavior: HitTestBehavior.opaque,
+                          onTap: widget.onTapToExpand,
+                        ),
+                      ),
                     const Positioned(left: 0, bottom: 0, child: _Attribution()),
                     // The recentre button, over the map and only while following
                     // is off.
                     //
                     // No `IgnorePointer` over the map underneath, deliberately, so a
                     // tap that misses the button still pans the map as the driver
-                    // expects. Top-right, opposite the compass MapLibre draws,
-                    // because the bottom of this panel is where the pickup and
-                    // drop-off sit.
+                    // expects. Top-right, and the only control in that corner
+                    // now that MapLibre's compass is off -- see `compassEnabled`
+                    // below for why it is off rather than merely elsewhere.
+                    //
+                    // Not bottom-right, which is free too: attribution sits
+                    // bottom-left, so both bottom corners are available, and
+                    // top-right is where a driver's thumb is closest when the
+                    // phone is in a mount.
                     if (!_following)
                       Positioned(
                         top: 8,
@@ -419,6 +461,21 @@ class _DriverMapPanelState extends State<DriverMapPanel> {
       //
       // No Mapbox logo: the data is OpenStreetMap's, drawn by MapLibre.
       logoEnabled: false,
+      // No compass, deliberately, and this is a real decision rather than a
+      // tidy-up.
+      //
+      // MapLibre's compass resets the bearing to north and is drawn whenever the
+      // bearing is not north -- which, with this panel opening at
+      // `kDriverMapBearing`, is always. It sat top-right in the same corner as
+      // this panel's own recentre control and looked enough like it that I read
+      // a screenshot of my own work and concluded the recentre button was
+      // showing when it was not.
+      //
+      // Two controls in one corner that a driver cannot tell apart is worse
+      // than one control that works. And this compass has almost nothing to
+      // offer a driver following a route: "north" is not a place they are
+      // trying to get to, and recentre is the control they actually reach for.
+      compassEnabled: false,
       onMapCreated: (controller) => _controller = controller,
       onCameraIdle: _onCameraIdle,
       onStyleLoadedCallback: () => _addOverlays(points, route),
