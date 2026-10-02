@@ -12,6 +12,7 @@ import 'src/auth/login_screen.dart';
 import 'src/auth/splash_screen.dart';
 import 'src/data/auth_repository.dart';
 import 'src/data/chat_repository.dart';
+import 'src/data/trip_report_repository.dart';
 import 'src/data/location_service.dart';
 import 'src/data/place_service.dart';
 import 'src/data/profile_repository.dart';
@@ -56,6 +57,9 @@ class RideNGoApp extends StatelessWidget {
             Provider<TripFunctions>(create: (_) => SupabaseTripFunctions(client)),
             Provider<ProfileRepository>(
               create: (_) => SupabaseProfileRepository(client),
+            ),
+            Provider<TripReportRepository>(
+              create: (_) => SupabaseTripReportRepository(client),
             ),
             Provider<ChatRepository>(
               create: (_) => SupabaseChatRepository(client),

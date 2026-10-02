@@ -17,6 +17,6 @@ const q = async (sql, label) => {
   console.log((okFlag ? 'OK   ' : 'FAIL ') + label + (okFlag ? '' : ' :: ' + (b.message ?? JSON.stringify(b)).slice(0,160)));
   return okFlag;
 };
-const sql = readFileSync('supabase/migrations/20260930000011_saved_places_scheduled_and_vehicle.sql','utf8');
+const sql = readFileSync('supabase/migrations/20260930000012_trip_reports.sql','utf8');
 const ok = await q(sql, 'whole migration as one multi-statement query');
 if (!ok) process.exit(1);

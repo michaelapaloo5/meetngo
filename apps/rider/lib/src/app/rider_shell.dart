@@ -28,6 +28,7 @@ import '../profile/rider_phone_gate_screen.dart';
 import '../tracking/tracking_controller.dart';
 import '../tracking/tracking_screen.dart';
 import '../bookings/trip_detail_screen.dart';
+import '../data/trip_report_repository.dart';
 import '../trip/receipt_screen.dart';
 import 'rider_flow.dart';
 
@@ -551,7 +552,12 @@ class _RiderShellState extends State<RiderShell> {
       case TripState.completed:
       case TripState.cancelled:
         await Navigator.of(context).push(
-          MaterialPageRoute<void>(builder: (_) => TripDetailScreen(ride: ride)),
+          MaterialPageRoute<void>(
+            builder: (_) => TripDetailScreen(
+              ride: ride,
+              reports: context.read<TripReportRepository>(),
+            ),
+          ),
         );
         if (!mounted) return;
         unawaited(_loadRecentRides());

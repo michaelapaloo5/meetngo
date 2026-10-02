@@ -4,6 +4,8 @@ import 'package:mng_core/mng_core.dart';
 
 import '../data/booked_trip.dart';
 import '../map/ride_map.dart';
+import '../data/trip_report_repository.dart';
+import '../report/report_problem_sheet.dart';
 import '../trip/trip_copy.dart';
 import 'bookings_screen.dart' show TripStateBadge;
 
@@ -25,13 +27,40 @@ import 'bookings_screen.dart' show TripStateBadge;
 /// it is on the row, and a rider checking an old ride can see the four digits
 /// that trip used.
 class TripDetailScreen extends StatelessWidget {
-  const TripDetailScreen({super.key, required this.ride});
+  const TripDetailScreen({
+    super.key,
+    required this.ride,
+    this.reports,
+    this.existingReport,
+  });
 
   final BookedTrip ride;
+
+  /// Where a report goes, or null when this build has nowhere to send one.
+  ///
+  /// Null hides the button rather than showing a dead one. Every button on this
+  /// screen that used to be decorative has been wired, and the one lesson from
+  /// that run is that a live-looking control which does nothing is worse than
+  /// an absent one.
+  final TripReportRepository? reports;
+
+  /// What this rider already reported, so the button can offer to add to it.
+  final RideReport? existingReport;
+
+  /// Whether this ride is finished enough to report on.
+  ///
+  /// The same rule as `trips_can_be_reported` in the database, which is the
+  /// authority. Checked here only so the button is not offered on a ride it would
+  /// be refused for.
+  bool get _canReport {
+    final state = ride.trip.state;
+    return state == TripState.completed || state == TripState.cancelled;
+  }
 
   @override
   Widget build(BuildContext context) {
     final trip = ride.trip;
+    final theme = MngTheme.light.textTheme;
     return Scaffold(
       appBar: AppBar(
         backgroundColor: MngColors.page,
@@ -112,6 +141,56 @@ class TripDetailScreen extends StatelessWidget {
                   ),
               ],
             ),
+            // Report a problem, on a **finished** ride only.
+            //
+            // Mid-ride a rider has the SOS button and the driver's number, and a
+            // support ticket raised while the car is still arriving is something
+            // nobody reads until it is over. The database says the same thing --
+            // `trips_can_be_reported` refuses anything not `completed` or
+            // `cancelled` -- so the button and the rule cannot disagree, and a
+            // rider who got here through the home list rather than a live ride
+            // sees no dead control.
+            if (_canReport && reports != null) ...[
+              SizedBox(height: 16.h),
+              if (existingReport != null) ...[
+                Container(
+                  key: const Key('alreadyReported'),
+                  width: double.infinity,
+                  padding: EdgeInsets.all(12.w),
+                  decoration: BoxDecoration(
+                    color: MngColors.muted,
+                    borderRadius: BorderRadius.circular(MngRadius.large),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('You reported this', style: theme.bodySmall),
+                      SizedBox(height: 2.h),
+                      Text(existingReport!.reason, style: theme.titleSmall),
+                    ],
+                  ),
+                ),
+                SizedBox(height: 10.h),
+              ],
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                  key: const Key('reportProblemButton'),
+                  onPressed: () => ReportProblemSheet.show(
+                    context,
+                    tripId: trip.id,
+                    repository: reports!,
+                    existing: existingReport,
+                  ),
+                  icon: const Icon(Icons.flag_outlined),
+                  label: Text(
+                    existingReport == null
+                        ? 'Report a problem'
+                        : 'Add to your report',
+                  ),
+                ),
+              ),
+            ],
           ],
         ),
       ),
