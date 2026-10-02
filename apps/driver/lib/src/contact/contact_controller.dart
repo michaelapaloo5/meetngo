@@ -133,15 +133,28 @@ class SupabaseContactRepository implements ContactRepository {
         'contact',
         body: {'tripId': tripId},
       );
-      // `invoke` answers a Map on success. Anything else is a client
-      // misconfiguration rather than a server answer, and treating it as an
-      // empty contact would look like "this rider has no number".
-      if (response is! Map) {
+      // `invoke` returns a `FunctionResponse`, not a decoded map, and the
+      // payload is on its `data`. This asked whether the response itself *was* a
+      // Map, which it never is -- so every lookup threw, the rider's number
+      // never arrived, the Call button stayed blurred for the whole trip, and
+      // because a throw leaves the controller "not answered" it re-ran every
+      // three seconds. That is the flicker: Loading, Call, Loading, Call.
+      //
+      // Nothing above this line could see it. The Deno tests pass a stub that
+      // returns a Map, so they agreed with the mistake, and
+      // `toolchain/verify-contact.mjs` calls the HTTP endpoint directly and never
+      // goes near this code. The one layer between the two was untested, which is
+      // the only place the bug could live and the one place nobody looked.
+      final data = response.data;
+      if (data is! Map) {
+        // A 200 with something that is not a contact object. Worth
+        // distinguishing from "no contact": the first is a server fault and the
+        // second is a real answer, and they read the same if collapsed.
         throw ContactFailure(
           'The contact service answered with something unexpected',
         );
       }
-      body = response.map((k, v) => MapEntry(k.toString(), v));
+      body = data.map((k, v) => MapEntry(k.toString(), v));
     } on FunctionException catch (e) {
       final message = describeFunctionFailure(e);
       // A trip this driver is not on is an ordinary outcome, not a fault, and
