@@ -160,26 +160,31 @@ class _RiderShellState extends State<RiderShell> {
   Future<void> _tick() async {
     if (!mounted) return;
     final flow = context.read<RiderFlow>();
-    var fresh = await flow.refreshActive();
-    if (!mounted) return;
-
-    // **This is why the finding screen used to trap people**, and the branch
-    // below it could never have worked without it.
-    //
-    // `refreshActive` asks for the rider's *active* trip, which is filtered to
-    // `requested`, `matched`, `arriving` and `ongoing`. The moment a ride ends it
-    // answers null -- which is exactly when the rider needs to be told -- so the
-    // poll returned early on the one tick that mattered, every time. A branch for
-    // "the finding trip reached a terminal state" is dead code behind a null.
-    //
-    // The trip being followed is held here by id, so it is read back directly.
-    // Scoped to the finding stage on purpose: once a driver is assigned the
-    // tracking controller owns the ride's state, and having the shell re-read it
-    // as well would race that path to open a second receipt.
     final held = _trip;
-    if (fresh == null && _stage == _Stage.finding && held != null) {
-      fresh = await context.read<TripRepository>().tripById(held.id);
-    }
+
+    // **Follow the trip this shell is on, by id.** Not "whatever is active".
+    //
+    // Polling `activeTrip` was wrong in two separate ways, and both had to be
+    // fixed for this to work:
+    //
+    // 1. It filters to `requested`, `matched`, `arriving`, `ongoing`, so it
+    //    answers null the instant a ride ends -- which is exactly when the rider
+    //    needs telling. The poll returned early on the one tick that mattered.
+    //
+    // 2. It is "the newest active trip for this rider", not *this* trip. With any
+    //    other open ride on the account it hands back that one instead, and every
+    //    branch below then reasons about a ride the rider is not on. Reproduced on
+    //    the handset: booking a ride, cancelling it in the database, and the app
+    //    staying on "Finding a driver" -- because the row it was handed was a
+    //    stale `requested` trip left behind by an earlier test run, not the ride
+    //    that had just ended.
+    //
+    // Reading by id is correct for both: it follows the ride, and it has no state
+    // filter so the terminal states arrive. When nothing is held there is nothing
+    // to follow and the active read picks up a ride started elsewhere.
+    final fresh = held == null
+        ? await flow.refreshActive()
+        : await context.read<TripRepository>().tripById(held.id);
     if (!mounted || fresh == null) return;
 
     if (_stage == _Stage.finding && fresh.hasDriver) {
