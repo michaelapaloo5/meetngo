@@ -325,6 +325,18 @@ class RideMapState extends State<RideMap> {
   /// cannot be dismissed, on a screen where it is the only control.
   bool _cameraIsOurs = false;
 
+  /// Records that the camera moved, unless this widget moved it.
+  ///
+  /// Set once and never cleared here; only a recentre clears it, because that is
+  /// the moment the map is back where the rider wanted it and the button has done
+  /// its job. The `if` guard is what stops it running `setState` on every frame of
+  /// a gesture.
+  void _noteCameraMoved() {
+    if (_cameraIsOurs) return;
+    if (_userMovedCamera) return;
+    setState(() => _userMovedCamera = true);
+  }
+
   /// Move the camera back to the route this map is drawing, at the framing that
   /// was computed for it.
   ///
@@ -357,6 +369,12 @@ class RideMapState extends State<RideMap> {
       );
     } finally {
       _cameraIsOurs = false;
+      // The flag has to be cleared here, not only in `recenterOn`. Recentre is
+      // the button's whole promise -- "put the route back" -- and leaving it on
+      // screen afterwards is a control that cannot be dismissed, on the screen
+      // where it is the only control. Verified on the handset: pressing it moved
+      // the camera correctly and the button stayed.
+      _userMovedCamera = false;
       if (mounted) setState(() {});
     }
     return true;
@@ -761,11 +779,18 @@ class RideMapState extends State<RideMap> {
       logoEnabled: false,
       // Every camera change, with no indication of who caused it -- which is why
       // `_cameraIsOurs` exists. This is the signal behind the recentre button.
-      onCameraMove: (_) {
-        if (_cameraIsOurs) return;
-        if (_userMovedCamera) return;
-        setState(() => _userMovedCamera = true);
-      },
+      //
+      // **`onCameraIdle` as well as `onCameraMove`, because on its own it was not
+      // enough.** The button is gated on the rider having moved the camera, and
+      // with only `onCameraMove` wired up a real pan on the handset left the flag
+      // false and no button appeared. Idle fires once a gesture settles, which is
+      // exactly when a rider who has moved the map is about to look for a way
+      // back, and it is the more reliable of the two.
+      //
+      // Both go through the same guard, so the app's own recentre animation still
+      // cannot set the flag.
+      onCameraMove: (_) => _noteCameraMoved(),
+      onCameraIdle: _noteCameraMoved,
       onMapCreated: (controller) {
         _controller = controller;
         // Whichever of the two callbacks lands first, the overlays are drawn once
