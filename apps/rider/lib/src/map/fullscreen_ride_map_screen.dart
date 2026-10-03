@@ -4,6 +4,7 @@ import 'package:mng_core/mng_core.dart';
 
 import '../data/location_service.dart';
 import 'ride_map.dart';
+import 'rider_route_map.dart';
 
 /// The rider's map, filling the screen.
 ///
@@ -87,19 +88,35 @@ class FullscreenRideMapScreen extends StatelessWidget {
       ),
       body: Padding(
         padding: EdgeInsets.all(12.w),
-        child: RideMap(
-          key: const Key('fullscreenRideMap'),
-          pickup: pickup,
-          pickupLabel: pickupLabel,
-          dropoff: dropoff,
-          dropoffLabel: dropoffLabel,
-          location: location,
-          driver: driver,
-          height: height,
-          // On, because this is the screen the rider came here to move.
-          interactive: true,
-        ),
+        // Only wrapped when there are two ends. A single point is the finding-a-
+        // driver case, and there is no road to fetch between a point and nothing.
+        child: (pickup != null && dropoff != null)
+            ? RiderRouteMap(
+                from: pickup!,
+                to: dropoff!,
+                builder: (context, shape) => _map(shape, height),
+              )
+            : _map(null, height),
       ),
     );
   }
+
+  /// The map itself, with or without a road already fetched for it.
+  ///
+  /// A method rather than an inline widget because the wrapper calls it once with
+  /// a shape and once with null, and writing the twenty lines twice is how the
+  /// two copies end up different.
+  Widget _map(List<GeoPoint>? shape, double height) => RideMap(
+    key: const Key('fullscreenRideMap'),
+    pickup: pickup,
+    pickupLabel: pickupLabel,
+    dropoff: dropoff,
+    dropoffLabel: dropoffLabel,
+    routeShape: shape,
+    location: location,
+    driver: driver,
+    height: height,
+    // On, because this is the screen the rider came here to move.
+    interactive: true,
+  );
 }

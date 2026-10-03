@@ -22,8 +22,13 @@
          "asked and refused", which are different screens to a rider. -->
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>
+    <!-- What appears under the icon on the home screen and in the app
+             drawer. Was "meetngo_rider", which is the package name and not a
+             name anyone should have to read. The package stays
+             gh.meetngo.meetngo_rider: renaming it would orphan the installed
+             app, its data and its notification channels. -->
     <application
-        android:label="meetngo_rider"
+        android:label="Meet 'N Go"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
         <activity

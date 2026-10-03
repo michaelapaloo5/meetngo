@@ -10,6 +10,7 @@ import '../data/chat_repository.dart';
 import '../data/booked_trip.dart';
 import '../map/fullscreen_ride_map_screen.dart';
 import '../map/ride_map.dart';
+import '../map/rider_route_map.dart';
 import 'driver_contact_sheet.dart';
 import '../trip/share_ride_sheet.dart';
 import 'tracking_controller.dart';
@@ -175,40 +176,50 @@ class TrackingScreen extends StatelessWidget {
             // pointing straight down, which is what makes the city read as
             // three-dimensional.
             Positioned.fill(
-              child: RideMap(
-                key: const Key('trackingMap'),
-                pickup: trip.pickup.point,
-                dropoff: trip.dropoff.point,
-                // The two place names, printed beside their pins. `stopLabel`
-                // rather than `.label` directly: some rows in this database
-                // carry a coordinate string where the label belongs, and
-                // `stopLabel` is the one function in this app that refuses to
-                // print one.
-                pickupLabel: stopLabel(trip.pickup),
-                dropoffLabel: stopLabel(trip.dropoff),
-                location: c.location,
-                // The driver, with the heading they published, so the car turns
-                // as it approaches instead of sitting pointed at north. Null
-                // until a position has been read, in which case the map is
-                // unchanged and simply has no car on it yet.
-                driver: c.driverPoint,
-                fill: true,
-                // Tap to open it full screen.
-                //
-                // The card cannot be pannable -- it is inside a scrolling column,
-                // so a drag on it has to scroll the ride details, or the buttons
-                // below are unreachable. That leaves the rider watching a fixed
-                // frame with no way to check the junction they are about to pass,
-                // so the tap is the way past it and the larger map has the
-                // gestures on.
-                onTapToExpand: () => FullscreenRideMapScreen.show(
-                  context,
+              // Wrapped rather than replaced. The wrapper fetches the road
+              // between the two ends and hands it over; until it does, and if it
+              // never does, the map underneath draws the straight line it always
+              // did. The key stays on the `RideMap` so the tests and the full
+              // screen push still find the same widget.
+              child: RiderRouteMap(
+                from: trip.pickup.point,
+                to: trip.dropoff.point,
+                builder: (context, shape) => RideMap(
+                  key: const Key('trackingMap'),
                   pickup: trip.pickup.point,
-                  pickupLabel: stopLabel(trip.pickup),
                   dropoff: trip.dropoff.point,
+                  routeShape: shape,
+                  // The two place names, printed beside their pins. `stopLabel`
+                  // rather than `.label` directly: some rows in this database
+                  // carry a coordinate string where the label belongs, and
+                  // `stopLabel` is the one function in this app that refuses to
+                  // print one.
+                  pickupLabel: stopLabel(trip.pickup),
                   dropoffLabel: stopLabel(trip.dropoff),
                   location: c.location,
+                  // The driver, with the heading they published, so the car turns
+                  // as it approaches instead of sitting pointed at north. Null
+                  // until a position has been read, in which case the map is
+                  // unchanged and simply has no car on it yet.
                   driver: c.driverPoint,
+                  fill: true,
+                  // Tap to open it full screen.
+                  //
+                  // The card cannot be pannable -- it is inside a scrolling column,
+                  // so a drag on it has to scroll the ride details, or the buttons
+                  // below are unreachable. That leaves the rider watching a fixed
+                  // frame with no way to check the junction they are about to pass,
+                  // so the tap is the way past it and the larger map has the
+                  // gestures on.
+                  onTapToExpand: () => FullscreenRideMapScreen.show(
+                    context,
+                    pickup: trip.pickup.point,
+                    pickupLabel: stopLabel(trip.pickup),
+                    dropoff: trip.dropoff.point,
+                    dropoffLabel: stopLabel(trip.dropoff),
+                    location: c.location,
+                    driver: c.driverPoint,
+                  ),
                 ),
               ),
             ),

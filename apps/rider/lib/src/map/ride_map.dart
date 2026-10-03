@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
 import 'package:maplibre_gl/maplibre_gl.dart';
@@ -35,10 +37,29 @@ const double kRideMapBearing = 20.0;
 /// Zoom used when the map has a single point and no second point to fit to.
 const double kRideMapSinglePointZoom = 14.0;
 
+/// The most the route map will zoom in, whatever the route's own size.
+///
 /// Above this, the two ends of a route are so close together that the pins
-/// overlap and the rider cannot read either. Accra's Osu-to-Airport-Residential
-/// demo route is about 2.4 km, which fits well inside it.
+/// overlap and the rider cannot read either. It was also the *only* setting: the
+/// camera used to sit at this zoom for every route, picked by eye for Accra's
+/// Osu-to-Airport-Residential demo run of about 2.4 km. Now that the line follows
+/// roads it is the ceiling of a fitted range rather than the value.
 const double kRideMapRouteMaxZoom = 16.0;
+
+/// The least the route map will zoom out.
+///
+/// Below this a 10 km route is a line on a map of a whole city, which stops being
+/// directions. It exists so a very long route does not fit itself into a frame
+/// where the rider cannot tell which way they are going.
+const double kRideMapRouteMinZoom = 11.0;
+
+/// A camera decision: where to look, and how far in.
+@immutable
+class _Camera {
+  const _Camera(this.target, this.zoom);
+  final GeoPoint target;
+  final double zoom;
+}
 
 /// A rider's ride drawn as a 3D city, on free OpenStreetMap vector tiles.
 ///
@@ -58,6 +79,7 @@ class RideMap extends StatefulWidget {
     this.dropoff,
     this.location,
     this.driver,
+    this.routeShape,
     this.height = 280,
     this.fill = false,
     this.interactive = false,
@@ -66,6 +88,22 @@ class RideMap extends StatefulWidget {
     this.dropoffLabel,
     this.onTapToExpand,
   });
+
+  /// The road between [pickup] and [dropoff], as the `route` function answered.
+  ///
+  /// **This is why the line follows roads.** Without it the route is drawn as
+  /// `[pickup, dropoff]` -- two points, so one straight line, cutting through
+  /// blocks and across the river as the crow flies. A rider looking at that is
+  /// being shown a route no car can drive.
+  ///
+  /// Null means "draw the straight line", and that is a real state rather than a
+  /// fallback nobody reaches: it is the first frame of every route screen, while
+  /// the request is in flight, and it is permanent if the routing function is
+  /// down. A map with a wrong-but-obvious line is better than a map with none.
+  ///
+  /// Ignored when it has fewer than two points, which is what a truncated
+  /// response looks like.
+  final List<GeoPoint>? routeShape;
 
   /// Called when the rider taps the map, to open it full screen.
   ///
@@ -308,10 +346,84 @@ class RideMapState extends State<RideMap> {
     if (oldWidget.pickup == widget.pickup &&
         oldWidget.dropoff == widget.dropoff &&
         oldWidget.driver == widget.driver &&
-        oldWidget.location?.point == widget.location?.point) {
+        oldWidget.location?.point == widget.location?.point &&
+        // The road shape arriving is itself a reason to redraw. Without this the
+        // first frame draws the straight line and the real route never appears,
+        // because the rider's own position is not what changed -- the map was
+        // simply sent something better and would ignore it.
+        !identical(oldWidget.routeShape, widget.routeShape)) {
       return;
     }
     _pushOverlays();
+  }
+
+  /// The line to actually draw: the road if we have it, otherwise the straight
+  /// line between the two ends.
+  ///
+  /// One place, so the initial draw and every later push cannot disagree about
+  /// what the route is. They did once, which is the kind of bug that only shows
+  /// up once the shape arrives: the map would draw the straight line and then
+  /// replace it with the road, and the camera -- framed from the straight line --
+  /// would no longer fit what it ended up drawing.
+  List<GeoPoint> _routeLine(GeoPoint from, GeoPoint? to) {
+    if (to == null) return const [];
+    final shape = widget.routeShape;
+    if (shape != null && shape.length >= 2) return shape;
+    return [from, to];
+  }
+
+  /// Where to point the camera for [line], and how far in.
+  ///
+  /// The centre of the drawn line's bounding box rather than its first point, and
+  /// a zoom derived from that box rather than a constant.
+  ///
+  /// The zoom maths is web Mercator: at zoom `z` the whole world is `256 * 2^z`
+  /// pixels across, so `pixels` of viewport show
+  /// `pixels * 360 / (256 * 2^z)` degrees of longitude. Inverting gives `z`. The
+  /// longitude span is scaled by `cos(latitude)` because a degree of longitude
+  /// shortens towards the poles -- leaving that term out is what makes a
+  /// north-south route in Accra run off the top and bottom of the frame.
+  ///
+  /// The two spans are then fitted independently and the **smaller** zoom wins, so
+  /// whichever axis is tighter decides. Clamped at both ends: a two-metre route
+  /// would otherwise fit at zoom 22 and look like an empty block, and a long one
+  /// would fit below zoom 10 and stop being a route.
+  _Camera _cameraFor(List<GeoPoint> line, {required GeoPoint fallbackTo}) {
+    if (line.length < 2) {
+      return _Camera(fallbackTo, kRideMapSinglePointZoom);
+    }
+    var minLat = line.first.lat, maxLat = line.first.lat;
+    var minLng = line.first.lng, maxLng = line.first.lng;
+    for (final p in line) {
+      if (p.lat < minLat) minLat = p.lat;
+      if (p.lat > maxLat) maxLat = p.lat;
+      if (p.lng < minLng) minLng = p.lng;
+      if (p.lng > maxLng) maxLng = p.lng;
+    }
+    final centre = GeoPoint((minLat + maxLat) / 2, (minLng + maxLng) / 2);
+
+    // Roughly the card's width. Exact to within the page padding, which is all
+    // this needs to be: it decides a zoom, and half a dozen per cent of width
+    // moves that by a hundredth of a level.
+    final pixels = MediaQuery.sizeOf(context).width;
+    const tile = 256.0;
+    final latSpan = (maxLat - minLat).abs();
+    var lngSpan = (maxLng - minLng).abs();
+
+    if (latSpan <= 0 || lngSpan <= 0 || pixels <= 0) {
+      return _Camera(centre, kRideMapRouteMaxZoom);
+    }
+    final cosLat = math.cos(centre.lat * math.pi / 180).abs();
+    if (cosLat > 0.01) lngSpan *= cosLat;
+
+    double fit(double span) =>
+        (math.log(pixels * 360 / (tile * span)) / math.ln2);
+
+    final zoom = math.min(fit(latSpan), fit(lngSpan)).toDouble();
+    return _Camera(
+      centre,
+      zoom.clamp(kRideMapRouteMinZoom, kRideMapRouteMaxZoom),
+    );
   }
 
   Future<void> _pushOverlays() async {
@@ -324,11 +436,11 @@ class RideMapState extends State<RideMap> {
     final to = widget.dropoff != null && RideMap.isPlottable(widget.dropoff!)
         ? widget.dropoff
         : null;
-    if (to != null) {
-      await controller.setGeoJsonSource(
-        'route-src-$_uid',
-        _lineGeoJson([from, to]),
-      );
+    final line = _routeLine(from, to);
+    if (line.length >= 2) {
+      // Only the source is pushed. Both the casing and the line read from it, so
+      // one write moves both and they cannot end up describing different routes.
+      await controller.setGeoJsonSource('route-src-$_uid', _lineGeoJson(line));
     }
     await controller.setGeoJsonSource(
       'pins-src-$_uid',
@@ -415,6 +527,7 @@ class RideMapState extends State<RideMap> {
     final points = _allPoints(from, to, here);
     // A route needs two ends; the single-point case is the finding screen.
     final hasRoute = to != null;
+    final line = _routeLine(from, to);
 
     // The style is loaded from the bundle in `initState` and is not ready for
     // the first frame or two. Drawing the map with an empty style string in
@@ -426,12 +539,22 @@ class RideMapState extends State<RideMap> {
       return _Fallback(height: widget.height, message: 'Loading the map');
     }
 
+    // The camera follows the *drawn* line, not the pickup.
+    //
+    // It used to target the pickup at a fixed [kRideMapRouteMaxZoom] -- a zoom
+    // chosen by eye for one 2.4 km demo trip. A road route is longer than the
+    // straight line it replaces, by about a quarter in Accra, so a zoom picked
+    // for the crow's flight crops the route the rider is being shown, and
+    // targeting the pickup pushes the far end further off frame than it needs to
+    // be.
+    final camera = _cameraFor(line, fallbackTo: from);
+
     return MapLibreMap(
       key: const Key('rideMap'),
       styleString: style,
       initialCameraPosition: CameraPosition(
-        target: _ll(from),
-        zoom: hasRoute ? kRideMapRouteMaxZoom : kRideMapSinglePointZoom,
+        target: _ll(camera.target),
+        zoom: camera.zoom,
         tilt: kRideMapTilt,
         bearing: kRideMapBearing,
       ),
@@ -473,11 +596,39 @@ class RideMapState extends State<RideMap> {
     final controller = _controller;
     if (controller == null) return;
 
-    if (hasRoute && points.length >= 2) {
-      await controller.addGeoJsonSource(
+    final from = widget.pickup;
+    final to = widget.dropoff;
+    final line = (from != null && to != null)
+        ? _routeLine(from, RideMap.isPlottable(to) ? to : null)
+        : const <GeoPoint>[];
+
+    if (hasRoute && line.length >= 2) {
+      await controller.addGeoJsonSource('route-src-$_uid', _lineGeoJson(line));
+
+      // **A casing and a line, not one line with a gap.**
+      //
+      // This was `lineWidth: 5` with `lineGapWidth: 2` on a single layer, on the
+      // belief that the gap was a white casing. It is not: MapLibre has no
+      // casing colour, so `lineGapWidth` cuts a *transparent* channel either side
+      // of the stroke and lets the map show through. Over this style -- white
+      // roads on #F4F4F6 land -- that reads as a blue stripe with a white channel
+      // down each side, which on a phone at this width looks like **two blue
+      // lines** with a gap between them. It was a rider's own report.
+      //
+      // A casing is two layers: a wider white one underneath, the blue one on
+      // top. Same readability over pale blocks and dark parkland as the gap was
+      // meant to give, and one blue stroke instead of two.
+      await controller.addLineLayer(
         'route-src-$_uid',
-        _lineGeoJson(points.take(2).toList()),
+        'route-casing-$_uid',
+        LineLayerProperties(
+          lineColor: _css(MngColors.page),
+          lineWidth: 9,
+          lineCap: 'round',
+          lineJoin: 'round',
+        ),
       );
+
       await controller.addLineLayer(
         'route-src-$_uid',
         'route-line-$_uid',
@@ -488,10 +639,9 @@ class RideMapState extends State<RideMap> {
           // values rather than an enum from this package.
           lineCap: 'round',
           lineJoin: 'round',
-          // A white casing under the line so it stays readable over both pale
-          // city blocks and dark parkland, which is what the 2D map's border
-          // stroke was for.
-          lineGapWidth: 2,
+          // Deliberately no `lineGapWidth`. See `route-casing` above: that is what
+          // a casing is for, and a gap here is what made the route look like two
+          // lines.
         ),
         // Deliberately no `belowLayerId`. A layer added without one goes on top
         // of everything, and the style has a `building-3d` extrusion — so

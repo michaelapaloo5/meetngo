@@ -4,6 +4,7 @@ import 'package:mng_core/mng_core.dart';
 
 import '../data/booked_trip.dart';
 import '../map/ride_map.dart';
+import '../map/rider_route_map.dart';
 import '../data/trip_report_repository.dart';
 import '../report/report_problem_sheet.dart';
 import '../trip/trip_copy.dart';
@@ -102,15 +103,23 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
         child: ListView(
           padding: EdgeInsets.fromLTRB(20.w, 8.h, 20.w, 24.h),
           children: [
-            RideMap(
-              pickup: trip.pickup.point,
-              dropoff: trip.dropoff.point,
-              // On a past ride the rider is asking "where was that?", and a bare
-              // coloured dot cannot answer it. The names are what they are
-              // looking for.
-              pickupLabel: stopLabel(trip.pickup),
-              dropoffLabel: stopLabel(trip.dropoff),
-              height: 200,
+            // The road, not a line between two pins. A past ride is the one place
+            // a rider is asking "where *was* that?", and a straight line through
+            // blocks answers a different question from the one they asked.
+            RiderRouteMap(
+              from: trip.pickup.point,
+              to: trip.dropoff.point,
+              builder: (context, shape) => RideMap(
+                pickup: trip.pickup.point,
+                dropoff: trip.dropoff.point,
+                routeShape: shape,
+                // On a past ride the rider is asking "where was that?", and a bare
+                // coloured dot cannot answer it. The names are what they are
+                // looking for.
+                pickupLabel: stopLabel(trip.pickup),
+                dropoffLabel: stopLabel(trip.dropoff),
+                height: 200,
+              ),
             ),
             SizedBox(height: 20.h),
             Row(

@@ -3,7 +3,6 @@ import 'dart:async';
 import 'package:mng_core/mng_core.dart';
 
 import 'navigation_controller.dart';
-import 'route_progress.dart';
 
 /// [RouteRepository] over the `route` Edge Function.
 ///

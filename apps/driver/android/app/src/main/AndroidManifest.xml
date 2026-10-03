@@ -32,8 +32,15 @@
          carries a compass bearing. A device with no magnetometer reports no
          heading at all, which the app draws as no car rather than as one
          pointing the wrong way. -->
+    <!-- What appears under the icon on the home screen and in the app
+             drawer. Was "meetngo_driver", which is the package name and not a
+             name anyone should have to read. Deliberately shorter than the
+             rider app's: a driver has both installed, and "MNG Driver" is
+             distinguishable from "Meet 'N Go" at a glance in a drawer. The
+             package stays gh.meetngo.meetngo_driver, since renaming it would
+             orphan the installed app and its data. -->
     <application
-        android:label="meetngo_driver"
+        android:label="MNG Driver"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
         <!-- No ML Kit meta-data any more, and nothing needs replacing it.

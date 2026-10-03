@@ -7,7 +7,6 @@ import 'package:meetngo_driver/src/contact/contact_controller.dart';
 import 'package:meetngo_driver/src/data/driver_repository.dart';
 import 'package:meetngo_driver/src/location/location_controller.dart';
 import 'package:meetngo_driver/src/navigation/navigation_controller.dart';
-import 'package:meetngo_driver/src/navigation/route_progress.dart';
 import 'package:meetngo_driver/src/navigation/navigation_host.dart';
 import 'package:meetngo_driver/src/navigation/turn_banner.dart';
 import 'package:provider/provider.dart';
