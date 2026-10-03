@@ -133,28 +133,26 @@ class _RiderRouteMapState extends State<RiderRouteMap> {
       final service =
           widget.service ?? RiderRouteService(Supabase.instance.client);
       points = (await service.route(widget.from, widget.to))?.points;
-    } catch (error) {
-      // Reported, though it does not change what is drawn.
+    } catch (_) {
+      // Silent, on purpose, and this comment is the record of why.
       //
-      // The catch has to stay -- the map keeping drawing is the whole point --
-      // but a silent catch is how a straight line reached a handset with no
-      // explanation anywhere: the deployed function was answering 200 with 126
-      // real geometry points while the app drew two pins and said nothing. If
-      // this ever goes quiet again, `adb logcat` says why instead of the symptom
-      // being a line that does not look like a road.
-      debugPrint('RiderRouteMap: no road for $_key: $error');
+      // The map has to keep drawing, so the catch cannot be removed. It used to
+      // also print, and the print is gone now that the bug it was added for is
+      // fixed -- but the reasoning stays, because it is not obvious:
+      //
+      // A silent catch here is how a straight line reached a handset with no
+      // explanation anywhere. The deployed `route` function was answering 200 with
+      // 126 and then 352 real geometry points while the app drew two pins, and
+      // nothing said why. Three separate defects were downstream of that silence.
+      //
+      // So if the route line ever stops following roads again, the first question
+      // is not "is the fetch failing" -- it is "did it fetch, and was the answer
+      // used". Read `mapNeedsOverlayPush` before suspecting the network.
       return;
     }
     // Dropped: this destination has been left behind, or the widget is gone.
     if (!mounted || generation != _generation) return;
-    if (points == null || points.length < 2) {
-      debugPrint(
-        'RiderRouteMap: no usable geometry for $_key '
-        '(${points?.length ?? 0} points)',
-      );
-      return;
-    }
-    debugPrint('RiderRouteMap: road for $_key is ${points.length} points');
+    if (points == null || points.length < 2) return;
     widget.cache?.remember(widget.from, widget.to, points);
     setState(() => _shape = points);
   }
