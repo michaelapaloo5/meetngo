@@ -331,11 +331,28 @@ class RideMapState extends State<RideMap> {
   /// the moment the map is back where the rider wanted it and the button has done
   /// its job. The `if` guard is what stops it running `setState` on every frame of
   /// a gesture.
+  ///
+  /// [_ignoreCameraUntil] is the other half, and it exists because clearing
+  /// `_cameraIsOurs` the instant `animateCamera` returns is not soon enough.
+  /// MapLibre emits a trailing `onCameraIdle` *after* the animation has finished,
+  /// by which point the flag is down and the app's own move reads as the rider
+  /// panning away. The button then came straight back, on the one screen where it
+  /// is the only control, immediately after the rider had just used it.
   void _noteCameraMoved() {
     if (_cameraIsOurs) return;
+    final ignoreUntil = _ignoreCameraUntil;
+    if (ignoreUntil != null && DateTime.now().isBefore(ignoreUntil)) return;
     if (_userMovedCamera) return;
     setState(() => _userMovedCamera = true);
   }
+
+  /// How long after one of our own camera moves the rider's is still ignored.
+  ///
+  /// Long enough to cover the trailing `onCameraIdle` and the odd momentum frame,
+  /// short enough that a rider who grabs the map again immediately is not ignored.
+  static const Duration _ownCameraGrace = Duration(milliseconds: 600);
+
+  DateTime? _ignoreCameraUntil;
 
   /// Move the camera back to the route this map is drawing, at the framing that
   /// was computed for it.
@@ -375,6 +392,9 @@ class RideMapState extends State<RideMap> {
       // where it is the only control. Verified on the handset: pressing it moved
       // the camera correctly and the button stayed.
       _userMovedCamera = false;
+      // And the grace window, because MapLibre's trailing `onCameraIdle` would
+      // otherwise set it straight back. See [_noteCameraMoved].
+      _ignoreCameraUntil = DateTime.now().add(_ownCameraGrace);
       if (mounted) setState(() {});
     }
     return true;
@@ -405,10 +425,10 @@ class RideMapState extends State<RideMap> {
       );
     } finally {
       _cameraIsOurs = false;
+      _userMovedCamera = false;
+      _ignoreCameraUntil = DateTime.now().add(_ownCameraGrace);
       if (mounted) setState(() {});
     }
-    _userMovedCamera = false;
-    if (mounted) setState(() {});
     return true;
   }
 
