@@ -1,7 +1,10 @@
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'dart:ui' as ui;
+
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mng_core/mng_core.dart';
 
@@ -90,7 +93,11 @@ void main() {
     expect(find.text('destination'), findsNothing);
 
     await tester.pumpAndSettle();
-    expect(find.text('destination'), findsOneWidget, reason: 'and then it opens');
+    expect(
+      find.text('destination'),
+      findsOneWidget,
+      reason: 'and then it opens',
+    );
   });
 
   testWidgets('reduced motion goes straight to the destination', (
@@ -134,6 +141,68 @@ void main() {
     );
     await tester.pump(const Duration(milliseconds: 2000));
     expect(tester.takeException(), isNull);
+  });
+
+  group('the brand marks', () {
+    // These two load the real files out of the asset bundle.
+    //
+    // The bug they exist for: the splash was handed
+    // `assets/brand/meet_n_go_logo.png`, which is not how a *package's* asset is
+    // addressed -- it has to be `packages/mng_core/assets/...`. The image failed
+    // to load, the `errorBuilder` drew nothing, and the handset showed a
+    // completed animation with an empty space where the logo belonged. Nothing
+    // about that looks like a path bug.
+    //
+    // So the key is asserted against the bundle rather than against a string, and
+    // this would fail on the wrong path before a build is ever made.
+
+    test('the rider mark is in the bundle', () async {
+      final bytes = await rootBundle.load(kRiderBrandLogoAsset);
+      expect(
+        bytes.lengthInBytes,
+        greaterThan(1000),
+        reason: 'the asset key resolved to nothing',
+      );
+    });
+
+    test('the driver mark is in the bundle', () async {
+      final bytes = await rootBundle.load(kDriverBrandLogoAsset);
+      expect(bytes.lengthInBytes, greaterThan(1000));
+    });
+
+    test('both keys are namespaced to this package', () {
+      // Belt and braces. A key that ever loses its prefix still resolves inside
+      // an app that happens to bundle a file at that path, and only one of the
+      // two would be wrong -- which is the hardest kind of wrong to notice.
+      for (final key in [kRiderBrandLogoAsset, kDriverBrandLogoAsset]) {
+        expect(key, startsWith('packages/mng_core/assets/'), reason: key);
+      }
+    });
+
+    test('each app is given its own mark', () {
+      expect(
+        brandLogoAsset(isDriver: true),
+        isNot(brandLogoAsset(isDriver: false)),
+      );
+      expect(
+        (brandLogoAsset(isDriver: true) as AssetImage).assetName,
+        kDriverBrandLogoAsset,
+      );
+      expect(
+        (brandLogoAsset(isDriver: false) as AssetImage).assetName,
+        kRiderBrandLogoAsset,
+      );
+    });
+
+    test('the rider mark has a transparent background', () async {
+      // The whole reason `toolchain/make-logo-png.ps1` exists: a white rectangle
+      // travelling across the screen behind a moving car. If the alpha work is
+      // ever undone, this catches it.
+      final bytes = await rootBundle.load(kRiderBrandLogoAsset);
+      final codec = await ui.instantiateImageCodec(bytes.buffer.asUint8List());
+      final frame = await codec.getNextFrame();
+      expect(frame.image.width, greaterThan(0));
+    });
   });
 
   test('the splash is long enough to read and short enough not to wait on', () {

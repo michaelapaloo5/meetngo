@@ -20,10 +20,13 @@ class DriverSplashScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return const MngSplashScreen(
-      logo: AssetImage('assets/brand/meet_n_go_logo_driver.png'),
+    // Not `const`: `brandLogoAsset` is a function call, and a function call is
+    // not a constant expression. The asset *keys* are constants; turning one into
+    // an `AssetImage` is not.
+    return MngSplashScreen(
+      logo: brandLogoAsset(isDriver: true),
       tagline: null,
-      child: _DriverAuthGate(),
+      child: const _DriverAuthGate(),
     );
   }
 }

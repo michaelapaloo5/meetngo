@@ -25,7 +25,7 @@ class SplashScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MngSplashScreen(
-      logo: AssetImage('assets/brand/meet_n_go_logo.png'),
+      logo: brandLogoAsset(isDriver: false),
       tagline: 'Make a beeline across the city',
       child: const _AuthGate(),
     );

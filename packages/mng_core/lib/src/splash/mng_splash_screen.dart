@@ -4,6 +4,36 @@ import 'package:flutter/material.dart';
 
 import '../theme/tokens.dart';
 
+/// The rider app's brand mark, as an asset key.
+///
+/// **Package assets are addressed as `packages/<name>/assets/...`.** Writing
+/// `assets/brand/...` resolves against the *app's* asset bundle, where nothing
+/// is registered, and the image silently fails to load.
+///
+/// It failed silently because this widget's `errorBuilder` returned an empty box
+/// -- a decision that is right in release and wrong in every other way, because it
+/// made a wrong path indistinguishable from a correct one. Verified on the
+/// handset: the car drew, the tagline drew, and the space where the logo should
+/// have been was empty.
+///
+/// So the keys live here, in the package that owns the files, and both apps take
+/// them from [brandLogoAsset] rather than spelling a path. There is now one
+/// place to be wrong instead of two.
+const kRiderBrandLogoAsset =
+    'packages/mng_core/assets/brand/meet_n_go_logo.png';
+
+/// The driver app's brand mark. Same mark, and its own wordmark.
+const kDriverBrandLogoAsset =
+    'packages/mng_core/assets/brand/meet_n_go_logo_driver.png';
+
+/// The brand mark for [isDriver]'s app.
+///
+/// A function rather than two constants to pass around, because the one thing
+/// that can go wrong here is picking the wrong app's mark and nothing about the
+/// result would look wrong on screen.
+ImageProvider brandLogoAsset({required bool isDriver}) =>
+    AssetImage(isDriver ? kDriverBrandLogoAsset : kRiderBrandLogoAsset);
+
 /// The animated start of both apps.
 ///
 /// One car, one logo, one hand-off, in that order and no screen change until the
@@ -260,9 +290,24 @@ class _MngSplashScreenState extends State<MngSplashScreen>
                   image: widget.logo,
                   width: width * 0.56,
                   fit: BoxFit.contain,
-                  // The asset is transparent, so it sits on the brand colour with
-                  // no plate behind it. A logo with a white box around it is the
-                  // single thing that would make this animation look broken.
+                  // The asset is transparent, so it sits on the stage with no plate
+                  // behind it.
+                  //
+                  // The `errorBuilder` deliberately still draws nothing -- a launch
+                  // screen that throws is the worst failure mode there is -- but it
+                  // also *reports*. That is because this exact `errorBuilder` is
+                  // what let a wrong asset path reach the handset looking like a
+                  // finished animation with an empty space where the logo should
+                  // have been: an unresolvable asset and a correct one looked the
+                  // same on screen.
+                  frameBuilder: (context, child, frame, wasSync) {
+                    if (frame == null) {
+                      debugPrint(
+                        'MngSplashScreen: brand logo did not decode',
+                      );
+                    }
+                    return child;
+                  },
                   errorBuilder: (context, error, stack) =>
                       const SizedBox.shrink(),
                 ),
