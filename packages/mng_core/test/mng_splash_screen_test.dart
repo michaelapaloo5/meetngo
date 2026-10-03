@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mng_core/mng_core.dart';
@@ -218,6 +219,98 @@ void main() {
           .overlaps(tester.getRect(mark)),
       isFalse,
     );
+  });
+
+  group('typography', () {
+    // Caught on the handset, fourth bug in a row that no check here would have
+    // found: the tagline rendered in monospace with a gold line under it.
+    //
+    // That is Flutter's "no `DefaultTextStyle` has been set, and something is
+    // wrong" marker -- red text, double yellow underline, `fontFamily:
+    // 'monospace'`. The splash artwork is a `ColoredBox` and a `Column` with no
+    // `Material` above it, so the tagline inherited it. My own `color:` covered
+    // the red, which made half a warning look like a design decision.
+    //
+    // Every other screen has a `Scaffold` and was fine, so nothing anywhere in
+    // the app was wrong except this one widget.
+
+    testWidgets('the tagline takes its type from the app theme', (
+      tester,
+    ) async {
+      // A hardcoded `fontSize: 15, fontWeight: w600` in the splash is a second
+      // typography system. This asserts the style actually comes from the theme,
+      // so changing the app's text theme moves the tagline with it instead of
+      // leaving it behind.
+      await tester.pumpWidget(
+        MediaQuery(
+          data: const MediaQueryData(),
+          child: MaterialApp(
+            theme: MngTheme.light,
+            home: MngSplashScreen(
+              logo: const AssetImage(kRiderBrandLogoAsset),
+              child: const Text('destination'),
+            ),
+          ),
+        ),
+      );
+      await pumpSplashTo(tester, 3000);
+
+      final theme = Theme.of(
+        tester.element(find.text('Make a beeline across the city')),
+      );
+      final expected = theme.textTheme.titleMedium!.copyWith(
+        color: MngColors.textPrimary,
+      );
+      final actual = tester
+          .widget<Text>(find.text('Make a beeline across the city'))
+          .style;
+
+      expect(actual, expected);
+
+      // And the *painted* result: not the widget's style, not
+      // `DefaultTextStyle.of`, but what the engine laid out.
+      //
+      // This is the assertion that would have caught the monospace-and-gold-line
+      // screenshot, and the two weaker ones were tried first and both passed
+      // against the broken code. A `ui.Paragraph`'s style is nullable, and a
+      // null here would be the same problem in a blunter form -- text painted
+      // with no style at all.
+      final painted = tester
+          .renderObject<RenderParagraph>(
+            find.text('Make a beeline across the city'),
+          )
+          .text
+          .style!;
+
+      expect(
+        painted.decoration,
+        isNot(TextDecoration.underline),
+        reason: 'the tagline is underlined, so it inherited the error style',
+      );
+      expect(
+        painted.fontFamily,
+        isNot('monospace'),
+        reason: 'the tagline is monospace, so it inherited the error style',
+      );
+      expect(painted.fontSize, expected.fontSize);
+      expect(painted.fontWeight, expected.fontWeight);
+    });
+
+    testWidgets('the artwork sits under a Material', (tester) async {
+      // The structural fix, asserted directly: a `Material` above the artwork is
+      // what stops the whole class of bug, whatever text is added to it later.
+      await pumpSplash(tester);
+      // Matched by type rather than "exactly one": `Material` brings ink
+      // splashes along, so there is more than one `CustomPaint` under it. What
+      // matters is that the artwork is somewhere beneath one.
+      expect(
+        find.descendant(
+          of: find.byType(Material),
+          matching: find.byType(CustomPaint),
+        ),
+        findsWidgets,
+      );
+    });
   });
 
   group('the brand marks', () {

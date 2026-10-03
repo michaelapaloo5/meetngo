@@ -223,7 +223,30 @@ class _MngSplashScreenState extends State<MngSplashScreen>
             if (!_handedOver)
               ClipPath(
                 clipper: _SplashRevealClipper(1 - _reveal.value),
-                child: ColoredBox(color: widget.background, child: _artwork()),
+                child: Material(
+                  // **A `Material` ancestor, and not decoration.**
+                  //
+                  // The artwork draws itself: a coloured box, a column, a custom
+                  // painter. There is no `Material` anywhere above it, and
+                  // without one `DefaultTextStyle` falls back to the engine's
+                  // "nothing has set a text style, and something is wrong" marker:
+                  // red text, double yellow underline, `fontFamily: 'monospace'`.
+                  //
+                  // The handset screenshot showed exactly that on the tagline --
+                  // monospace, with a gold line under it -- and nothing else in
+                  // the app, because every other screen has a `Scaffold` under it.
+                  // My own `color:` masked the red half of the marker, which is why
+                  // it looked like a design choice rather than a missing ancestor:
+                  // half of a warning is much harder to recognise than all of it.
+                  //
+                  // `MaterialType.transparency` so it adds a typography scope
+                  // without painting over the brand colour behind it.
+                  type: MaterialType.transparency,
+                  child: ColoredBox(
+                    color: widget.background,
+                    child: _artwork(),
+                  ),
+                ),
               ),
           ],
         );
@@ -361,12 +384,20 @@ class _MngSplashScreenState extends State<MngSplashScreen>
                 textAlign: TextAlign.center,
                 maxLines: 2,
                 overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                  color: widget.onForeground,
-                  fontSize: 15,
-                  fontWeight: FontWeight.w600,
-                  letterSpacing: 0.2,
-                ),
+                // From the theme, not hardcoded.
+                //
+                // A `fontSize: 15, fontWeight: w600` written here is a second
+                // typography system that drifts the first time anyone changes the
+                // app's text theme, and it is invisible until then. The splash
+                // shares the theme because it is the first thing anyone sees.
+                //
+                // `copyWith(color:)` rather than a whole new style, so the size,
+                // weight and family come from `titleMedium` -- the same style the
+                // rest of the app uses for a line of this weight.
+                style:
+                    Theme.of(context).textTheme.titleMedium
+                        ?.copyWith(color: widget.onForeground) ??
+                    TextStyle(color: widget.onForeground),
               ),
             ),
           ),
