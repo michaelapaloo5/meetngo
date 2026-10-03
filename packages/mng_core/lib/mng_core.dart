@@ -19,6 +19,7 @@ export 'src/models/phone.dart';
 export 'src/models/rating.dart';
 export 'src/models/trip.dart';
 export 'src/models/vehicle.dart';
+export 'src/splash/mng_splash_screen.dart';
 export 'src/theme/app_theme.dart';
 export 'src/theme/tokens.dart';
 export 'src/trip/trip_state.dart';

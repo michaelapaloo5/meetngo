@@ -6,9 +6,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'src/app/app_config.dart';
 import 'src/app/rider_flow.dart';
-import 'src/app/rider_shell.dart';
 import 'src/auth/auth_controller.dart';
-import 'src/auth/login_screen.dart';
 import 'src/auth/splash_screen.dart';
 import 'src/data/auth_repository.dart';
 import 'src/data/chat_repository.dart';
@@ -42,7 +40,9 @@ class RideNGoApp extends StatelessWidget {
             // Repositories. All app-wide and all stateless, so one instance
             // each: the four tabs share them, and a second `SupabaseClient`
             // would mean a second realtime socket.
-            Provider<AuthRepository>(create: (_) => SupabaseAuthRepository(client)),
+            Provider<AuthRepository>(
+              create: (_) => SupabaseAuthRepository(client),
+            ),
             Provider<LocationService>(
               create: (_) => const GeolocatorLocationService(),
             ),
@@ -52,10 +52,10 @@ class RideNGoApp extends StatelessWidget {
                 locations: c.read<LocationService>(),
               ),
             ),
-            Provider<PlaceService>(
-              create: (_) => NominatimPlaceService(),
+            Provider<PlaceService>(create: (_) => NominatimPlaceService()),
+            Provider<TripFunctions>(
+              create: (_) => SupabaseTripFunctions(client),
             ),
-            Provider<TripFunctions>(create: (_) => SupabaseTripFunctions(client)),
             Provider<ProfileRepository>(
               create: (_) => SupabaseProfileRepository(client),
             ),
@@ -75,9 +75,8 @@ class RideNGoApp extends StatelessWidget {
             // rider by the name in this row, and a greeting that is only right
             // after the Profile tab has been opened is not a greeting.
             ChangeNotifierProvider<RiderProfileController>(
-              create: (c) => RiderProfileController(
-                c.read<ProfileRepository>(),
-              )..load(),
+              create: (c) =>
+                  RiderProfileController(c.read<ProfileRepository>())..load(),
             ),
             ChangeNotifierProvider<RiderFlow>(
               create: (c) => RiderFlow(
@@ -108,17 +107,17 @@ Object? _bootError;
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   ErrorWidget.builder = (details) => Directionality(
-        textDirection: TextDirection.ltr,
-        child: Container(
-          color: const Color(0xFFFFFFFF),
-          padding: const EdgeInsets.all(24),
-          alignment: Alignment.centerLeft,
-          child: Text(
-            'Meet \'N Go failed to start:\n\n${details.exceptionAsString()}',
-            style: const TextStyle(color: Color(0xFF1A1A1A), fontSize: 14),
-          ),
-        ),
-      );
+    textDirection: TextDirection.ltr,
+    child: Container(
+      color: const Color(0xFFFFFFFF),
+      padding: const EdgeInsets.all(24),
+      alignment: Alignment.centerLeft,
+      child: Text(
+        'Meet \'N Go failed to start:\n\n${details.exceptionAsString()}',
+        style: const TextStyle(color: Color(0xFF1A1A1A), fontSize: 14),
+      ),
+    ),
+  );
   if (AppConfig.isConfigured) {
     try {
       await Supabase.initialize(
@@ -183,66 +182,23 @@ class _BootErrorApp extends StatelessWidget {
   }
 }
 
-/// Runs the brand intro, then hands over to [_AuthGate].
+/// The brand intro, which now opens onto the app itself.
 ///
-/// The two are deliberately separate: [SplashScreen] owns the animation and
-/// calls [SplashScreen.onDone] when it finishes, and [_AuthGate] already
-/// renders a spinner while it waits for the first `AuthState`. Keeping the
-/// handover to a single `onDone` means a slow session restore shows that spinner
-/// rather than a second bespoke loading state.
-class _Boot extends StatefulWidget {
+/// It used to own a boolean: run [SplashScreen], and swap in [_AuthGate] from an
+/// `onDone` callback when the animation finished. That made the handover a frame
+/// of nothing between two routes, and it meant the session was only looked up
+/// *after* the animation -- so a slow restore showed a spinner with no animation
+/// to cover it.
+///
+/// [SplashScreen] now takes the destination as its child and reveals it, so there
+/// is one widget the whole time and the session resolves behind the car.
+class _Boot extends StatelessWidget {
   const _Boot();
 
   @override
-  State<_Boot> createState() => _BootState();
+  Widget build(BuildContext context) => const SplashScreen();
 }
 
-class _BootState extends State<_Boot> {
-  bool _done = false;
-
-  @override
-  Widget build(BuildContext context) {
-    if (_done) return const _AuthGate();
-    return SplashScreen(
-      onDone: () {
-        if (mounted) setState(() => _done = true);
-      },
-    );
-  }
-}
-
-/// Shows the login screen until there is a session, then the app.
-///
-/// Driven off `onAuthStateChange` rather than reading `currentSession` once at
-/// startup, because the Google sign-in path returns to the app through a deep
-/// link: the session is established by the redirect, not by anything this screen
-/// awaited.
-class _AuthGate extends StatelessWidget {
-  const _AuthGate();
-
-  @override
-  Widget build(BuildContext context) {
-    return StreamBuilder<AuthState>(
-      stream: Supabase.instance.client.auth.onAuthStateChange,
-      initialData: null,
-      builder: (context, snapshot) {
-        final state = snapshot.data;
-        if (state == null) {
-          return const Scaffold(
-            body: Center(child: CircularProgressIndicator()),
-          );
-        }
-        return state.session == null ? const LoginScreen() : const RiderShell();
-      },
-    );
-  }
-}
-
-/// What the app shows when no Supabase project has been pointed at yet.
-///
-/// A build with no credentials still launches and says which two values are
-/// missing, because the alternative -- a crash on the first frame -- tells a
-/// first-time runner nothing about what went wrong.
 class _UnconfiguredApp extends StatelessWidget {
   const _UnconfiguredApp();
 

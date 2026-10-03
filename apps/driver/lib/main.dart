@@ -6,9 +6,8 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'src/app/driver_config.dart';
 import 'src/app/driver_flow.dart';
-import 'src/app/driver_shell.dart';
 import 'src/auth/driver_auth_controller.dart';
-import 'src/auth/driver_login_screen.dart';
+import 'src/auth/splash_screen.dart';
 import 'src/contact/contact_controller.dart';
 import 'src/data/driver_auth_repository.dart';
 import 'src/data/driver_repository.dart';
@@ -108,7 +107,7 @@ class DriverNGoApp extends StatelessWidget {
             debugShowCheckedModeBanner: false,
             title: "Meet 'N Go Driver",
             theme: MngTheme.light,
-            home: const _AuthGate(),
+            home: const DriverSplashScreen(),
           ),
         );
       },
@@ -202,35 +201,6 @@ class _BootErrorApp extends StatelessWidget {
           ),
         ),
       ),
-    );
-  }
-}
-
-/// Shows the login screen until there is a session, then the app.
-///
-/// Driven off `onAuthStateChange` rather than reading `currentSession` once at
-/// startup, because the Google sign-in path returns to the app through a deep
-/// link: the session is established by the redirect, not by anything this
-/// screen awaited.
-class _AuthGate extends StatelessWidget {
-  const _AuthGate();
-
-  @override
-  Widget build(BuildContext context) {
-    return StreamBuilder<AuthState>(
-      stream: Supabase.instance.client.auth.onAuthStateChange,
-      initialData: null,
-      builder: (context, snapshot) {
-        final state = snapshot.data;
-        if (state == null) {
-          return const Scaffold(
-            body: Center(child: CircularProgressIndicator()),
-          );
-        }
-        return state.session == null
-            ? const DriverLoginScreen()
-            : const DriverShell();
-      },
     );
   }
 }

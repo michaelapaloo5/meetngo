@@ -34,6 +34,17 @@ flutter:
   assets:
     - assets/maps/ride_premium.json
 
+  # The brand marks. Both apps draw their own logo in the shared splash, so
+    # the splash takes it as an argument rather than hard-coding one -- which is
+    # how the rider and driver apps get the same animation with different marks.
+    #
+    # 32-bit PNGs with the white cut out. The sources were flattened JPGs whose
+    # white background would otherwise travel across the screen with the car.
+    # See toolchain/make-logo-png.ps1, whose header explains why the alpha is
+    # computed from the pixel colour rather than keyed on white.
+    - assets/brand/meet_n_go_logo.png
+    - assets/brand/meet_n_go_logo_driver.png
+
   # To add custom fonts to your package, add a fonts section here,
   # in this "flutter" section. Each entry in this list should have a
   # "family" key with the font family name, and a "fonts" key with a
