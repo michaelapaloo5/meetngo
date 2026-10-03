@@ -63,7 +63,7 @@ class SchedulePicker extends StatelessWidget {
     final at = _at(offset);
     return _sameDay(at, _now())
         ? 'In ${_readable(offset)}'
-        : formatScheduledMoment(at);
+        : formatScheduledMoment(at, now: _now());
   }
 
   /// Whether [a] and [b] fall on the same calendar day.
@@ -201,9 +201,19 @@ class SchedulePicker extends StatelessWidget {
 /// Today and tomorrow are named rather than dated, because that is how people
 /// refer to them; anything further out gets the date. Both paths print a clock
 /// time, because the hour is the part people get wrong.
-String formatScheduledMoment(DateTime when) {
-  final now = DateTime.now();
-  final today = DateTime(now.year, now.month, now.day);
+String formatScheduledMoment(DateTime when, {DateTime? now}) {
+  // The clock to measure against is a parameter, not a call to `DateTime.now()`
+  // buried in here.
+  //
+  // This reads the real clock, so a caller that already knows what "now" is --
+  // the picker, which takes one so it can be driven from a test -- had no way to
+  // say so, and the day this compared against was always the real today. A chip
+  // built from an injected clock then named the wrong day: four hours after
+  // 22:15 on the 2nd is 02:15 on the 3rd, and against a real "today" of the 3rd
+  // that is *today*, not *tomorrow*. The test asserting otherwise was right and
+  // the code was wrong, which is not the usual way round.
+  final clock = now ?? DateTime.now();
+  final today = DateTime(clock.year, clock.month, clock.day);
   final that = DateTime(when.year, when.month, when.day);
   final days = that.difference(today).inDays;
   final time = _clock(when);
