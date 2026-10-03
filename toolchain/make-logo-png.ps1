@@ -26,9 +26,27 @@
 # unpremultiplied alpha for an anti-aliased gold shape on white, so the wordmark's
 # soft edges stay soft instead of getting a fringe.
 #
-# The smudges end up almost transparent (min channel around 227, alpha around 28)
-# and effectively vanish, which is the right outcome -- they were background
-# texture on a white page, and there is no longer a page.
+# ## What survives, and why it was left alone
+#
+# This header used to claim the pale gold in the background "ends up almost
+# transparent and effectively vanishes". That was wrong, and measuring it on the
+# handset rather than trusting the claim is what showed it.
+#
+# The rider mark really is clean -- nothing survives but the mark and the
+# wordmark. The **driver** mark is not: its background carries a deliberate
+# watermark of a route line with small car glyphs, and that watermark survives
+# with a real spread of alpha -- a broad mass around 25 to 30, and a thin tail
+# reaching 255 where the glyph outlines are.
+#
+# That is part of the supplied artwork, not damage, so it is not cut out here.
+# Removing it would need a floor-and-rescale (subtract a threshold, then scale
+# the remainder so the gold stays opaque) chosen carefully enough not to fringe
+# the wordmark's anti-aliased edges -- and it would be deleting something the
+# designer drew on purpose. If it is ever wanted gone, that is the shape of the
+# change, and it is a decision about the brand rather than about this script.
+#
+# On the white splash it reads as a faint texture behind the mark, which is
+# defensible. Worth knowing it is there.
 
 param(
     [Parameter(Mandatory = $true)][string]$Source,
