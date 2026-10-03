@@ -237,32 +237,66 @@ class _MngSplashScreenState extends State<MngSplashScreen>
       child: LayoutBuilder(
         builder: (context, box) {
           final width = box.maxWidth;
-          final height = box.maxHeight;
+
+          // **One column, not a `Stack`.**
+          //
+          // These were absolutely positioned -- the car at a fixed baseline and
+          // the logo in a centred `Column` -- and the handset showed the result:
+          // "Make a beeline across the city" drawn straight across the middle of
+          // the car, through its windows. Two independently placed things on one
+          // screen will always be able to collide, and the collision is not
+          // something either one of them can see.
+          //
+          // In a column they get their own rows and cannot overlap at any screen
+          // size, at any text scale, with or without a tagline.
+          final carWidth = math.min(width * 0.46, 190.0);
+          final carHeight = carWidth * 0.42;
 
           // The car travels a distance the wheels can be turned by, which is what
           // makes them turn: a rotating wheel on a stationary car is a fidget,
           // and one that turns faster than the car moves is a different fidget.
           final travelIn = width * _arrive.value;
           final travelOut = width * _leave.value;
-          final spin = _wheelTurns(travelIn + travelOut);
+          final spin = _wheelTurns(travelIn + travelOut, carHeight);
 
-          return Stack(
-            clipBehavior: Clip.none,
+          return Column(
             children: [
-              _car(
-                centreX:
-                    width / 2 +
-                    (1 - _arrive.value) * width -
-                    _leave.value * width * 1.4,
-                baselineY: height * 0.62,
-                carWidth: math.min(width * 0.46, 190),
-                wheelTurns: spin,
-                // Mirrored while it leaves, so the car drives off the way it came
-                // in rather than sliding backwards.
-                mirrored: _leave.value > 0.001,
-                dip: _settle.value,
+              // The mark sits above the optical centre so there is room beneath it
+              // for the tagline and then the car.
+              const Spacer(flex: 5),
+              _logo(width: width),
+              const SizedBox(height: 8),
+              // The lane the car drives along. Clipped, because on the way in and
+              // out the car is deliberately outside the screen, and `Align` does
+              // not clip what it positions.
+              SizedBox(
+                height: carHeight,
+                width: width,
+                child: ClipRect(
+                  child: IgnorePointer(
+                    child: Align(
+                      alignment: Alignment.center,
+                      child: Transform.translate(
+                        offset: Offset(
+                          (1 - _arrive.value) * width -
+                              _leave.value * width * 1.4,
+                          0,
+                        ),
+                        child: _car(
+                          width: carWidth,
+                          height: carHeight,
+                          wheelTurns: spin,
+                          // Mirrored while it leaves, so the car drives off the
+                          // way it came in rather than sliding backwards.
+                          mirrored: _leave.value > 0.001,
+                          dip: _settle.value,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
               ),
-              _logo(width: width, height: height),
+              const Spacer(flex: 3),
             ],
           );
         },
@@ -270,106 +304,115 @@ class _MngSplashScreenState extends State<MngSplashScreen>
     );
   }
 
-  /// The logo, dropped in above the car.
-  Widget _logo({required double width, required double height}) {
+  /// The logo and its tagline, dropped in above the car.
+  ///
+  /// In the column's flow rather than positioned, so it cannot end up on top of
+  /// the car. See [_artwork].
+  Widget _logo({required double width}) {
     final tagline = widget.tagline;
-    return Positioned.fill(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Transform.translate(
-            offset: Offset(0, -height * 0.22 * (1 - _drop.value)),
-            child: Transform.scale(
-              scale: 0.82 + 0.18 * _drop.value,
-              child: Opacity(
-                // Fades in over the first third of its own drop rather than with
-                // it, so the bounce lands on an already-visible mark instead of
-                // arriving with the last of the motion.
-                opacity: math.min(1, _drop.value * 3),
-                child: Image(
-                  image: widget.logo,
-                  width: width * 0.56,
-                  fit: BoxFit.contain,
-                  // The asset is transparent, so it sits on the stage with no plate
-                  // behind it.
-                  //
-                  // The `errorBuilder` deliberately still draws nothing -- a launch
-                  // screen that throws is the worst failure mode there is -- but it
-                  // also *reports*. That is because this exact `errorBuilder` is
-                  // what let a wrong asset path reach the handset looking like a
-                  // finished animation with an empty space where the logo should
-                  // have been: an unresolvable asset and a correct one looked the
-                  // same on screen.
-                  frameBuilder: (context, child, frame, wasSync) {
-                    if (frame == null) {
-                      debugPrint(
-                        'MngSplashScreen: brand logo did not decode',
-                      );
-                    }
-                    return child;
-                  },
-                  errorBuilder: (context, error, stack) =>
-                      const SizedBox.shrink(),
+    // The drop distance is a fraction of the *mark's own height*, not the
+    // screen's, so the travel looks the same on a small phone and a tablet.
+    final markHeight = width * 0.56 * 0.545;
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Transform.translate(
+          offset: Offset(0, -markHeight * 0.8 * (1 - _drop.value)),
+          child: Transform.scale(
+            scale: 0.82 + 0.18 * _drop.value,
+            child: Opacity(
+              // Fades in over the first third of its own drop rather than with
+              // it, so the bounce lands on an already-visible mark instead of
+              // arriving with the last of the motion.
+              opacity: math.min(1, _drop.value * 3),
+              child: Image(
+                image: widget.logo,
+                width: width * 0.56,
+                fit: BoxFit.contain,
+                // The asset is transparent, so it sits on the stage with no plate
+                // behind it.
+                //
+                // The `errorBuilder` deliberately still draws nothing -- a launch
+                // screen that throws is the worst failure mode there is -- but the
+                // `frameBuilder` below it *reports*. That is because the silent
+                // version is what let a wrong asset path reach the handset looking
+                // like a finished animation with an empty space where the logo
+                // should have been.
+                frameBuilder: (context, child, frame, wasSync) {
+                  if (frame == null) {
+                    debugPrint('MngSplashScreen: brand logo did not decode');
+                  }
+                  return child;
+                },
+                errorBuilder: (context, error, stack) =>
+                    const SizedBox.shrink(),
+              ),
+            ),
+          ),
+        ),
+        if (tagline != null && tagline.isNotEmpty) ...[
+          const SizedBox(height: 8),
+          Opacity(
+            opacity: math.min(1, math.max(0, (_drop.value - 0.5) * 2)),
+            child: Padding(
+              padding: EdgeInsets.symmetric(horizontal: width * 0.12),
+              child: Text(
+                tagline,
+                textAlign: TextAlign.center,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  color: widget.onForeground,
+                  fontSize: 15,
+                  fontWeight: FontWeight.w600,
+                  letterSpacing: 0.2,
                 ),
               ),
             ),
           ),
-          if (tagline != null && tagline.isNotEmpty) ...[
-            SizedBox(height: height * 0.03),
-            Opacity(
-              opacity: math.min(1, math.max(0, (_drop.value - 0.5) * 2)),
-              child: Padding(
-                padding: EdgeInsets.symmetric(horizontal: width * 0.12),
-                child: Text(
-                  tagline,
-                  textAlign: TextAlign.center,
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    color: widget.onForeground,
-                    fontSize: 15,
-                    fontWeight: FontWeight.w600,
-                    letterSpacing: 0.2,
-                  ),
-                ),
-              ),
-            ),
-          ],
         ],
-      ),
+      ],
     );
   }
 
   /// The car, drawn as a side profile facing right.
+  ///
+  /// Sized by its parent rather than placed by it. [body] is the **brand gold**, not
+  /// the stage colour: the car was once drawn in the background colour, which made
+  /// it the same gold as the background and the logo, and the one thing the
+  /// animation exists to show was the one thing nobody could see.
   Widget _car({
-    required double centreX,
-    required double baselineY,
-    required double carWidth,
+    required double width,
+    required double height,
     required double wheelTurns,
     required bool mirrored,
     required double dip,
   }) {
-    final carHeight = carWidth * 0.42;
-    return Positioned(
-      left: centreX - carWidth / 2,
-      top: baselineY - carHeight + carHeight * 0.09 * dip,
-      width: carWidth,
-      height: carHeight,
+    return SizedBox(
+      width: width,
+      height: height,
       child: Transform.scale(
         // `-1` on x flips the painter, so the wheels' tread and the slope of the
         // windscreen both point the way it is travelling.
         scaleX: mirrored ? -1 : 1,
-        child: CustomPaint(
-          painter: _CarPainter(
-            body: widget.background,
-            ink: widget.onForeground,
-            wheelTurns: wheelTurns,
-            // A shallow dip at the moment of stopping. Half the car's height at
-            // full squash would be a cartoon bounce; this is a suspension
-            // settling.
-            squash: dip * 0.09,
+        // The settle dip is on `y` alone. Scaling `y` here and `y` again inside
+        // the painter would compound, and the car would sink through its own lane
+        // at the moment it is supposed to be standing still.
+        alignment: Alignment.bottomCenter,
+        child: Transform.translate(
+          offset: Offset(0, height * 0.09 * dip),
+          child: CustomPaint(
+            painter: _CarPainter(
+              body: MngColors.primary,
+              ink: MngColors.textPrimary,
+              wheelTurns: wheelTurns,
+              // A shallow dip at the moment of stopping. Half the car's height at
+              // full squash would be a cartoon bounce; this is a suspension
+              // settling.
+              squash: dip * 0.09,
+            ),
+            child: const SizedBox.expand(),
           ),
-          child: const SizedBox.expand(),
         ),
       ),
     );
@@ -377,11 +420,13 @@ class _MngSplashScreenState extends State<MngSplashScreen>
 
   /// How far the wheels have turned, in turns.
   ///
-  /// Circumference over the wheel diameter, so the rotation matches the ground
-  /// covered rather than being a free-running spin.
-  double _wheelTurns(double distance) {
-    final wheelRadius = _CarPainter.wheelRadiusFraction * 1.0;
-    final circumference = 2 * math.pi * wheelRadius;
+  /// Circumference over the wheel radius the painter actually draws, in the same
+  /// units, so the rotation matches the ground covered rather than being a
+  /// free-running spin. The height is passed in because the painter derives its
+  /// wheel size from whatever box it is given.
+  double _wheelTurns(double distance, double carHeight) {
+    final circumference =
+        2 * math.pi * _CarPainter.wheelRadiusFraction * carHeight;
     if (circumference <= 0) return 0;
     return distance / circumference;
   }

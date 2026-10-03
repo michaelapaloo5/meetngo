@@ -10,16 +10,27 @@ import 'package:mng_core/mng_core.dart';
 
 /// A real, decodable 1x1 transparent PNG.
 ///
-/// A [MemoryImage] rather than a hand-written `ImageProvider` because the point
-/// is that the splash draws whatever it is handed: a bespoke fake provider would
-/// have to reimplement loading, erroring and scheduling, and the fake would be the
-/// thing under test instead of the widget.
+/// Only used where the *image* is not what is under test -- the handover and the
+/// reduced-motion path. It is not used for the layout tests, and it must not be.
+/// See [pumpSplash].
 final Uint8List _transparentPng = base64Decode(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGA'
   'hKmMIQAAAABJRU5ErkJggg==',
 );
 
 /// Pumps the splash on a phone-shaped surface.
+///
+/// The logo defaults to the **real asset**, and that is not a convenience.
+///
+/// It was a 1x1 fake, and the layout test built on it passed against code that
+/// put the tagline straight through the car. The reason: `BoxFit.contain` in a
+/// fixed-width box takes its height from the image's aspect ratio, so a 1x1 fake
+/// rendered 218 tall where the real 640x349 mark renders 119. The extra 100px
+/// pushed the tagline clear of the car and the collision vanished from the test
+/// while remaining completely present on the handset.
+///
+/// A stub that changes the layout it is supposed to be checking is worse than no
+/// stub: it reports the bug is fixed when it is still there.
 Future<void> pumpSplash(
   WidgetTester tester, {
   ImageProvider? logo,
@@ -36,12 +47,32 @@ Future<void> pumpSplash(
       child: Directionality(
         textDirection: TextDirection.ltr,
         child: MngSplashScreen(
-          logo: logo ?? MemoryImage(_transparentPng),
+          logo: logo ?? const AssetImage(kRiderBrandLogoAsset),
           child: child,
         ),
       ),
     ),
   );
+}
+
+/// Advances the animation to [ms] **in steps**.
+///
+/// Not `tester.pump(Duration(milliseconds: ms))`. That lands at animation time
+/// zero.
+///
+/// The controller is started from a post-frame callback, so its clock starts on
+/// the first frame *after* `pumpWidget`. A single `pump(3000ms)` produces one
+/// frame at t+3000, but the ticker's start time is stamped on that same frame, so
+/// the controller has advanced 0ms. Repeated 100ms pumps accumulate properly.
+///
+/// This cost a layout test that passed against the exact bug it was written for:
+/// the car was still off-screen right at "3000ms", far from the tagline, and so
+/// could not possibly overlap it. The test was green and the handset was wrong.
+Future<void> pumpSplashTo(WidgetTester tester, int ms) async {
+  const step = 100;
+  for (var elapsed = 0; elapsed < ms; elapsed += step) {
+    await tester.pump(const Duration(milliseconds: step));
+  }
 }
 
 void main() {
@@ -141,6 +172,52 @@ void main() {
     );
     await tester.pump(const Duration(milliseconds: 2000));
     expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('the tagline does not land on top of the car', (tester) async {
+    // Caught on the handset, not by any check: the tagline was drawn straight
+    // across the car's windows. The car sat at a fixed baseline and the logo was
+    // in a centred column, so the two were placed independently and nothing in
+    // either one could see the collision.
+    //
+    // Asserted as real geometry -- the tagline's rect and the painted car's rect
+    // must not intersect -- because that is the thing that was wrong. Asserting
+    // "both exist" passed while the screen looked broken.
+    await pumpSplash(tester);
+
+    // Mid-hold: both the mark and the tagline are fully in, so any overlap here
+    // is the overlap the rider sees. Stepwise -- see [pumpSplashTo].
+    await pumpSplashTo(tester, 3000);
+
+    final tagline = tester.getRect(find.text('Make a beeline across the city'));
+
+    // The car is a `CustomPaint`, so it is found by type and measured.
+    final car = find.byWidgetPredicate(
+      (w) =>
+          w is CustomPaint && w.painter.runtimeType.toString() == '_CarPainter',
+    );
+    expect(car, findsOneWidget, reason: 'the car should be on screen');
+    final carRect = tester.getRect(car);
+
+    expect(
+      tagline.overlaps(carRect),
+      isFalse,
+      reason: 'tagline $tagline overlaps the car at $carRect',
+    );
+  });
+
+  testWidgets('the mark and the tagline do not overlap either', (tester) async {
+    await pumpSplash(tester);
+    await pumpSplashTo(tester, 3000);
+
+    final mark = find.byType(Image);
+    expect(mark, findsOneWidget);
+    expect(
+      tester
+          .getRect(find.text('Make a beeline across the city'))
+          .overlaps(tester.getRect(mark)),
+      isFalse,
+    );
   });
 
   group('the brand marks', () {
