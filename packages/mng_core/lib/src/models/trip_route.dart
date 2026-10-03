@@ -176,8 +176,9 @@ class TripRoute {
     }
     final geometry = <List<double>>[];
     for (final raw in (json['geometry'] as List<dynamic>? ?? const [])) {
-      if (raw is List)
+      if (raw is List) {
         geometry.add(raw.map((v) => (v as num).toDouble()).toList());
+      }
     }
     return TripRoute(
       distanceM: ((json['distanceM'] as num?) ?? 0).toDouble(),

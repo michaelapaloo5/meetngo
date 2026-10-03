@@ -6,6 +6,7 @@ import 'package:maplibre_gl/maplibre_gl.dart';
 import 'package:mng_core/mng_core.dart';
 
 import '../data/location_service.dart';
+import 'route_recentre_button.dart';
 
 /// The credit the OSM tile usage policy requires to be visible, matching
 /// `kOsmAttribution` in the driver app's `DriverMapPanel`.
@@ -52,6 +53,43 @@ const double kRideMapRouteMaxZoom = 16.0;
 /// directions. It exists so a very long route does not fit itself into a frame
 /// where the rider cannot tell which way they are going.
 const double kRideMapRouteMinZoom = 11.0;
+
+/// Whether a `RideMap` has to push its overlays again.
+///
+/// Extracted as a function so it can be tested without a map. It is the site of a
+/// real bug: written as one `&&` chain with the route-shape check tacked on the
+/// end as `!identical(...)`, which meant that when the road arrived and *nothing
+/// else* had changed -- exactly the trip-detail screen -- every term was true and
+/// the method returned without redrawing. The road came back from the deployed
+/// function as 352 geometry points and the map kept showing the straight line it
+/// had drawn on the first frame.
+///
+/// Each clause is now a reason to redraw, so any one of them is enough. A
+/// function rather than a method because the shape clause is the one that gets
+/// inverted, and an inverted boolean buried in a lifecycle method is not something
+/// a test can see.
+@visibleForTesting
+bool mapNeedsOverlayPush({
+  Object? oldPickup,
+  Object? newPickup,
+  Object? oldDropoff,
+  Object? newDropoff,
+  Object? oldDriver,
+  Object? newDriver,
+  Object? oldLocationPoint,
+  Object? newLocationPoint,
+  List<GeoPoint>? oldShape,
+  List<GeoPoint>? newShape,
+}) {
+  if (oldPickup != newPickup) return true;
+  if (oldDropoff != newDropoff) return true;
+  if (oldDriver != newDriver) return true;
+  if (oldLocationPoint != newLocationPoint) return true;
+  // Identity, not equality: the wrapper replaces the list only when a genuinely
+  // new route arrives, so a rebuild carrying the same shape must not push again on
+  // every GPS fix.
+  return !identical(oldShape, newShape);
+}
 
 /// A camera decision: where to look, and how far in.
 @immutable
@@ -264,6 +302,65 @@ class RideMapState extends State<RideMap> {
   @visibleForTesting
   GeoPoint? lastRecentredOn;
 
+  /// Whether the rider has moved the camera away from where the map put it.
+  ///
+  /// The flag behind the recentre button, and the reason the button exists: a map
+  /// that can be moved and cannot be put back is a map that can be lost.
+  ///
+  /// Set from [onCameraMove], and cleared by either recentre. It is cleared and
+  /// *not* ignored on a programmatic move: recentring has to hide the button as
+  /// well as obey it, or the rider is offered a button for a map that is already
+  /// where they asked for.
+  bool get userMovedCamera => _userMovedCamera;
+
+  bool _userMovedCamera = false;
+
+  /// True while this widget is the one moving the camera.
+  ///
+  /// The flag that makes [onCameraMove] usable at all. `onCameraMove` reports
+  /// every camera change without saying who caused it, so an `animateCamera`
+  /// from our own recentre button would otherwise read as the rider panning away
+  /// and the button would reappear the instant it was pressed -- a button that
+  /// cannot be dismissed, on a screen where it is the only control.
+  bool _cameraIsOurs = false;
+
+  /// Move the camera back to the route this map is drawing, at the framing that
+  /// was computed for it.
+  ///
+  /// The route's counterpart to [recenterOn]. A map showing a ride is framed on
+  /// the ride, so "put me back" means "show me the route again", not "show me
+  /// where I am standing" -- and on a finished ride there is no position to centre
+  /// on at all.
+  ///
+  /// Returns false when the engine is not ready, on the same contract and for the
+  /// same reason as [recenterOn].
+  Future<bool> recenterOnRoute() async {
+    final controller = _controller;
+    if (controller == null) return false;
+    final line = widget.pickup == null || widget.dropoff == null
+        ? const <GeoPoint>[]
+        : _routeLine(widget.pickup!, widget.dropoff!);
+    if (line.length < 2) return false;
+    lastRecentredOn = _cameraFor(line, fallbackTo: widget.pickup!).target;
+    _cameraIsOurs = true;
+    try {
+      await controller.animateCamera(
+        CameraUpdate.newCameraPosition(
+          CameraPosition(
+            target: _ll(_cameraFor(line, fallbackTo: widget.pickup!).target),
+            zoom: _cameraFor(line, fallbackTo: widget.pickup!).zoom,
+            tilt: kRideMapTilt,
+            bearing: kRideMapBearing,
+          ),
+        ),
+      );
+    } finally {
+      _cameraIsOurs = false;
+      if (mounted) setState(() {});
+    }
+    return true;
+  }
+
   /// Move the camera to [point] and back to the default 3D framing.
   ///
   /// Returns false when the engine is not ready yet, so a button pressed in the
@@ -275,16 +372,24 @@ class RideMapState extends State<RideMap> {
     lastRecentredOn = point;
     final controller = _controller;
     if (controller == null) return false;
-    await controller.animateCamera(
-      CameraUpdate.newCameraPosition(
-        CameraPosition(
-          target: LatLng(point.lat, point.lng),
-          zoom: kRideMapSinglePointZoom,
-          tilt: kRideMapTilt,
-          bearing: kRideMapBearing,
+    _cameraIsOurs = true;
+    try {
+      await controller.animateCamera(
+        CameraUpdate.newCameraPosition(
+          CameraPosition(
+            target: LatLng(point.lat, point.lng),
+            zoom: kRideMapSinglePointZoom,
+            tilt: kRideMapTilt,
+            bearing: kRideMapBearing,
+          ),
         ),
-      ),
-    );
+      );
+    } finally {
+      _cameraIsOurs = false;
+      if (mounted) setState(() {});
+    }
+    _userMovedCamera = false;
+    if (mounted) setState(() {});
     return true;
   }
 
@@ -340,20 +445,22 @@ class RideMapState extends State<RideMap> {
   void didUpdateWidget(RideMap oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (!_sourcesAdded) return;
-    // The driver's heading changes even when the position has not -- a car
-    // turning at a junction is the same coordinate as one second earlier -- so
-    // the vehicle is re-pushed on either having changed.
-    if (oldWidget.pickup == widget.pickup &&
-        oldWidget.dropoff == widget.dropoff &&
-        oldWidget.driver == widget.driver &&
-        oldWidget.location?.point == widget.location?.point &&
-        // The road shape arriving is itself a reason to redraw. Without this the
-        // first frame draws the straight line and the real route never appears,
-        // because the rider's own position is not what changed -- the map was
-        // simply sent something better and would ignore it.
-        !identical(oldWidget.routeShape, widget.routeShape)) {
-      return;
-    }
+    // Why a function and not a line of conditionals: see [mapNeedsOverlayPush].
+    // It was one `&&` chain, the shape clause was inverted, and the result was a
+    // map that received a real road and went on drawing the straight line.
+    final push = mapNeedsOverlayPush(
+      oldPickup: oldWidget.pickup,
+      newPickup: widget.pickup,
+      oldDropoff: oldWidget.dropoff,
+      newDropoff: widget.dropoff,
+      oldDriver: oldWidget.driver,
+      newDriver: widget.driver,
+      oldLocationPoint: oldWidget.location?.point,
+      newLocationPoint: widget.location?.point,
+      oldShape: oldWidget.routeShape,
+      newShape: widget.routeShape,
+    );
+    if (!push) return;
     _pushOverlays();
   }
 
@@ -482,6 +589,35 @@ class RideMapState extends State<RideMap> {
               : _buildMap(from: from, to: to, here: here),
         ),
         const Positioned(left: 0, right: 0, bottom: 0, child: _Attribution()),
+        // The recentre control, drawn by the map rather than hosted by the screen.
+        //
+        // It has to be here. The flag it depends on, `userMovedCamera`, changes
+        // inside *this* widget's state, and a button hosted by a parent reading it
+        // through a GlobalKey only redraws when the parent does -- so it would sit
+        // invisible until some unrelated rebuild, and then pop into existence long
+        // after the rider panned. The existing [LiveLocationButton] can get away
+        // with being parent-hosted because the thing it shows is static; this one
+        // shows only in response to an event, so it owns its own frame.
+        //
+        // Gated on `interactive` for the obvious reason: a map whose gestures are
+        // off cannot be moved off its route, and a control offering to fix a
+        // problem the rider cannot cause is worse than no control.
+        //
+        // Built only once the camera has moved, rather than built and covered by an
+        // `IgnorePointer`: a control that is present but inert is still on screen,
+        // still in the semantics tree and still announced to a screen reader. This
+        // one was, and a test looking for it found it on a map that had never been
+        // touched.
+        if (widget.interactive && _userMovedCamera)
+          Positioned.fill(
+            child: Align(
+              alignment: Alignment.bottomRight,
+              child: Padding(
+                padding: const EdgeInsets.only(right: 16, bottom: 40),
+                child: RecentreOnRouteButton(onPressed: recenterOnRoute),
+              ),
+            ),
+          ),
         // The tap-to-open layer, over the map and *under* the note and the
         // attribution, so both stay readable and neither is a tap target.
         //
@@ -581,6 +717,13 @@ class RideMapState extends State<RideMap> {
       // vendor claim, and the visible credit below is what satisfies the OSM
       // tile usage policy.
       logoEnabled: false,
+      // Every camera change, with no indication of who caused it -- which is why
+      // `_cameraIsOurs` exists. This is the signal behind the recentre button.
+      onCameraMove: (_) {
+        if (_cameraIsOurs) return;
+        if (_userMovedCamera) return;
+        setState(() => _userMovedCamera = true);
+      },
       onMapCreated: (controller) => _controller = controller,
       // Layers can only be added once the style is loaded, so this is where the
       // route and the pins go. The camera is already placed by

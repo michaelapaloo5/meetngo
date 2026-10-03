@@ -3,6 +3,7 @@ import 'package:flutter_screenutil/flutter_screenutil.dart';
 import 'package:mng_core/mng_core.dart';
 
 import '../data/booked_trip.dart';
+import '../map/fullscreen_ride_map_screen.dart';
 import '../map/ride_map.dart';
 import '../map/rider_route_map.dart';
 import '../data/trip_report_repository.dart';
@@ -119,6 +120,25 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                 pickupLabel: stopLabel(trip.pickup),
                 dropoffLabel: stopLabel(trip.dropoff),
                 height: 200,
+                // **Tappable, which it was not.** A rider who opens a past ride to
+                // see where they went could not do anything with the map at all --
+                // no tap, no drag, no way in. It was a picture.
+                //
+                // Tap to expand, not gestures on. This map is a 200px card inside a
+                // `ListView`, and turning the map's own gestures on means a drag
+                // over it moves the map instead of scrolling the list, which puts
+                // everything below the card -- the fare, the category, the report
+                // button -- out of reach. The same reasoning already governs the
+                // tracking screen's map, and this is the same shape of problem, so
+                // this is the same answer: the tap is the way past it, and the
+                // larger map has the gestures and the recentre button.
+                onTapToExpand: () => FullscreenRideMapScreen.show(
+                  context,
+                  pickup: trip.pickup.point,
+                  pickupLabel: stopLabel(trip.pickup),
+                  dropoff: trip.dropoff.point,
+                  dropoffLabel: stopLabel(trip.dropoff),
+                ),
               ),
             ),
             SizedBox(height: 20.h),
