@@ -40,8 +40,19 @@ class MngSplashScreen extends StatefulWidget {
     required this.child,
     required this.logo,
     this.tagline = 'Make a beeline across the city',
-    this.background = MngColors.primary,
-    this.onForeground = MngColors.onPrimary,
+    // **White, not the brand gold.**
+    //
+    // This was gold first, and the handset screenshot showed why that cannot
+    // work: the logo is gold, the car is gold, so the one thing the animation
+    // exists to show was the one thing invisible on screen. The mark was there,
+    // on time, at the right size -- and completely unreadable. Both were only
+    // visible because of their dark tyres and windows.
+    //
+    // The logo's own artwork is gold-on-white, so white is also the colour it was
+    // drawn for. The gold stays where it belongs: on the car, on the logo, on the
+    // tagline -- as the subject rather than the stage.
+    this.background = MngColors.page,
+    this.onForeground = MngColors.textPrimary,
   });
 
   /// What the splash opens onto: the sign-in screen, or the dashboard.
@@ -390,6 +401,13 @@ class _CarPainter extends CustomPainter {
   final double wheelTurns;
   final double squash;
 
+  /// A darker version of [body], used for the outline and the lower shading.
+  ///
+  /// Not a constant: it is derived, so a caller who changes [body] gets an
+  /// outline that still contrasts. A gold car with no outline on white is a pale
+  /// shape with pale edges, and the silhouette stops reading at arm's length.
+  Color get _edge => Color.lerp(body, const Color(0xFF6B4A00), 0.45)!;
+
   @override
   void paint(Canvas canvas, Size size) {
     final w = size.width;
@@ -408,7 +426,7 @@ class _CarPainter extends CustomPainter {
     final glassColour = Color.lerp(ink, Colors.white, 0.10)!;
 
     final shadow = Paint()
-      ..color = Colors.black.withValues(alpha: 0.10)
+      ..color = Colors.black.withValues(alpha: 0.13)
       ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4);
 
     // Contact shadow first, so everything else sits on top of it.
@@ -458,6 +476,18 @@ class _CarPainter extends CustomPainter {
       ..close();
 
     canvas.drawPath(silhouette, Paint()..color = bodyColour);
+
+    // Outline, so the silhouette reads on a light background. Without it the
+    // car's edges are the same value as the page and the whole shape dissolves
+    // into it -- the body is only a few percent off white already.
+    canvas.drawPath(
+      silhouette,
+      Paint()
+        ..color = _edge
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = h * 0.035
+        ..strokeJoin = StrokeJoin.round,
+    );
 
     // --- glass ------------------------------------------------------------
     final glass = Path()
