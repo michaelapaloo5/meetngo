@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -432,6 +433,30 @@ class RideMapState extends State<RideMap> {
     super.dispose();
   }
 
+  /// Whether the style has finished loading.
+  ///
+  /// **The pair of flags, not either one alone, is what makes the overlays get
+  /// drawn.** This used to be a single callback that assumed the other half was
+  /// already true:
+  ///
+  ///     onStyleLoadedCallback: () => _addOverlays(...)   // returns if _controller is null
+  ///
+  /// When MapLibre delivers `onStyleLoadedCallback` *before* `onMapCreated`, the
+  /// controller is still null, `_addOverlays` returns on its first line, and
+  /// `_sourcesAdded` is never set -- so `didUpdateWidget` returns early too and the
+  /// map never draws its route or its pins again for the life of the widget. What
+  /// is left on screen is whatever the *style* draws: streets and place names, with
+  /// no route and no pins, which looks like the data is missing rather than like
+  /// the map gave up.
+  ///
+  /// It looked intermittent because the two callbacks are close together and the
+  /// order is not guaranteed. One build drew a straight line between two pins and
+  /// the next drew nothing at all, from the same code.
+  ///
+  /// So each callback records its half and calls `_addOverlays` only if the other
+  /// half is present, and whichever lands second does the drawing.
+  bool _styleLoaded = false;
+
   /// Whether the sources exist yet, so an update cannot race the first load.
   bool _sourcesAdded = false;
 
@@ -657,13 +682,10 @@ class RideMapState extends State<RideMap> {
     required GeoPoint? to,
     required GeoPoint? here,
   }) {
-    // `?` rather than `if (x != null) x`: same order, same list, and the
-    // analyzer's `use_null_aware_elements` is an error under --fatal-infos.
-    // The driver is last so the car draws over the route and the stop pins.
-    final points = _allPoints(from, to, here);
-    // A route needs two ends; the single-point case is the finding screen.
-    final hasRoute = to != null;
-    final line = _routeLine(from, to);
+    // The overlays read the geometry from `widget` when they are drawn, not from
+    // here. See [_addOverlays]: the MapLibre callbacks can land after this widget
+    // has been rebuilt with a different route, and capturing it in a closure
+    // handed to `onStyleLoadedCallback` would draw the older one.
 
     // The style is loaded from the bundle in `initState` and is not ready for
     // the first frame or two. Drawing the map with an empty style string in
@@ -683,7 +705,7 @@ class RideMapState extends State<RideMap> {
     // for the crow's flight crops the route the rider is being shown, and
     // targeting the pickup pushes the far end further off frame than it needs to
     // be.
-    final camera = _cameraFor(line, fallbackTo: from);
+    final camera = _cameraFor(_routeLine(from, to), fallbackTo: from);
 
     return MapLibreMap(
       key: const Key('rideMap'),
@@ -724,28 +746,50 @@ class RideMapState extends State<RideMap> {
         if (_userMovedCamera) return;
         setState(() => _userMovedCamera = true);
       },
-      onMapCreated: (controller) => _controller = controller,
-      // Layers can only be added once the style is loaded, so this is where the
-      // route and the pins go. The camera is already placed by
+      onMapCreated: (controller) {
+        _controller = controller;
+        // Whichever of the two callbacks lands first, the overlays are drawn once
+        // both have happened. See [_styleLoaded].
+        if (_styleLoaded) unawaited(_addOverlays());
+      },
+      onStyleLoadedCallback: () {
+        _styleLoaded = true;
+        if (_controller != null) unawaited(_addOverlays());
+      },
+      // Layers can only be added once the style is loaded, and a controller is
+      // needed to add them at all, so the overlays are drawn from whichever of the
+      // two callbacks completes the pair. The camera is already placed by
       // `initialCameraPosition`, so nothing has to be moved here.
-      onStyleLoadedCallback: () => _addOverlays(points, hasRoute: hasRoute),
     );
   }
 
-  Future<void> _addOverlays(
-    List<GeoPoint> points, {
-    required bool hasRoute,
-  }) async {
+  Future<void> _addOverlays() async {
     final controller = _controller;
     if (controller == null) return;
-
-    final from = widget.pickup;
-    final to = widget.dropoff;
+    // Read from the widget rather than from values captured when the map was
+    // built. The callbacks can land after the widget has been rebuilt with a
+    // different route, and drawing the geometry from the older build is a stale
+    // line that no amount of redrawing would then correct.
+    final rawFrom = widget.pickup;
+    final rawTo = widget.dropoff;
+    final from = rawFrom != null && RideMap.isPlottable(rawFrom)
+        ? rawFrom
+        : null;
+    final to = rawTo != null && RideMap.isPlottable(rawTo) ? rawTo : null;
+    final here = widget.location?.point;
+    // A map with only one end still gets its pins; only the route needs two.
+    // One flow rather than an early return, because an early return that skipped
+    // the pin layers is exactly how they went missing the first time this
+    // function had to cope with a half-known route.
+    // `from` is never null here in practice -- `build` returns the fallback map
+    // when it is -- but the signature says it can be, so it is handled rather than
+    // asserted. A pin layer that throws is worse than one with no pins.
+    final points = from == null ? <GeoPoint>[] : _allPoints(from, to, here);
     final line = (from != null && to != null)
-        ? _routeLine(from, RideMap.isPlottable(to) ? to : null)
+        ? _routeLine(from, to)
         : const <GeoPoint>[];
 
-    if (hasRoute && line.length >= 2) {
+    if (line.length >= 2) {
       await controller.addGeoJsonSource('route-src-$_uid', _lineGeoJson(line));
 
       // **A casing and a line, not one line with a gap.**
