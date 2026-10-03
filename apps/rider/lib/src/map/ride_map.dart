@@ -534,24 +534,44 @@ class RideMapState extends State<RideMap> {
     }
     final centre = GeoPoint((minLat + maxLat) / 2, (minLng + maxLng) / 2);
 
-    // Roughly the card's width. Exact to within the page padding, which is all
-    // this needs to be: it decides a zoom, and half a dozen per cent of width
-    // moves that by a hundredth of a level.
-    final pixels = MediaQuery.sizeOf(context).width;
+    // The box the map actually gets. Width is the screen less the page padding,
+    // which is close enough: it decides a zoom, and half a dozen per cent of
+    // width moves that by a hundredth of a level. Height is the widget's own
+    // height, or the whole screen when it is filling.
+    //
+    // These are two numbers, not one, and that is the fix: fitting both axes
+    // against the width is what framed a 200px card as though it were 384px tall.
+    final pixelsAcross = MediaQuery.sizeOf(context).width;
+    final pixelsDown = widget.fill
+        ? MediaQuery.sizeOf(context).height
+        : widget.height.toDouble();
     const tile = 256.0;
     final latSpan = (maxLat - minLat).abs();
     var lngSpan = (maxLng - minLng).abs();
 
-    if (latSpan <= 0 || lngSpan <= 0 || pixels <= 0) {
+    // The two spans are fitted independently against the box the map actually
+    // has -- width for longitude, **height for latitude** -- and the smaller zoom
+    // wins, so whichever axis is tighter decides.
+    //
+    // Fitting both axes against the width was a real mistake, and the log said so:
+    // `pixels=384` on a card that is 344 wide and 200 tall. On a short card that
+    // assumes three quarters of a screen of height that does not exist, so the
+    // route is framed far too tight and the far end falls off the bottom. Clamped
+    // at both ends: a two-metre route would otherwise fit at zoom 22 and look like
+    // an empty block, and a long one would fit below zoom 10 and stop being a
+    // route.
+    if (latSpan <= 0 || lngSpan <= 0 || pixelsAcross <= 0 || pixelsDown <= 0) {
       return _Camera(centre, kRideMapRouteMaxZoom);
     }
     final cosLat = math.cos(centre.lat * math.pi / 180).abs();
     if (cosLat > 0.01) lngSpan *= cosLat;
 
-    double fit(double span) =>
+    double fit(double span, double pixels) =>
         (math.log(pixels * 360 / (tile * span)) / math.ln2);
 
-    final zoom = math.min(fit(latSpan), fit(lngSpan)).toDouble();
+    final zoom = math
+        .min(fit(latSpan, pixelsDown), fit(lngSpan, pixelsAcross))
+        .toDouble();
     return _Camera(
       centre,
       zoom.clamp(kRideMapRouteMinZoom, kRideMapRouteMaxZoom),
