@@ -31,7 +31,7 @@ class SpyAuthRepository implements AuthRepository {
   Future<void> signInWithGoogle() async {}
 
   @override
-  Future<void> signUp(String email, String password, String fullName) async {}
+  Future<void> signUp(String email, String password, String fullName, String phone) async {}
 
   @override
   Future<void> verifyOtpAndSetPassword(String email, String code, String password) async {}

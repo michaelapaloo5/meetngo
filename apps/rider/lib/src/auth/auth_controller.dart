@@ -1,4 +1,6 @@
 import 'package:flutter/foundation.dart';
+import 'package:mng_core/mng_core.dart';
+
 import '../data/auth_repository.dart';
 
 class AuthController extends ChangeNotifier {
@@ -55,6 +57,7 @@ class AuthController extends ChangeNotifier {
     String email,
     String password,
     String fullName,
+    String phone,
   ) async {
     error = null;
     if (fullName.trim().isEmpty) {
@@ -72,10 +75,30 @@ class AuthController extends ChangeNotifier {
       notifyListeners();
       return false;
     }
+    // **A phone number is required, and it is checked rather than merely
+    // demanded.**
+    //
+    // The `contact` function hands this number to the driver on the way to pick
+    // the rider up. A number that is present but malformed is the worst outcome:
+    // the driver dials something that is not a phone, or copies it out and reads
+    // it to a stranger. `isCallableGhanaPhone` is the rule this project already
+    // agreed on -- the same one the contact card uses before it offers to dial --
+    // so signup refuses anything that card would later refuse to dial.
+    final trimmedPhone = phone.trim();
+    if (trimmedPhone.isEmpty) {
+      error = 'Enter your phone number';
+      notifyListeners();
+      return false;
+    }
+    if (!isCallableGhanaPhone(trimmedPhone)) {
+      error = 'Enter a Ghanaian number, like 024 123 4567';
+      notifyListeners();
+      return false;
+    }
     busy = true;
     notifyListeners();
     try {
-      await _repo.signUp(email.trim(), password, fullName.trim());
+      await _repo.signUp(email.trim(), password, fullName.trim(), trimmedPhone);
       return true;
     } on AuthFailure catch (e) {
       error = e.message;

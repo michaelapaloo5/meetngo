@@ -24,6 +24,7 @@ class FakeAuthRepository implements AuthRepository {
   bool failWith = false;
   String? signUpEmail;
   String? signUpName;
+  String? signUpPhone;
 
   @override
   Future<void> signInWithPassword(String email, String password) async {
@@ -36,9 +37,10 @@ class FakeAuthRepository implements AuthRepository {
   Future<void> signInWithGoogle() async => googlePressed = true;
 
   @override
-  Future<void> signUp(String email, String password, String fullName) async {
+  Future<void> signUp(String email, String password, String fullName, String phone) async {
     signUpEmail = email;
     signUpName = fullName;
+    signUpPhone = phone;
     if (failWith) throw const AuthFailure('User already registered');
   }
 
@@ -266,11 +268,13 @@ void main() {
         'edem@example.com',
       );
       await tester.enterText(find.byKey(const Key('passwordField')), 'Meetngo2026');
+      await tester.enterText(find.byKey(const Key('phoneField')), '0241234567');
       await tester.tap(find.text('Sign Up'));
       await tester.pump();
 
       expect(repo.signUpName, 'Edem Apaloo');
       expect(repo.signUpEmail, 'edem@example.com');
+      expect(repo.signUpPhone, '0241234567');
     });
 
     testWidgets('a duplicate account reports the reason', (tester) async {
@@ -284,6 +288,7 @@ void main() {
       await tester.enterText(find.byKey(const Key('nameField')), 'Edem');
       await tester.enterText(find.byKey(const Key('emailField')), 'edem@example.com');
       await tester.enterText(find.byKey(const Key('passwordField')), 'Meetngo2026');
+      await tester.enterText(find.byKey(const Key('phoneField')), '0241234567');
       await tester.tap(find.text('Sign Up'));
       await tester.pump();
 
@@ -299,6 +304,7 @@ void main() {
 
       await tester.enterText(find.byKey(const Key('emailField')), 'edem@example.com');
       await tester.enterText(find.byKey(const Key('passwordField')), 'Meetngo2026');
+      await tester.enterText(find.byKey(const Key('phoneField')), '0241234567');
       await tester.tap(find.text('Sign Up'));
       await tester.pump();
 

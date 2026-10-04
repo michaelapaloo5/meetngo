@@ -27,9 +27,26 @@ abstract class AuthRepository {
 
   Future<void> signInWithPassword(String email, String password);
   Future<void> signInWithGoogle();
-  Future<void> signUp(String email, String password, String fullName);
+
+  /// Creates the account.
+  ///
+  /// [phone] is required and is not optional decoration: the `contact` function
+  /// hands this number to the driver who is picking the rider up, so an account
+  /// without one is a driver standing at a kerb with nobody to call. It goes in
+  /// the signup metadata so the `profiles` row is created with it, rather than
+  /// being written afterwards.
+  Future<void> signUp(
+    String email,
+    String password,
+    String fullName,
+    String phone,
+  );
   Future<void> sendResetOtp(String email);
-  Future<void> verifyOtpAndSetPassword(String email, String code, String password);
+  Future<void> verifyOtpAndSetPassword(
+    String email,
+    String code,
+    String password,
+  );
 
   /// Ends the session and returns to the sign-in screen.
   ///

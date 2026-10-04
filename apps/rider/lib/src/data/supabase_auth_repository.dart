@@ -1,4 +1,5 @@
 import 'package:supabase_flutter/supabase_flutter.dart';
+
 import 'auth_repository.dart';
 import 'function_failure.dart';
 
@@ -22,12 +23,25 @@ class SupabaseAuthRepository implements AuthRepository {
   }
 
   @override
-  Future<void> signUp(String email, String password, String fullName) async {
+  Future<void> signUp(
+    String email,
+    String password,
+    String fullName,
+    String phone,
+  ) async {
     try {
       final res = await _client.auth.signUp(
         email: email,
         password: password,
-        data: {'full_name': fullName},
+        // `phone` goes in the signup metadata, which is what puts it on the
+        // `profiles` row the trigger creates. It is sent here rather than written
+        // afterwards because the rider must never reach a usable app without one:
+        // `contact` hands the rider's number to the driver who is going to pick
+        // them up, so a rider with no phone is a driver standing at a kerb with
+        // nobody to call. Signup is the one moment this can be guaranteed rather
+        // than asked for later, and the gate on login exists only for the accounts
+        // that predate it.
+        data: {'full_name': fullName, 'phone': phone},
       );
       // A project with "Confirm email" enabled returns a user but no session.
       // Saying so plainly beats letting the button appear to do nothing.

@@ -3,6 +3,7 @@ import 'package:mng_core/mng_core.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../app/rider_shell.dart';
+import 'phone_gate_screen.dart';
 import '../auth/login_screen.dart';
 
 /// The animated start of the rider app.
@@ -56,7 +57,13 @@ class _AuthGate extends StatelessWidget {
             body: Center(child: CircularProgressIndicator()),
           );
         }
-        return state.session == null ? const LoginScreen() : const RiderShell();
+        if (state.session == null) return const LoginScreen();
+        // Through the gate, which is where a rider with no number on file is
+        // asked for one -- before they can book anything, not after. It sits
+        // here rather than inside `RiderShell` because the shell is the shell's
+        // own body: anything inside it is only reachable once the rider is
+        // already in the app.
+        return const PhoneGate(child: RiderShell());
       },
     );
   }

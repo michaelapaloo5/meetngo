@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
 import 'package:mng_core/mng_core.dart';
 import 'package:provider/provider.dart';
+
 import 'auth_controller.dart';
 import 'forgot_password_screen.dart';
 
@@ -17,6 +19,7 @@ class _LoginScreenState extends State<LoginScreen>
   final _email = TextEditingController();
   final _password = TextEditingController();
   final _name = TextEditingController();
+final _phone = TextEditingController();
   bool _obscure = true;
   bool _signUp = false;
 
@@ -119,7 +122,38 @@ class _LoginScreenState extends State<LoginScreen>
                         key: const Key('nameField'),
                         controller: _name,
                         textCapitalization: TextCapitalization.words,
-                        decoration: const InputDecoration(hintText: 'Full name'),
+                        decoration: const InputDecoration(
+                          hintText: 'Full name',
+                        ),
+                      ),
+                      SizedBox(height: 12.h),
+                      // **Required, and asked for here rather than after.**
+                      //
+                      // `contact` gives this number to the driver on the way to
+                      // collect the rider. Collecting it at signup is the one moment
+                      // it can be guaranteed rather than asked for later, and the
+                      // gate in `PhoneGate` is only there for accounts that predate
+                      // this and for Google sign-ins, where GoTrue returns a session
+                      // before anything has been written to `profiles`.
+                      //
+                      // Digits, spaces, `+` and `-` only: the field rejects
+                      // letters rather than accepting them and failing validation
+                      // later, which is the version that produces a number nobody
+                      // can dial.
+                      TextField(
+                        key: const Key('phoneField'),
+                        controller: _phone,
+                        keyboardType: TextInputType.phone,
+                        autofillHints: const [AutofillHints.telephoneNumber],
+                        inputFormatters: [
+                          FilteringTextInputFormatter.allow(
+                            RegExp(r'[0-9+\s-]'),
+                          ),
+                        ],
+                        decoration: const InputDecoration(
+                          hintText: 'Phone number',
+                          helperText: 'So your driver can call you',
+                        ),
                       ),
                       SizedBox(height: 12.h),
                     ],
@@ -127,8 +161,9 @@ class _LoginScreenState extends State<LoginScreen>
                       key: const Key('emailField'),
                       controller: _email,
                       keyboardType: TextInputType.emailAddress,
-                      decoration:
-                          const InputDecoration(hintText: 'Email address'),
+                      decoration: const InputDecoration(
+                        hintText: 'Email address',
+                      ),
                     ),
                     SizedBox(height: 12.h),
                     TextField(
@@ -139,11 +174,9 @@ class _LoginScreenState extends State<LoginScreen>
                         hintText: 'Password',
                         suffixIcon: IconButton(
                           icon: Icon(
-                              _obscure
-                                  ? Icons.visibility_off
-                                  : Icons.visibility),
-                          onPressed: () =>
-                              setState(() => _obscure = !_obscure),
+                            _obscure ? Icons.visibility_off : Icons.visibility,
+                          ),
+                          onPressed: () => setState(() => _obscure = !_obscure),
                         ),
                       ),
                     ),
@@ -163,8 +196,11 @@ class _LoginScreenState extends State<LoginScreen>
                       child: Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          const Icon(Icons.check_circle,
-                              size: 16, color: MngColors.success),
+                          const Icon(
+                            Icons.check_circle,
+                            size: 16,
+                            color: MngColors.success,
+                          ),
                           SizedBox(width: 6.w),
                           Flexible(
                             child: Text(
@@ -181,7 +217,8 @@ class _LoginScreenState extends State<LoginScreen>
                         child: GestureDetector(
                           onTap: () => Navigator.of(context).push(
                             MaterialPageRoute(
-                                builder: (_) => const ForgotPasswordScreen()),
+                              builder: (_) => const ForgotPasswordScreen(),
+                            ),
                           ),
                           child: Text(
                             'Forgot Password?',
@@ -196,7 +233,10 @@ class _LoginScreenState extends State<LoginScreen>
               ),
               if (auth.error != null) ...[
                 SizedBox(height: 12.h),
-                Text(auth.error!, style: const TextStyle(color: MngColors.error)),
+                Text(
+                  auth.error!,
+                  style: const TextStyle(color: MngColors.error),
+                ),
               ],
               SizedBox(height: 20.h),
               _enter(
@@ -206,12 +246,13 @@ class _LoginScreenState extends State<LoginScreen>
                   onPressed: auth.busy
                       ? null
                       : () => _signUp
-                          ? auth.submitSignUp(
-                              _email.text,
-                              _password.text,
-                              _name.text,
-                            )
-                          : auth.submitPassword(_email.text, _password.text),
+                            ? auth.submitSignUp(
+                                _email.text,
+                                _password.text,
+                                _name.text,
+                                _phone.text,
+                              )
+                            : auth.submitPassword(_email.text, _password.text),
                   child: auth.busy
                       ? const SizedBox(
                           height: 20,
@@ -229,8 +270,8 @@ class _LoginScreenState extends State<LoginScreen>
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
                       Center(
-                          child:
-                              Text('Or continue with', style: text.bodySmall)),
+                        child: Text('Or continue with', style: text.bodySmall),
+                      ),
                       SizedBox(height: 12.h),
                       OutlinedButton(
                         onPressed: auth.busy ? null : () => auth.submitGoogle(),
@@ -275,8 +316,9 @@ class _LoginScreenState extends State<LoginScreen>
                       onTap: _toggleMode,
                       child: Text(
                         _signUp ? 'Sign In' : 'Sign Up',
-                        style: text.bodySmall
-                            ?.copyWith(color: MngColors.primary),
+                        style: text.bodySmall?.copyWith(
+                          color: MngColors.primary,
+                        ),
                       ),
                     ),
                   ],

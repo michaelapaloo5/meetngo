@@ -236,7 +236,18 @@ class SupabaseTripRepository implements TripRepository {
     } on TripRequestFailure {
       rethrow;
     } on FunctionException catch (e) {
-      throw TripRequestFailure(describeFunctionFailure(e));
+      final message = describeFunctionFailure(e);
+      // The same account requested this ride and accepted it, so the server
+      // refuses to hand over a driver card -- correctly, because the "driver" is
+      // the rider. Shown raw it read as a fault with a missing card; said plainly
+      // it says what is true, which is the only thing a rider can act on.
+      if (message.contains('no separate rider and driver')) {
+        throw const TripRequestFailure(
+          'This trip has no separate rider and driver — the same account '
+          'requested it and accepted it, so there is no driver to show.',
+        );
+      }
+      throw TripRequestFailure(message);
     }
 
     // **The driver lives under `driver`, not at the top level.**
