@@ -65,8 +65,22 @@ class _PhoneGateState extends State<PhoneGate> {
     if (_loading) {
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
+    // **Gated only on a phone known to be missing.**
+    //
+    // The first version treated an unreadable profile as "no number", on the
+    // reasoning that unknown is not the same as known-good. That is true of the
+    // number and false of the consequence: the profile is read once after launch,
+    // and anything that fails that read -- a slow connection, a session that has
+    // not finished refreshing -- would put a rider who already gave a number in
+    // front of a form asking for it again.
+    //
+    // So a read that fails lets the rider through. The worst case is somebody with
+    // no number reaching the app during a network fault, which is where they were
+    // before this screen existed. Blocking every rider during a blip is not a
+    // trade worth making, and a gate that re-asks for a number already on file
+    // teaches riders that the app does not remember them.
     final phone = _profile?.phone ?? '';
-    if (isCallableGhanaPhone(phone)) return widget.child;
+    if (_profile == null || isCallableGhanaPhone(phone)) return widget.child;
     return PhoneGateScreen(
       repository: _repo,
       onSaved: _reload,

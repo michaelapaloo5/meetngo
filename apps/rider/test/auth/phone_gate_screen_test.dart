@@ -25,7 +25,14 @@ class FakeProfileRepository implements ProfileRepository {
   @override
   Future<RiderProfile?> me() async {
     if (readFails) throw Exception('network');
-    return RiderProfile(id: 'p1', fullName: fullName, phone: phone, rating: 5.0, tripCount: 0, kyc: KycStatus.notStarted);
+    return RiderProfile(
+      id: 'p1',
+      fullName: fullName,
+      phone: phone,
+      rating: 5.0,
+      tripCount: 0,
+      kyc: KycStatus.notStarted,
+    );
   }
 
   @override
@@ -37,7 +44,14 @@ class FakeProfileRepository implements ProfileRepository {
     if (saveFails) throw Exception('network');
     this.fullName = fullName;
     this.phone = phone;
-    return RiderProfile(id: 'p1', fullName: fullName, phone: phone, rating: 5.0, tripCount: 0, kyc: KycStatus.notStarted);
+    return RiderProfile(
+      id: 'p1',
+      fullName: fullName,
+      phone: phone,
+      rating: 5.0,
+      tripCount: 0,
+      kyc: KycStatus.notStarted,
+    );
   }
 }
 
@@ -183,12 +197,35 @@ void main() {
   });
 
   group('a profile that cannot be read', () {
-    testWidgets('asks for a number rather than letting the rider in', (
+    testWidgets('lets the rider through rather than locking them out', (
       tester,
     ) async {
-      // Unknown is not the same as known-good. Letting somebody in on a failed
-      // read is how a rider with no number ends up booking a trip.
+      // **Deliberately the opposite of what this test first asserted.**
+      //
+      // It originally required the gate to appear on a failed read, on the
+      // reasoning that unknown is not the same as known-good. That is a true
+      // statement about the phone and a false one about the consequence: the
+      // profile is read once after launch, so anything that fails that read --
+      // a slow connection, a session still refreshing -- would put a rider who
+      // had already given a number in front of a form asking for it again.
+      //
+      // The gate exists for a number that is *known* to be missing. A read that
+      // fails is a different thing, and the honest response to it is to let the
+      // rider carry on.
       final repo = FakeProfileRepository(phone: '0241234567')..readFails = true;
+      await tester.pumpWidget(wrap(repo, const Text('the app')));
+      await tester.pumpAndSettle();
+
+      expect(find.text('the app'), findsOneWidget);
+      expect(find.byKey(const Key('phoneGateField')), findsNothing);
+    });
+
+    testWidgets('a profile that genuinely has no phone is still gated', (
+      tester,
+    ) async {
+      // The counterpart, so the relaxation above cannot become "never gate".
+      // A successful read of an empty phone is the case the gate is for.
+      final repo = FakeProfileRepository();
       await tester.pumpWidget(wrap(repo, const Text('the app')));
       await tester.pumpAndSettle();
 
@@ -200,8 +237,14 @@ void main() {
 
 class _NullSavingRepository implements ProfileRepository {
   @override
-  Future<RiderProfile?> me() async =>
-      RiderProfile(id: 'p1', fullName: 'Edem Apaloo', phone: '', rating: 5.0, tripCount: 0, kyc: KycStatus.notStarted);
+  Future<RiderProfile?> me() async => RiderProfile(
+    id: 'p1',
+    fullName: 'Edem Apaloo',
+    phone: '',
+    rating: 5.0,
+    tripCount: 0,
+    kyc: KycStatus.notStarted,
+  );
 
   @override
   Future<RiderProfile?> save({
