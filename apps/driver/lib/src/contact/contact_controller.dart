@@ -125,6 +125,25 @@ class SupabaseContactRepository implements ContactRepository {
   static bool _isNotOnTrip(String message) =>
       message.contains('no such trip') || message.contains('not on this trip');
 
+  /// The server's own words for the case where a trip's rider and driver are the
+  /// same account.
+  ///
+  /// It refuses deliberately -- there is no other party, so there is no number it
+  /// is willing to hand over -- and that refusal is correct. What was wrong was
+  /// how it reached the driver: the raw function error was shown, so somebody
+  /// testing both apps with one account saw a wall of wording and no number, and
+  /// reasonably reported it as "I cannot call the rider".
+  ///
+  /// Said plainly, this is what a driver needs: the ride is real, the number is
+  /// not withheld, and there is nobody on the other end of it. That is a fact
+  /// about the setup rather than a fault to apologise for.
+  static const String _selfTripMessage =
+      'This trip has no separate rider and driver — the same account '
+      'requested it and accepted it, so there is nobody to call.';
+
+  static bool _isSelfTrip(String message) =>
+      message.contains('no separate rider and driver');
+
   @override
   Future<Contact?> contactFor(String tripId) async {
     Map<String, dynamic> body;
@@ -162,11 +181,13 @@ class SupabaseContactRepository implements ContactRepository {
       // for both "no such trip" and "not on this trip" on purpose, so this
       // collapses them.
       if (_isNotOnTrip(message)) return null;
+      if (_isSelfTrip(message)) throw ContactFailure(_selfTripMessage);
       throw ContactFailure(message);
     }
     if (body['error'] != null) {
       final message = body['error'].toString();
       if (_isNotOnTrip(message)) return null;
+      if (_isSelfTrip(message)) throw ContactFailure(_selfTripMessage);
       throw ContactFailure(message);
     }
     if (!Contact.looksLikeContact(body)) {
