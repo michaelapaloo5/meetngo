@@ -525,7 +525,21 @@ export async function handleDecide(
  * ends up writing `approved_by` with an HTTP status in it. The refusal is an
  * object so it cannot be silently used as the id.
  */
-async function requireAdmin(
+/**
+ * Who may act on a driver application, resolved once.
+ *
+ * Exported because this is the *only* authorisation this function has, and there
+ * was a second, weaker copy of it living in `index.ts` as `allowed()`. The copy
+ * in `index.ts` let an unauthenticated `POST {action:'document'}` through with no
+ * credentials at all -- it returned a signed URL to a driver's Ghana Card and
+ * licence photograph to anybody who asked -- while this one, used by `handleList`
+ * on the very same request, correctly returned 401. Two gates for one decision is
+ * how that happens, so there is now one, and it is this one.
+ *
+ * Both caller kinds are still allowed, deliberately: a founder and a member of
+ * staff both have to be able to open a licence to do the job.
+ */
+export async function requireAdmin(
   deps: AdminDeps,
   callerId: string | null,
   staff?: StaffIdentity | null,

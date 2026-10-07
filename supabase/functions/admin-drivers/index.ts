@@ -21,7 +21,7 @@ import { first, ok } from '../_shared/rows.ts';
 import {
   handleDecide,
   handleList,
-  isAdmin,
+  requireAdmin,
   ageFromGhanaCardDate,
   ALL_DOCUMENTS,
   REQUIRED_DOCUMENTS,
@@ -193,38 +193,14 @@ async function staffFor(token: string): Promise<StaffIdentity | null> {
   return findSession(buildStaffDeps(serviceClient()), await sha256Hex(token));
 }
 
-/// Whether this request may see and decide on driver applications.
-///
-/// A founder, whose Supabase account carries `role = 'admin'`, or a signed-in
-/// staff member. Both are resolved through their own store and neither is
-/// accepted on the strength of resembling the other, so a staff token cannot
-/// reach anything a founder account can and a founder JWT cannot be replayed
-/// against a deleted staff row.
-async function allowed(
-  callerId: string | null,
-  staff: StaffIdentity | null,
-): Promise<boolean> {
-  if (callerId !== null && isAdmin(await roleOfCaller(callerId))) return true;
-  return staff !== null;
-}
-
-/// `profiles.role` for a Supabase caller.
-///
-/// Separate from [buildAdminDeps] because the deps object is built per request
-/// and this is only needed on the two actions that can write.
-async function roleOfCaller(callerId: string): Promise<string | null> {
-  const { data } = await (serviceClient() as unknown as {
-    from(t: string): {
-      select(c: string): { eq(c: string, v: unknown): { maybeSingle(): Promise<{ data: unknown }> } };
-    };
-  })
-    .from('profiles')
-    .select('role')
-    .eq('id', callerId)
-    .maybeSingle();
-  const row = data as Record<string, unknown> | null;
-  return row === null ? null : (row['role'] as string | null);
-}
+// There used to be an `allowed()` here -- "a founder, or a signed-in staff
+// member" -- and it was the only authorisation on the `document` and
+// `listreports` actions. It returned true for a request carrying no credentials
+// whatsoever, which was found by probing the deployed function rather than by
+// reading it, and it is gone. `requireAdmin` in handler.ts is the single gate
+// now, and `roleOfCaller` went with it: it read `profiles.role` through the
+// service client while `requireAdmin` reads it through `deps`, so keeping both
+// would have left two ways to answer the same question.
 
 /// Writes one row into `kyc_decisions`.
 ///
@@ -1100,9 +1076,14 @@ serve(async (req) => {
     //
     // Both kinds of caller are allowed, which is the point: an employee has to
     // be able to open a licence to do the job.
-    if (!allowed(callerId, staff)) {
-      return json(401, { error: 'sign in to review applications' });
-    }
+    // `requireAdmin` and not the local `allowed()` this used to call. `allowed()`
+    // returned true for a request with no credentials at all -- verified live,
+    // not reasoned about -- so this endpoint was handing out signed URLs to
+    // identity documents to anybody on the internet who asked. `handleList` uses
+    // `requireAdmin` and answered 401 to that same request, which is what made
+    // the disagreement visible. One gate now, and it is the one that works.
+    const gate = await requireAdmin(deps, callerId, staff);
+    if ('error' in gate) return json(gate.error.status, gate.error.body);
     const driverId = typeof record['driverId'] === 'string' ? record['driverId'] : '';
     const kind = typeof record['kind'] === 'string' ? record['kind'] : '';
     if (driverId === '' || kind === '') {
@@ -1170,9 +1151,8 @@ serve(async (req) => {
   // creates a second thing to administer without removing anybody's access.
 
   if (req.method === 'POST' && record['action'] === 'listreports') {
-    if (!allowed(callerId, staff)) {
-      return json(401, { error: 'sign in to review reports' });
-    }
+    const gate = await requireAdmin(deps, callerId, staff);
+    if ('error' in gate) return json(gate.error.status, gate.error.body);
     return json(200, { reports: await listReports() });
   }
 
