@@ -1,5 +1,6 @@
 import { DECLINE_REASONS } from './staff.ts';
 import { DOCUMENT_LABELS, REQUIRED_DOCUMENTS } from './handler.ts';
+import { MAX_KEEP_DAYS, RETENTION_DAYS } from './locations.ts';
 
 /**
  * The page an employee uses to approve drivers.
@@ -204,6 +205,24 @@ export const staffPage = (supabaseUrl: string): string => `<!doctype html>
   .rbar .call { background:#fff; color:var(--ink); border:2px solid var(--ink); }
   .rbar .go { background:var(--brand); color:var(--ink); }
   .rbar .undo { background:#fff; color:var(--bad); border:2px solid var(--bad); }
+
+  /* The banner that says location data is being kept longer than we said.
+     Red, full width, above everything, and it does not go away on its own: the
+     whole failure this guards against is somebody forgetting it is on. */
+  .keepbanner {
+    background:#FDECEC; border:1px solid var(--bad); color:#8A1A1A;
+    border-radius:12px; padding:12px 13px; margin:12px 0 0; font-size:15px;
+  }
+  .keepbanner b { display:block; font-size:16px; margin-bottom:2px; }
+  .keepbanner button {
+    font:inherit; font-weight:700; font-size:14px; margin-top:9px;
+    background:#fff; color:#8A1A1A; border:1px solid var(--bad);
+    border-radius:9px; padding:9px 12px; min-height:42px; cursor:pointer;
+  }
+  .where { font-weight:600; overflow-wrap:anywhere; }
+  .quiet { color:var(--sub); font-size:14px; }
+  .keep { display:flex; gap:10px; align-items:center; padding:12px 0; }
+  .keep .grow { flex:1; min-width:0; }
 </style>
 </head>
 <body>
@@ -216,6 +235,11 @@ const REASONS = ${JSON.stringify(DECLINE_REASONS)};
 const LABELS = ${JSON.stringify(DOCUMENT_LABELS)};
 const ALL = ${JSON.stringify(Object.keys(DOCUMENT_LABELS))};
 const REQUIRED = ${JSON.stringify(REQUIRED_DOCUMENTS)};
+
+// The retention promise, from the same constant the server enforces, so the page
+// cannot quote a different number from the one the purge uses.
+const RETENTION_DAYS = ${RETENTION_DAYS};
+const MAX_KEEP_DAYS = ${MAX_KEEP_DAYS};
 
 // sessionStorage, not localStorage. A shared phone -- and an office phone is a
 // shared phone -- should not still be signed in tomorrow morning. The cost is
@@ -357,17 +381,7 @@ let contactNote = '';
 
 function tabsHtml() {
   const drivers = queue.length;
-  // Wrapped in a div with an id so the counts can be refreshed by replacing one
-  // element.
-  //
-  // It was done the other way round first -- rendering the tabs to a string and
-  // pulling one button back out of it with a regular expression -- and that is
-  // how the page stopped running at all. This whole file is a TypeScript template
-  // literal, so an escaped forward slash collapses to a bare one on the way out,
-  // and /...<\/button>/ became /...?</button>/: the slash in the closing tag
-  // ended the regex and "button>" was read as its flags. Every screen died on
-  // load with "Invalid regular expression flags". Replaced with an element swap,
-  // which cannot be broken by a second layer of string escaping.
+  const onTrip = (locations.riders || []).length;
   return '<div id="tabs"><div class="tabs" role="tablist">' +
     '<button class="tab' + (tab === 'drivers' ? ' on' : '') + '" id="tabDrivers" role="tab"' +
     ' aria-selected="' + (tab === 'drivers') + '">Drivers' +
@@ -376,6 +390,10 @@ function tabsHtml() {
     '<button class="tab' + (tab === 'reports' ? ' on' : '') + '" id="tabReports" role="tab"' +
     ' aria-selected="' + (tab === 'reports') + '">Reports' +
     (openReports ? ' <span class="pip' + (tab === 'reports' ? '' : ' alert') + '">' + openReports + '</span>' : '') +
+    '</button>' +
+    '<button class="tab' + (tab === 'locations' ? ' on' : '') + '" id="tabLocations" role="tab"' +
+    ' aria-selected="' + (tab === 'locations') + '">Where' +
+    (onTrip ? ' <span class="pip' + (tab === 'locations' ? '' : ' alert') + '">' + onTrip + '</span>' : '') +
     '</button></div></div>';
 }
 
@@ -389,14 +407,17 @@ function refreshTabs() {
 function wireTabs() {
   const d = document.getElementById('tabDrivers');
   const r = document.getElementById('tabReports');
+  const w = document.getElementById('tabLocations');
   if (d) d.onclick = function () { goTab('drivers'); };
   if (r) r.onclick = function () { goTab('reports'); };
+  if (w) w.onclick = function () { goTab('locations'); };
 }
 
 function goTab(next) {
   if (tab === next) return;
   tab = next;
   if (tab === 'reports') reportsScreen();
+  else if (tab === 'locations') locationsScreen();
   else load();
 }
 
@@ -440,10 +461,11 @@ function load() {
   canApproveCurrent = false;
   tab = 'drivers';
 
-  wrap.innerHTML = chrome('Driver approvals') + tabsHtml() +
+  wrap.innerHTML = chrome('Driver approvals') + tabsHtml() + keepBanner() +
     '<div class="card"><h2>Waiting</h2><div class="sub" id="count">Loading...</div></div>' +
     mine();
   wireChrome();
+  wireKeepBanner();
 
   // Fetched straight away rather than when the disclosure is opened: an
   // employee who opens it to check they have not already done somebody twice
@@ -471,7 +493,18 @@ function load() {
     if (r.status !== 200) return;
     reports = r.data.reports || [];
     openReports = reports.filter(function (x) { return x.open; }).length;
+    // The recording state comes back with this call, so the banner can be put on
+    // the screen without a second request.
+    if (r.data.recording) locations.recording = r.data.recording;
     refreshTabs();
+    const banner = keepBanner();
+    if (banner) {
+      const tabs = document.getElementById('tabs');
+      if (tabs) {
+        tabs.insertAdjacentHTML('afterend', banner);
+        wireKeepBanner();
+      }
+    }
   });
 }
 
@@ -480,10 +513,11 @@ function renderQueue() {
   if (card === null) { load(); return; }
   if (queue.length === 0) {
     wrap.innerHTML =
-      chrome('Driver approvals') + tabsHtml() +
+      chrome('Driver approvals') + tabsHtml() + keepBanner() +
       '<div class="empty">Nothing waiting.<br>New applications will appear here.</div>' +
       mine();
     wireChrome();
+    wireKeepBanner();
     loadMine();
     return;
   }
@@ -876,18 +910,21 @@ function reportsScreen() {
   canApproveCurrent = false;
   contactNote = '';
 
-  wrap.innerHTML = chrome('Reports') + tabsHtml() +
+  wrap.innerHTML = chrome('Reports') + tabsHtml() + keepBanner() +
     '<div class="card"><h2>Loading...</h2></div>';
   wireChrome();
+  wireKeepBanner();
 
   call({ action: 'listreports' }).then(function (r) {
     if (r.status === 401) { signedOut(); signIn(); return; }
+    if (r.data && r.data.recording) locations.recording = r.data.recording;
     if (r.status !== 200) {
-      wrap.innerHTML = chrome('Reports') + tabsHtml() +
+      wrap.innerHTML = chrome('Reports') + tabsHtml() + keepBanner() +
         '<div class="card"><div class="err">' +
         esc(r.data.error || 'Could not load the reports.') + '</div>' +
         '<button class="btn" id="retry">Try again</button></div>';
       wireChrome();
+      wireKeepBanner();
       document.getElementById('retry').onclick = reportsScreen;
       return;
     }
@@ -912,13 +949,14 @@ function renderReports() {
   const done = reports.filter(function (r) { return !r.open; });
 
   if (reports.length === 0) {
-    wrap.innerHTML = chrome('Reports') + tabsHtml() +
+    wrap.innerHTML = chrome('Reports') + tabsHtml() + keepBanner() +
       '<div class="empty">No reports.<br>Nothing a rider has complained about.</div>';
     wireChrome();
+    wireKeepBanner();
     return;
   }
 
-  wrap.innerHTML = chrome('Reports') + tabsHtml() +
+  wrap.innerHTML = chrome('Reports') + tabsHtml() + keepBanner() +
     (open.length
       ? '<div class="card"><h2>Waiting: ' + open.length + '</h2>' +
         '<div class="sub">Tap one to read it and call the rider.</div>' +
@@ -930,6 +968,7 @@ function renderReports() {
         done.map(reportRow).join('') + '</details></div>'
       : '');
   wireChrome();
+  wireKeepBanner();
   wrap.querySelectorAll('.q').forEach(function (b) {
     b.onclick = function () {
       const r = reports.find(function (x) { return x.id === b.dataset.rid; });
@@ -1083,6 +1122,202 @@ async function decideReport(r, decision, note) {
   openReports = reports.filter(function (x) { return x.open; }).length;
   currentReport = null;
   reportsScreen();
+}
+
+// -------------------------------------------------------------- locations
+
+let locations = { drivers: [], riders: [], recording: { keep: false, until: null, by: null, daysLeft: null } };
+
+// The banner. Rendered above the tabs on every screen, not only on Locations,
+// because the person who needs to know it is on this page is most likely looking
+// at driver approvals.
+function keepBanner() {
+  const r = locations.recording;
+  if (!r || !r.keep) return '';
+  const left = r.daysLeft === null ? '' : ' ' + r.daysLeft +
+    (r.daysLeft === 1 ? ' day left.' : ' days left.');
+  return '<div class="keepbanner"><b>Keeping location data longer than usual</b>' +
+    'Every position is being kept past the ' + esc(String(RETENTION_DAYS)) +
+    '-day limit until ' + esc((r.until || '').slice(0, 10)) + '.' + left +
+    (r.by ? ' Turned on by ' + esc(r.by) + '.' : '') +
+    '<br><button id="stopKeep">Stop keeping it</button></div>';
+}
+
+function wireKeepBanner() {
+  const b = document.getElementById('stopKeep');
+  if (b) b.onclick = function () { setRecording(false, 0); };
+}
+
+function locationRow(x) {
+  return '<div class="q" style="cursor:default">' +
+    '<div class="grow">' +
+    '<div class="who">' + esc(x.name) + '</div>' +
+    // Never a coordinate. The server resolved a street name or there is not one
+    // yet, and this row is what says so.
+    '<div class="where">' + esc(x.where) + '</div>' +
+    '<div class="quiet">' + esc(x.ago) + (x.tripState ? ' &middot; ' + esc(x.tripState) : '') +
+    // The separator is inside the span, not before it. When the name cannot be
+    // found the span is removed outright, and a separator left outside it hangs
+    // off the end of the line as a stray "&middot;" with nothing after it.
+    (x.needsLabel
+      ? '<span id="resolving-' + esc(x.profileId) + '"> &middot; finding the street name</span>'
+      : '') +
+    '</div></div>' +
+    (x.hasPhone ? '<span class="badge">Call</span>' : '<span class="badge done">no number</span>') +
+    '</div>';
+}
+
+function locationsScreen() {
+  clearButtons();
+  current = null;
+  currentReport = null;
+  canApproveCurrent = false;
+
+  wrap.innerHTML = chrome('Locations') + tabsHtml() + keepBanner() +
+    '<div class="card"><h2>Loading...</h2></div>';
+  wireChrome();
+  wireKeepBanner();
+
+  call({ action: 'listlocations' }).then(function (r) {
+    if (r.status === 401) { signedOut(); signIn(); return; }
+    if (r.status !== 200) {
+      wrap.innerHTML = chrome('Locations') + tabsHtml() +
+        '<div class="card"><div class="err">' +
+        esc(r.data.error || 'Could not load the locations.') + '</div>' +
+        '<button class="btn" id="retry">Try again</button></div>';
+      wireChrome();
+      document.getElementById('retry').onclick = locationsScreen;
+      return;
+    }
+    locations = r.data;
+    renderLocations();
+    resolveMissingLabels();
+  });
+}
+
+function renderLocations() {
+  const riders = locations.riders || [];
+  const drivers = locations.drivers || [];
+
+  wrap.innerHTML = chrome('Locations') + tabsHtml() + keepBanner() +
+    '<div class="card"><h2>On a trip now: ' + riders.length + '</h2>' +
+    // No apostrophes anywhere in this string, and that is not a style choice.
+    // This whole file is a TypeScript template literal, so an escaped quote
+    // written here arrives in the page as a bare one, inside a single-quoted
+    // JavaScript string, and ends it. "A rider\'s position" became "A rider's
+    // position" and every screen on the page died with "Unexpected identifier".
+    '<div class="sub">The position of a rider is only recorded while they have ' +
+    'a trip in progress, and the record is deleted when that trip ends.</div>' +
+    (riders.length
+      ? '<div style="margin-top:8px">' + riders.map(locationRow).join('') + '</div>'
+      : '<div class="quiet" style="margin-top:8px">Nobody is on a trip.</div>') +
+    '</div>' +
+
+    '<div class="card"><h2>Drivers: ' + drivers.length + '</h2>' +
+    '<div class="sub">Where each driver last reported being. Kept for ' +
+    esc(String(RETENTION_DAYS)) + ' days.</div>' +
+    (drivers.length
+      ? '<div style="margin-top:8px">' + drivers.map(locationRow).join('') + '</div>'
+      : '<div class="quiet" style="margin-top:8px">No drivers have reported a position.</div>') +
+    '</div>' +
+
+    '<div class="card"><h2>Keeping the data</h2>' +
+    '<div class="keep"><div class="grow">' +
+    (locations.recording.keep
+      ? '<div class="value">Keeping everything until ' +
+        esc((locations.recording.until || '').slice(0, 10)) + '</div>' +
+        '<div class="sub">' + (locations.recording.daysLeft || 0) + ' days left' +
+        (locations.recording.by ? ', asked for by ' + esc(locations.recording.by) : '') + '.</div>'
+      : '<div class="value">Normal: ' + esc(String(RETENTION_DAYS)) + ' days</div>' +
+        '<div class="sub">Positions older than that are deleted automatically, every night.</div>') +
+    '</div></div>' +
+    (locations.recording.keep
+      ? '<button class="btn" id="stopKeep2" style="margin-top:0">Stop keeping it</button>'
+      : '<button class="btn" id="askKeep">Keep it longer</button>') +
+    '</div>';
+
+  wireChrome();
+  wireKeepBanner();
+  const ask = document.getElementById('askKeep');
+  if (ask) ask.onclick = askKeepSheet;
+  const stop = document.getElementById('stopKeep2');
+  if (stop) stop.onclick = function () { setRecording(false, 0); };
+}
+
+// Asks for one street name at a time, in order, and only for rows that do not
+// have one.
+//
+// Nominatim allows one request a second and the server waits between calls, so
+// firing them all at once would be refused and would look like the page is broken.
+// Sequential is both politer and correct, and each answer is written to the
+// database by the server so the next person to open this page does not pay for
+// it again.
+async function resolveMissingLabels() {
+  const pending = []
+    .concat(locations.riders || [], locations.drivers || [])
+    .filter(function (x) { return x.needsLabel; });
+  if (pending.length === 0) return;
+
+  for (const x of pending) {
+    const res = await call({
+      action: 'resolveplace',
+      who: x.who,
+      profileId: x.profileId,
+    });
+    if (res.status === 200 && res.data.label) {
+      x.where = res.data.label;
+      x.needsLabel = false;
+      const at = document.getElementById('resolving-' + x.profileId);
+      const box = at ? at.closest('.q') : null;
+      if (box) {
+        const w = box.querySelector('.where');
+        if (w) w.textContent = res.data.label;
+        if (at) at.parentElement.innerHTML = x.ago;
+      }
+    } else {
+      // Remove the marker rather than writing a message into it. The row above
+      // already reads "place name unavailable", and saying it twice -- once as the
+      // place, once as the reason -- reads like two separate faults.
+      const at = document.getElementById('resolving-' + x.profileId);
+      if (at && at.parentElement) at.parentElement.removeChild(at);
+    }
+  }
+}
+
+function askKeepSheet() {
+  modal.innerHTML =
+    '<div class="sheet"><div class="panel">' +
+    '<h2>Keep location data for longer?</h2>' +
+    '<div class="sub" style="margin-bottom:12px">Normally positions are deleted after ' +
+    esc(String(RETENTION_DAYS)) + ' days. Use this only while you are investigating ' +
+    'something. It stops on its own, and everybody who opens this page will see ' +
+    'that it is on.</div>' +
+    [7, 14, 30].map(function (d) {
+      return '<label class="reason"><input type="radio" name="days" value="' + d + '">' +
+        '<span>Keep for ' + d + ' days' + (d > MAX_KEEP_DAYS ? ' (too long)' : '') + '</span></label>';
+    }).join('') +
+    '<div class="row" style="margin-top:16px">' +
+    '<button class="view" id="cancelKeep" style="flex:1;min-height:50px">Cancel</button>' +
+    '<button class="btn" id="doKeep" style="flex:2;margin:0">Keep it</button></div>' +
+    '</div></div>';
+
+  document.getElementById('cancelKeep').onclick = function () { modal.innerHTML = ''; };
+  document.getElementById('doKeep').onclick = function () {
+    const picked = document.querySelector('input[name=days]:checked');
+    if (!picked) { alert('Choose how long to keep it for.'); return; }
+    modal.innerHTML = '';
+    setRecording(true, Number(picked.value));
+  };
+}
+
+async function setRecording(keep, days) {
+  const res = await call({ action: 'setrecording', keep: keep, days: days });
+  if (res.status !== 200) {
+    alert(res.data.error || 'That could not be saved.');
+    return;
+  }
+  locations.recording = res.data.recording;
+  locationsScreen();
 }
 
 // -------------------------------------------------------- what I have done

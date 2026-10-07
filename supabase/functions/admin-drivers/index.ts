@@ -37,6 +37,18 @@ import {
   type ReportRow,
   type TriageReport,
 } from './reports.ts';
+import {
+  keepIntent,
+  looksLikeCoordinates,
+  orderLocations,
+  shapeLocation,
+  shapeRecording,
+  stopIntent,
+  type LocationRow,
+  type RecordingState,
+  type ShownLocation,
+  type Who,
+} from './locations.ts';
 import { adminPage } from './page.ts';
 import { staffPage } from './staff_page.ts';
 import {
@@ -406,6 +418,228 @@ async function writeReport(
     return { ok: false, status: 502, error: error.message || 'the report could not be saved' };
   }
   return { ok: true };
+}
+
+// ------------------------------------------------------------- locations
+
+/** Whether location data is being kept past its retention, and by whom. */
+async function readRecordingState(now: Date): Promise<RecordingState> {
+  const { data: setting } = await (serviceClient() as unknown as {
+    from(t: string): {
+      select(c: string): {
+        eq(c: string, v: unknown): { maybeSingle(): Promise<{ data: unknown }> };
+      };
+    };
+  })
+    .from('location_settings')
+    .select('keep_recording, keep_until, updated_by')
+    .eq('id', true)
+    .maybeSingle();
+
+  const row = (setting ?? null) as Record<string, unknown> | null;
+  return shapeRecording(
+    row !== null && row['keep_recording'] === true,
+    row === null || row['keep_until'] == null ? null : String(row['keep_until']),
+    row === null || row['updated_by'] == null ? null : String(row['updated_by']),
+    now,
+  );
+}
+
+/**
+ * Where people are, and how long we are keeping it.
+ *
+ * Drivers are last-known because the driver app has always published there --
+ * matching a driver to a trip needs their position. Riders appear only while they
+ * have a live trip, which is the only reason their position is recorded at all.
+ *
+ * The point is never returned to the page. Not obfuscated, not rounded: absent.
+ * The page shows a reverse-geocoded place name, and a row with no name says it
+ * has none rather than falling back to a latitude.
+ */
+async function listLocations(): Promise<{
+  drivers: ShownLocation[];
+  riders: ShownLocation[];
+  recording: RecordingState;
+}> {
+  const now = new Date();
+
+  const { data: driverRows } = await locationQuery('driver_locations')
+    .select(
+      'driver_id, updated_at, place_label, place_label_at, profiles(full_name, phone)',
+    )
+    .order('updated_at', { ascending: false })
+    .limit(200);
+
+  // Inner-joined in SQL rather than filtered afterwards, so a rider whose trip
+  // ended a second ago is not on the page at all. `rider_locations` is also
+  // purged of dead trips nightly; this is the belt to that pair of braces.
+  const { data: riderRows } = await locationQuery('rider_locations')
+    .select(
+      'rider_id, trip_id, updated_at, place_label, place_label_at, profiles(full_name, phone), trips!inner(state)',
+    )
+    .eq('trips.state', 'ongoing')
+    .limit(200);
+
+  const drivers = orderLocations(
+    (Array.isArray(driverRows) ? (driverRows as Record<string, unknown>[]) : []).map(
+      (r) => shapeLocation(toLocationRow(r, 'driver'), now),
+    ),
+  );
+  const riders = orderLocations(
+    (Array.isArray(riderRows) ? (riderRows as Record<string, unknown>[]) : []).map(
+      (r) => shapeLocation(toLocationRow(r, 'rider'), now),
+    ),
+  );
+
+  const recording = await readRecordingState(now);
+
+  return { drivers, riders, recording };
+}
+
+function locationQuery(table: string) {
+  return (serviceClient() as unknown as {
+    from(t: string): {
+      select(c: string): {
+        order(c: string, o: { ascending: boolean }): {
+          limit(n: number): Promise<{ data: unknown }>;
+        };
+        eq(c: string, v: unknown): {
+          limit(n: number): Promise<{ data: unknown }>;
+        };
+      };
+    };
+  }).from(table);
+}
+
+function toLocationRow(r: Record<string, unknown>, who: Who): LocationRow {
+  const p = joined(r, 'profiles');
+  const t = joined(r, 'trips');
+  return {
+    profileId: String(who === 'driver' ? r['driver_id'] : r['rider_id']),
+    who,
+    name: p === null ? '' : String(p['full_name'] ?? ''),
+    phone: p === null ? '' : String(p['phone'] ?? ''),
+    // Read so the row is not silently useless, and deliberately not returned.
+    point: r['point'] == null ? null : 'set',
+    updatedAt: String(r['updated_at']),
+    placeLabel: r['place_label'] == null ? null : String(r['place_label']),
+    placeLabelAt: r['place_label_at'] == null ? null : String(r['place_label_at']),
+    tripId: r['trip_id'] == null ? null : String(r['trip_id']),
+    tripState: t === null ? null : String(t['state'] ?? ''),
+  };
+}
+
+/**
+ * Reverse-geocodes one position and stores the result as a place name.
+ *
+ * Server-side on purpose. To geocode in the browser the page would need the
+ * latitude and longitude, which puts a real person's position into a JSON payload
+ * on a page served from shared hosting. Here the point comes out of the database
+ * through `location_point`, is turned into a street name, and only the street name
+ * is ever returned or stored. The coordinate is read once and discarded.
+ *
+ * ## Why Photon and not Nominatim
+ *
+ * Nominatim is what both apps use, and it was tried here first. It refuses to
+ * serve cloud egress, so the function -- which runs on one -- got a refusal for
+ * every request: verified by calling Nominatim directly (200, correct answer) and
+ * then through the deployed function (502, "the place name service refused"). The
+ * apps are on a phone and are fine; an edge function is not.
+ *
+ * Photon is OSM-based, needs no key, and answers server-side. It returns
+ * structured fields rather than one long sentence, which suits a phone row: the
+ * label is assembled from street, district and city and stops at three parts.
+ * Nominatim's `display_name` runs to a paragraph that pushes everything else off
+ * the screen.
+ *
+ * Nominatim's one-request-a-second limit is kept for Photon anyway, which asks
+ * for the same.
+ */
+let lastGeocodeAt = 0;
+
+/** "Otublohum Street, North Industrial Area, Okaikoi South..." -> the first three. */
+function labelFromPhoton(props: Record<string, unknown>): string {
+  const parts: string[] = [];
+  for (const key of ['street', 'name', 'district', 'city', 'county', 'country']) {
+    const v = props[key];
+    if (typeof v !== 'string') continue;
+    const t = v.trim();
+    if (t === '') continue;
+    // A street name and a `name` are often the same string in Photon; a list with
+    // the same place in it twice reads as though two different things were named.
+    if (parts.some((p) => p.toLowerCase() === t.toLowerCase())) continue;
+    parts.push(t);
+    if (parts.length === 3) break;
+  }
+  return parts.join(', ');
+}
+
+async function resolvePlaceLabel(
+  who: Who,
+  profileId: string,
+): Promise<{ ok: true; label: string } | { ok: false; status: number; error: string }> {
+  const { data, error } = await (serviceClient() as unknown as {
+    rpc(fn: string, args: Record<string, unknown>): Promise<{ data: unknown; error: unknown }>;
+  }).rpc('location_point', { who, profile_id: profileId });
+
+  if (error !== null && error !== undefined) {
+    return { ok: false, status: 502, error: 'that position could not be read' };
+  }
+  const point = data === null || data === undefined ? '' : String(data);
+  if (point === '') {
+    return { ok: false, status: 404, error: 'no position is stored for that person' };
+  }
+  const [lat, lon] = point.split(',');
+  if (lat === undefined || lon === undefined || lat === '' || lon === '') {
+    return { ok: false, status: 502, error: 'that position could not be read' };
+  }
+
+  const wait = 1100 - (Date.now() - lastGeocodeAt);
+  if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+  lastGeocodeAt = Date.now();
+
+  let label = '';
+  try {
+    const res = await fetch(
+      'https://photon.komoot.io/reverse?lat=' + encodeURIComponent(lat) +
+        '&lon=' + encodeURIComponent(lon),
+    );
+    if (!res.ok) return { ok: false, status: 502, error: 'the place name service refused' };
+    const body = (await res.json()) as { features?: { properties?: Record<string, unknown> }[] };
+    const first = (body.features ?? [])[0];
+    label = first?.properties ? labelFromPhoton(first.properties) : '';
+  } catch {
+    // A geocoder that is down is not a reason to show a coordinate, and not a
+    // reason to fail the page. The row keeps its position and tries again later.
+    return { ok: false, status: 502, error: 'the place name service could not be reached' };
+  }
+
+  // Photon answers 200 with no features for a point in the sea, which is what a
+  // position with latitude and longitude the wrong way round looks like. There is
+  // no place name for it, so there is nothing to store and nothing to show.
+  if (label === '' || looksLikeCoordinates(label)) {
+    return { ok: false, status: 404, error: 'no place name was found for that position' };
+  }
+
+  const column = who === 'driver' ? 'driver_id' : 'rider_id';
+  const { error: writeError } = await (serviceClient() as unknown as {
+    from(t: string): {
+      update(v: Record<string, unknown>): {
+        eq(c: string, v: unknown): {
+          select(c: string): Promise<{ error: { message: string } | null }>;
+        };
+      };
+    };
+  })
+    .from(who === 'driver' ? 'driver_locations' : 'rider_locations')
+    .update({ place_label: label, place_label_at: new Date().toISOString() })
+    .eq(column, profileId)
+    .select('place_label');
+
+  if (writeError !== null) {
+    return { ok: false, status: 502, error: writeError.message || 'the place name could not be saved' };
+  }
+  return { ok: true, label };
 }
 
 const json = (status: number, payload: Record<string, unknown>) =>
@@ -1153,7 +1387,14 @@ serve(async (req) => {
   if (req.method === 'POST' && record['action'] === 'listreports') {
     const gate = await requireAdmin(deps, callerId, staff);
     if ('error' in gate) return json(gate.error.status, gate.error.body);
-    return json(200, { reports: await listReports() });
+    // The recording state rides along with the reports rather than costing a
+    // second round trip. The page needs it on every screen, because the banner
+    // saying data is being kept longer than promised has to be visible to
+    // somebody who came to approve a driver and never opened the Where tab.
+    return json(200, {
+      reports: await listReports(),
+      recording: await readRecordingState(new Date()),
+    });
   }
 
   if (req.method === 'POST' && record['action'] === 'decidereport') {
@@ -1203,6 +1444,66 @@ serve(async (req) => {
     // page starts showing a state nobody saved.
     const after = await readReport(reportId);
     return json(200, { report: after === null ? null : shapeReport(after) });
+  }
+
+  // ## Locations
+  //
+  // The same `requireAdmin` gate as everything else. Somebody who can approve a
+  // driver can see where drivers are; there is no narrower group this business
+  // has, and inventing one would mean administering it.
+
+  if (req.method === 'POST' && record['action'] === 'listlocations') {
+    const gate = await requireAdmin(deps, callerId, staff);
+    if ('error' in gate) return json(gate.error.status, gate.error.body);
+    return json(200, await listLocations());
+  }
+
+  if (req.method === 'POST' && record['action'] === 'resolveplace') {
+    const gate = await requireAdmin(deps, callerId, staff);
+    if ('error' in gate) return json(gate.error.status, gate.error.body);
+    const who: Who = record['who'] === 'rider' ? 'rider' : 'driver';
+    const profileId = typeof record['profileId'] === 'string' ? record['profileId'] : '';
+    if (profileId === '') return json(400, { error: 'profileId is required' });
+    const resolved = await resolvePlaceLabel(who, profileId);
+    if (!resolved.ok) return json(resolved.status, { error: resolved.error });
+    return json(200, { label: resolved.label });
+  }
+
+  if (req.method === 'POST' && record['action'] === 'setrecording') {
+    const gate = await requireAdmin(deps, callerId, staff);
+    if ('error' in gate) return json(gate.error.status, gate.error.body);
+
+    // Turning it off is always permitted. Turning it on needs a name and a
+    // duration, and the duration is capped -- see keepIntent.
+    const stopping = record['keep'] !== true;
+    const intent = stopping
+      ? stopIntent(staff === null ? '' : staff.name)
+      : keepIntent({
+        by: staff === null ? '' : staff.name,
+        days: typeof record['days'] === 'number' ? record['days'] : Number(record['days']),
+        now: new Date(),
+      });
+    if (!intent.ok) return json(intent.status, { error: intent.error });
+
+    const { error } = await (serviceClient() as unknown as {
+      from(t: string): {
+        update(v: Record<string, unknown>): {
+          eq(c: string, v: unknown): {
+            select(c: string): Promise<{ error: { message: string } | null }>;
+          };
+        };
+      };
+    })
+      .from('location_settings')
+      .update(intent.write)
+      .eq('id', true)
+      .select('keep_recording');
+
+    if (error !== null) {
+      return json(502, { error: error.message || 'that could not be saved' });
+    }
+    const state = await listLocations();
+    return json(200, { recording: state.recording });
   }
 
   const result = await handleList(deps, callerId, staff);
