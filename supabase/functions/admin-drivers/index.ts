@@ -30,6 +30,13 @@ import {
   type DriverDocumentRow,
   type PendingDriver,
 } from './handler.ts';
+import {
+  decide,
+  shapeReport,
+  triageOrder,
+  type ReportRow,
+  type TriageReport,
+} from './reports.ts';
 import { adminPage } from './page.ts';
 import { staffPage } from './staff_page.ts';
 import {
@@ -277,6 +284,152 @@ async function myDecisions(staffId: string): Promise<Record<string, unknown>[]> 
     driverName:
       (r['profiles'] as Record<string, unknown> | null)?.['full_name'] ?? null,
   }));
+}
+
+/**
+ * One report, joined to the rider who left it and the ride it is about.
+ *
+ * `!inner` on `trips` because a report without a trip cannot be understood by a
+ * person doing triage, and an empty page reads as "nothing has been reported"
+ * rather than "one row could not be joined". The two `profiles` joins have to be
+ * aliased because PostgREST cannot tell which foreign key to follow when a row is
+ * reachable by two paths to the same table.
+ */
+const REPORT_SELECT =
+  'id, trip_id, reason, detail, created_at, dismissed_at, dismissed_by, dismiss_note, contacted_at, contacted_by, ' +
+  'profiles!trip_reports_reported_by_fkey(full_name, phone), ' +
+  'trips!inner(id, state, fare_ghs, category, driver_id, pickup, dropoff, ' +
+  'profiles!trips_driver_id_fkey(full_name, phone))';
+
+/** Structural view of the one query builder chain these three functions use. */
+function reportQuery() {
+  return (serviceClient() as unknown as {
+    from(t: string): {
+      select(c: string): {
+        order(c: string, o: { ascending: boolean }): {
+          limit(n: number): Promise<{ data: unknown }>;
+        };
+        eq(c: string, v: unknown): Promise<{ data: unknown }>;
+      };
+    };
+  }).from('trip_reports');
+}
+
+/** A nested join can come back as null or as an array; both are handled. */
+function joined(r: Record<string, unknown>, key: string): Record<string, unknown> | null {
+  const v = r[key];
+  if (typeof v === 'object' && v !== null && !Array.isArray(v)) {
+    return v as Record<string, unknown>;
+  }
+  if (Array.isArray(v) && v.length > 0 && typeof v[0] === 'object' && v[0] !== null) {
+    return v[0] as Record<string, unknown>;
+  }
+  return null;
+}
+
+function text(v: unknown): string | null {
+  return v == null ? null : String(v);
+}
+
+/** Maps one joined row onto [ReportRow]. Pure enough to test with a literal. */
+function toReportRow(r: Record<string, unknown>): ReportRow {
+  const rider = joined(r, 'profiles');
+  const trip = joined(r, 'trips');
+  const driver = trip === null ? null : joined(trip, 'profiles');
+  const fare = trip === null ? null : trip['fare_ghs'];
+
+  return {
+    id: String(r['id']),
+    tripId: String(r['trip_id']),
+    reason: text(r['reason']),
+    detail: text(r['detail']),
+    createdAt: String(r['created_at']),
+    dismissedAt: text(r['dismissed_at']),
+    dismissedBy: text(r['dismissed_by']),
+    dismissNote: text(r['dismiss_note']),
+    contactedAt: text(r['contacted_at']),
+    contactedBy: text(r['contacted_by']),
+    riderName: rider === null ? null : text(rider['full_name']),
+    riderPhone: rider === null ? null : text(rider['phone']),
+    tripState: trip === null ? null : text(trip['state']),
+    // numeric comes back as a string from PostgREST. Number() is right here and
+    // is why `fareGhs` is a number and not the text Postgres sends.
+    tripFareGhs: fare == null ? null : (isNaN(Number(fare)) ? null : Number(fare)),
+    tripCategory: trip === null ? null : text(trip['category']),
+    // The jsonb columns are read whole; see `stopText` for why.
+    pickupJson: trip === null ? null : trip['pickup'],
+    dropoffJson: trip === null ? null : trip['dropoff'],
+    driverId: trip === null ? null : text(trip['driver_id']),
+    driverName: driver === null ? null : text(driver['full_name']),
+    driverPhone: driver === null ? null : text(driver['phone']),
+  };
+}
+
+/**
+ * Every report, in triage order.
+ *
+ * Capped at 200. This is a support queue on a phone, not an export: past that
+ * the oldest waiting complaint is one nobody is going to reach, and the honest
+ * answer is a tighter retention window rather than a longer scroll.
+ */
+async function listReports(): Promise<TriageReport[]> {
+  const { data } = await reportQuery()
+    .select(REPORT_SELECT)
+    .order('created_at', { ascending: false })
+    .limit(200);
+  const rows = Array.isArray(data) ? (data as Record<string, unknown>[]) : [];
+  return triageOrder(rows.map((r) => shapeReport(toReportRow(r))));
+}
+
+async function readReport(id: string): Promise<ReportRow | null> {
+  const { data } = await reportQuery().select(REPORT_SELECT).eq('id', id);
+  if (!Array.isArray(data) || data.length === 0) return null;
+  return toReportRow(data[0] as Record<string, unknown>);
+}
+
+/**
+ * Records a decision, or the fact that the rider was contacted.
+ *
+ * `contacted_at` is written on contact *in addition to* whatever `decide()`
+ * returned, and the contact write is deliberately not a dismissal. Answering a
+ * rider and closing their complaint are separate acts; the page offers both
+ * buttons side by side rather than one button that does both, so the log can say
+ * which actually happened.
+ */
+async function writeReport(
+  id: string,
+  ask: 'dismiss' | 'reopen' | 'contact',
+  write: { dismissed_at: string | null; dismissed_by: string | null; dismiss_note: string },
+  by: string,
+): Promise<{ ok: true } | { ok: false; status: number; error: string }> {
+  const patch: Record<string, unknown> = {
+    dismissed_at: write.dismissed_at,
+    dismissed_by: write.dismissed_by,
+    dismiss_note: write.dismiss_note,
+  };
+  if (ask === 'contact') {
+    patch['contacted_at'] = new Date().toISOString();
+    patch['contacted_by'] = by;
+  }
+
+  const { error } = await (serviceClient() as unknown as {
+    from(t: string): {
+      update(v: Record<string, unknown>): {
+        eq(c: string, v: unknown): { select(c: string): Promise<{ error: { message: string } | null }> };
+      };
+    };
+  })
+    .from('trip_reports')
+    .update(patch)
+    .eq('id', id)
+    .select('id');
+
+  if (error !== null) {
+    // The database's own message. An employee pressing Dismiss and being told
+    // "something went wrong" has no way to know whether it worked.
+    return { ok: false, status: 502, error: error.message || 'the report could not be saved' };
+  }
+  return { ok: true };
 }
 
 const json = (status: number, payload: Record<string, unknown>) =>
@@ -1006,6 +1159,70 @@ serve(async (req) => {
       });
     }
     return json(result.status, result.body);
+  }
+
+  // ## Reports
+  //
+  // Same gate as the KYC queue. `allowed()` is deliberately not narrowed to
+  // `staff === null` for reads: anybody who can approve a driver can read a
+  // rider's complaint, because in a business this size the person doing triage
+  // and the person doing approvals are the same people, and splitting them
+  // creates a second thing to administer without removing anybody's access.
+
+  if (req.method === 'POST' && record['action'] === 'listreports') {
+    if (!allowed(callerId, staff)) {
+      return json(401, { error: 'sign in to review reports' });
+    }
+    return json(200, { reports: await listReports() });
+  }
+
+  if (req.method === 'POST' && record['action'] === 'decidereport') {
+    const reportId = typeof record['reportId'] === 'string' ? record['reportId'] : '';
+    const ask = record['decision'] === 'reopen'
+      ? 'reopen'
+      : record['decision'] === 'contact'
+      ? 'contact'
+      : record['decision'] === 'dismiss'
+      ? 'dismiss'
+      : null;
+    if (reportId === '') return json(400, { error: 'reportId is required' });
+    if (ask === null) return json(400, { error: 'decision must be dismiss, reopen or contact' });
+
+    // The name comes from the session, never from the request body. A page that
+    // could send its own `dismissed_by` would let any signed-in member of staff
+    // write somebody else's name into the audit trail with one devtools call.
+    //
+    // A staff session is required rather than an admin login, and that is
+    // stricter than the KYC queue on purpose: dismissing somebody's complaint is
+    // a recorded decision about a named person, so it needs a named person. The
+    // founder approves drivers under an admin account all day; for reports they
+    // sign in as staff like everyone else.
+    const by = staff === null ? null : staff.name;
+    if (by === null) {
+      return json(401, { error: 'sign in with your staff name and PIN to work on reports' });
+    }
+
+    const current = await readReport(reportId);
+    // 404 for a report that does not exist. There is no such report as far as
+    // this endpoint is concerned, and saying so to an attacker guessing ids
+    // costs nothing to the employee who simply has a stale page open.
+    if (current === null) return json(404, { error: 'no such report' });
+
+    const intent = decide(current, {
+      action: ask,
+      by,
+      note: typeof record['note'] === 'string' ? record['note'] : '',
+      now: new Date(),
+    });
+    if (!intent.ok) return json(intent.status, { error: intent.error });
+
+    const written = await writeReport(reportId, ask, intent.write, by);
+    if (!written.ok) return json(written.status, { error: written.error });
+    // Re-read rather than patching the row in place, so what the page renders
+    // afterwards is what the database holds. Two maps agreeing by hand is how a
+    // page starts showing a state nobody saved.
+    const after = await readReport(reportId);
+    return json(200, { report: after === null ? null : shapeReport(after) });
   }
 
   const result = await handleList(deps, callerId, staff);
