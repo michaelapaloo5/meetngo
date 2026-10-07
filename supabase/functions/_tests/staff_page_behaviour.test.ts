@@ -165,10 +165,23 @@ function run(): Harness {
       return e;
     },
     querySelectorAll(sel: string): El[] {
-      if (sel === '.decide') {
-        return created.filter((e) => e.className === 'decide' && !e.removed);
-      }
-      return [];
+      // A selector list, which a real querySelectorAll accepts.
+      //
+      // This compared the whole string against '.decide' and returned an empty
+      // list for anything else. The page clears two kinds of bottom bar in one
+      // call -- the driver's Approve/Decline bar and the report's Call/Handle
+      // bar -- so `clearButtons()` passed '.decide, .rbar', matched nothing and
+      // silently stopped clearing anything. The bar assertions still passed,
+      // because they only ever built driver bars: the harness was reporting "no
+      // bars" when it meant "no bars of the kind it knows about".
+      return sel
+        .split(',')
+        .map((s) => s.trim())
+        .filter((s) => s !== '')
+        // The leading dot is part of the selector, not of the class name.
+        .flatMap((s) =>
+          created.filter((e) => e.className === s.replace(/^\./, '') && !e.removed)
+        );
     },
     querySelector(sel: string): El | null {
       return document.querySelectorAll(sel)[0] ?? null;

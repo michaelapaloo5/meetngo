@@ -158,6 +158,52 @@ export const staffPage = (supabaseUrl: string): string => `<!doctype html>
   .reason { display:flex; align-items:center; gap:12px; padding:13px 4px; border-bottom:1px solid var(--line); font-size:16px; }
   .reason input { width:22px; height:22px; min-height:0; flex:none; }
   .hide { display:none !important; }
+
+  /* Two jobs, one page. Drivers waiting to be approved and riders who have
+     complained are different queues with different urgencies, and the employee
+     needs to be able to see whether either is non-empty without opening both.
+     The count sits on the tab rather than only inside the list for that reason:
+     the whole point is knowing from the queue you are already looking at. */
+  .tabs { display:flex; gap:8px; padding:12px 0 4px; }
+  .tab {
+    flex:1; font:inherit; font-weight:600; font-size:15px; min-height:48px;
+    border:1px solid var(--line); border-radius:12px; background:#fff;
+    color:var(--sub); cursor:pointer; display:flex; align-items:center;
+    justify-content:center; gap:7px; padding:0 8px;
+  }
+  .tab.on { background:var(--ink); color:#fff; border-color:var(--ink); }
+  .pip {
+    background:#E5E7EB; color:var(--ink); border-radius:999px;
+    padding:1px 8px; font-size:13px; font-weight:700;
+  }
+  .tab.on .pip { background:#fff; color:var(--ink); }
+  /* Red only when there is something open. A count that is always coloured
+     trains people to stop looking at it. */
+  .pip.alert { background:var(--bad); color:#fff; }
+  .tab.on .pip.alert { background:#fff; color:var(--bad); }
+
+  /* The rider's own words. Bigger than anything else on the screen, because it
+     is the reason the screen exists -- the rest is context for it. */
+  .say { font-size:19px; font-weight:700; line-height:1.3; overflow-wrap:anywhere; }
+  .said { margin-top:8px; font-size:16px; line-height:1.5; white-space:pre-wrap; overflow-wrap:anywhere; }
+  .leg { display:flex; gap:8px; align-items:flex-start; padding:9px 0; border-bottom:1px solid var(--line); }
+  .leg:last-child { border-bottom:0; }
+  .leg .n { flex:1; min-width:0; }
+  .arrow { color:var(--sub); padding:0 2px; }
+  .done { background:#E8F5EC; border-color:#B7DFC4; color:#14622F; }
+  .rbar {
+    position:fixed; left:0; right:0; bottom:0; z-index:6;
+    background:#fff; border-top:1px solid var(--line);
+    padding:10px 14px calc(10px + env(safe-area-inset-bottom));
+    display:flex; gap:10px; max-width:640px; margin:0 auto;
+  }
+  .rbar button {
+    flex:1; font:inherit; font-weight:700; font-size:16px; border:0;
+    border-radius:12px; padding:14px 6px; min-height:56px; cursor:pointer;
+  }
+  .rbar .call { background:#fff; color:var(--ink); border:2px solid var(--ink); }
+  .rbar .go { background:var(--brand); color:var(--ink); }
+  .rbar .undo { background:#fff; color:var(--bad); border:2px solid var(--bad); }
 </style>
 </head>
 <body>
@@ -297,6 +343,86 @@ function signIn(message) {
   pn.onkeydown = function (e) { if (e.key === 'Enter') submit(); };
 }
 
+// ------------------------------------------------------------------- tabs
+
+// Which of the two queues is on screen, and how many are open in the other one.
+//
+// Both counts live here rather than inside either screen, because a tab that can
+// only tell you what is on the tab you are already looking at is not a tab, it
+// is a link. An employee who has a complaint open and a driver waiting should be
+// able to see that from either side without switching first.
+let tab = 'drivers';
+let openReports = 0;
+let contactNote = '';
+
+function tabsHtml() {
+  const drivers = queue.length;
+  // Wrapped in a div with an id so the counts can be refreshed by replacing one
+  // element.
+  //
+  // It was done the other way round first -- rendering the tabs to a string and
+  // pulling one button back out of it with a regular expression -- and that is
+  // how the page stopped running at all. This whole file is a TypeScript template
+  // literal, so an escaped forward slash collapses to a bare one on the way out,
+  // and /...<\/button>/ became /...?</button>/: the slash in the closing tag
+  // ended the regex and "button>" was read as its flags. Every screen died on
+  // load with "Invalid regular expression flags". Replaced with an element swap,
+  // which cannot be broken by a second layer of string escaping.
+  return '<div id="tabs"><div class="tabs" role="tablist">' +
+    '<button class="tab' + (tab === 'drivers' ? ' on' : '') + '" id="tabDrivers" role="tab"' +
+    ' aria-selected="' + (tab === 'drivers') + '">Drivers' +
+    (drivers ? ' <span class="pip' + (tab === 'drivers' ? '' : ' alert') + '">' + drivers + '</span>' : '') +
+    '</button>' +
+    '<button class="tab' + (tab === 'reports' ? ' on' : '') + '" id="tabReports" role="tab"' +
+    ' aria-selected="' + (tab === 'reports') + '">Reports' +
+    (openReports ? ' <span class="pip' + (tab === 'reports' ? '' : ' alert') + '">' + openReports + '</span>' : '') +
+    '</button></div></div>';
+}
+
+function refreshTabs() {
+  const box = document.getElementById('tabs');
+  if (!box) return;
+  box.outerHTML = tabsHtml();
+  wireTabs();
+}
+
+function wireTabs() {
+  const d = document.getElementById('tabDrivers');
+  const r = document.getElementById('tabReports');
+  if (d) d.onclick = function () { goTab('drivers'); };
+  if (r) r.onclick = function () { goTab('reports'); };
+}
+
+function goTab(next) {
+  if (tab === next) return;
+  tab = next;
+  if (tab === 'reports') reportsScreen();
+  else load();
+}
+
+// The header and the sign-out button, in one place.
+//
+// It is here because three screens need it and the first two each had their own
+// copy, which is how the sign-out button ended up with two different element ids
+// -- "out" on one screen and "out2" on another -- and a third screen with none
+// at all.
+function chrome(title) {
+  return '<div class="bar"><h1>' + esc(title) + '</h1>' +
+    '<div class="who">' + esc(me) +
+    '<br><button class="link" id="out">Sign out</button></div></div>';
+}
+
+function wireChrome() {
+  wireTabs();
+  const out = document.getElementById('out');
+  if (!out) return;
+  out.onclick = async function () {
+    await call({ action: 'staffsignout' });
+    signedOut();
+    signIn();
+  };
+}
+
 // ------------------------------------------------------------------ queue
 
 let queue = [];
@@ -310,23 +436,15 @@ function load() {
   // null and looked like a button that had stopped working.
   clearButtons();
   current = null;
+  currentReport = null;
   canApproveCurrent = false;
+  tab = 'drivers';
 
-  wrap.innerHTML =
-    '<div class="bar"><h1>Driver approvals</h1>' +
-    '<div class="who">' + esc(me) + '<br><button class="link" id="out">Sign out</button></div></div>';
-
-  document.getElementById('out').onclick = async function () {
-    await call({ action: 'staffsignout' });
-    signedOut();
-    signIn();
-  };
-
-  wrap.insertAdjacentHTML(
-    'beforeend',
+  wrap.innerHTML = chrome('Driver approvals') + tabsHtml() +
     '<div class="card"><h2>Waiting</h2><div class="sub" id="count">Loading...</div></div>' +
-    mine(),
-  );
+    mine();
+  wireChrome();
+
   // Fetched straight away rather than when the disclosure is opened: an
   // employee who opens it to check they have not already done somebody twice
   // should not then wait on the network.
@@ -336,7 +454,7 @@ function load() {
     if (r.status === 401) { signedOut(); signIn(); return; }
     if (r.status !== 200) {
       wrap.innerHTML =
-        '<div class="bar"><h1>Driver approvals</h1></div>' +
+        chrome('Driver approvals') +
         '<div class="card"><div class="err">' +
         esc(r.data.error || 'Could not load the list.') + '</div>' +
         '<button class="btn" id="retry">Try again</button></div>';
@@ -346,6 +464,15 @@ function load() {
     queue = r.data.drivers || [];
     renderQueue();
   });
+  // The reports count, for the tab. A failure here must not stop the queue
+  // loading, so it is not awaited and not checked: the tab simply shows no
+  // number, which is a smaller wrong than an empty queue.
+  call({ action: 'listreports' }).then(function (r) {
+    if (r.status !== 200) return;
+    reports = r.data.reports || [];
+    openReports = reports.filter(function (x) { return x.open; }).length;
+    refreshTabs();
+  });
 }
 
 function renderQueue() {
@@ -353,11 +480,10 @@ function renderQueue() {
   if (card === null) { load(); return; }
   if (queue.length === 0) {
     wrap.innerHTML =
-      '<div class="bar"><h1>Driver approvals</h1>' +
-      '<div class="who">' + esc(me) + '<br><button class="link" id="out2">Sign out</button></div></div>' +
+      chrome('Driver approvals') + tabsHtml() +
       '<div class="empty">Nothing waiting.<br>New applications will appear here.</div>' +
       mine();
-    document.getElementById('out2').onclick = function () { signedOut(); signIn(); };
+    wireChrome();
     loadMine();
     return;
   }
@@ -426,6 +552,8 @@ let canApproveCurrent = false;
 
 function review(d) {
   current = d;
+  currentReport = null;
+  contactNote = '';
   const have = new Set(d.documents || []);
   const missingRequired = REQUIRED.filter(function (k) { return !have.has(k); });
   canApproveCurrent = missingRequired.length === 0;
@@ -621,11 +749,13 @@ function decideButtons() {
 }
 
 function clearButtons() {
-  // All of them, not the first. A leftover bar is worse than no bar: it is
-  // position: fixed at the bottom of the viewport, so it sits over the queue
-  // after a decision and over the sign-in form after signing out, and pressing
-  // it would decide on a driver who is no longer open.
-  document.querySelectorAll('.decide').forEach(function (bar) { bar.remove(); });
+  // All of them, not the first, and both bars. A leftover bar is worse than no
+  // bar: it is position: fixed at the bottom of the viewport, so it sits over
+  // the queue after a decision, over the sign-in form after signing out, and --
+  // once there were two kinds of bar -- a "Call rider" button belonging to a
+  // report that had already been dealt with could sit under the thumb while
+  // somebody was approving a driver.
+  document.querySelectorAll('.decide, .rbar').forEach(function (bar) { bar.remove(); });
 }
 
 function askReason() {
@@ -718,6 +848,241 @@ async function send(decision, reason) {
 
   current = null;
   load();
+}
+
+// ---------------------------------------------------------------- reports
+
+let reports = [];
+let currentReport = null;
+
+// Money, in the one format this product uses: two decimals, no thousands
+// separator. A fare that could not be read says so rather than showing 0.00,
+// which is a number a rider could be charged.
+function ghs(v) {
+  if (v === null || v === undefined || v === '') return 'not recorded';
+  const n = Number(v);
+  return isNaN(n) ? 'not recorded' : 'GHS ' + n.toFixed(2);
+}
+
+function leg(label, value) {
+  return '<div class="leg"><span class="n"><span class="clabel">' + esc(label) + '</span><br>' +
+    '<span class="value">' + esc(value) + '</span></span></div>';
+}
+
+function reportsScreen() {
+  clearButtons();
+  current = null;
+  currentReport = null;
+  canApproveCurrent = false;
+  contactNote = '';
+
+  wrap.innerHTML = chrome('Reports') + tabsHtml() +
+    '<div class="card"><h2>Loading...</h2></div>';
+  wireChrome();
+
+  call({ action: 'listreports' }).then(function (r) {
+    if (r.status === 401) { signedOut(); signIn(); return; }
+    if (r.status !== 200) {
+      wrap.innerHTML = chrome('Reports') + tabsHtml() +
+        '<div class="card"><div class="err">' +
+        esc(r.data.error || 'Could not load the reports.') + '</div>' +
+        '<button class="btn" id="retry">Try again</button></div>';
+      wireChrome();
+      document.getElementById('retry').onclick = reportsScreen;
+      return;
+    }
+    reports = r.data.reports || [];
+    openReports = reports.filter(function (x) { return x.open; }).length;
+    renderReports();
+  });
+}
+
+function reportRow(r) {
+  return '<button class="q" data-rid="' + esc(r.id) + '">' +
+    '<div class="grow"><div class="who">' + esc(r.riderName) + '</div>' +
+    '<div class="ago">' + esc(r.reason) + ' &middot; ' + esc(ago(r.at)) +
+    (r.contactedAt ? ' &middot; <span class="ago-when">called</span>' : '') +
+    '</div></div>' +
+    (r.open ? '<span class="badge">Open</span>' : '<span class="badge done">Handled</span>') +
+    '</button>';
+}
+
+function renderReports() {
+  const open = reports.filter(function (r) { return r.open; });
+  const done = reports.filter(function (r) { return !r.open; });
+
+  if (reports.length === 0) {
+    wrap.innerHTML = chrome('Reports') + tabsHtml() +
+      '<div class="empty">No reports.<br>Nothing a rider has complained about.</div>';
+    wireChrome();
+    return;
+  }
+
+  wrap.innerHTML = chrome('Reports') + tabsHtml() +
+    (open.length
+      ? '<div class="card"><h2>Waiting: ' + open.length + '</h2>' +
+        '<div class="sub">Tap one to read it and call the rider.</div>' +
+        open.map(reportRow).join('') + '</div>'
+      : '<div class="card"><h2>Waiting: none</h2>' +
+        '<div class="sub">Every report has been dealt with.</div></div>') +
+    (done.length
+      ? '<div class="card"><details><summary>Already handled (' + done.length + ')</summary>' +
+        done.map(reportRow).join('') + '</details></div>'
+      : '');
+  wireChrome();
+  wrap.querySelectorAll('.q').forEach(function (b) {
+    b.onclick = function () {
+      const r = reports.find(function (x) { return x.id === b.dataset.rid; });
+      if (r) reportDetail(r);
+    };
+  });
+}
+
+function reportDetail(r) {
+  currentReport = r;
+  contactNote = '';
+
+  // What the rider said, in their words, largest on the screen. Everything else
+  // on this page is context for these two fields.
+  const said = r.detail
+    ? '<div class="said">' + esc(r.detail) + '</div>'
+    : '<div class="sub" style="margin-top:8px">They did not add anything else.</div>';
+
+  wrap.innerHTML =
+    '<div class="bar"><button class="link" id="back">&larr; Reports</button>' +
+    '<div class="who">' + esc(me) + '</div></div>' +
+    '<div class="card">' +
+    '<h2>' + esc(r.riderName) + '</h2>' +
+    (r.hasRiderNumber
+      ? '<div class="sub">' + esc(r.riderPhone) + '</div>'
+      // Said rather than left blank. An employee needs to know the number is
+      // missing because somebody did not enter one, not because the page is
+      // broken -- and it is the difference between ringing the driver and
+      // giving up on the complaint.
+      : '<div class="err">This rider has no phone number on file, so there is nobody to call. ' +
+        'Ask a supervisor to add one.</div>') +
+
+    '<div class="label" style="margin-top:18px">What they reported</div>' +
+    '<div class="say">' + esc(r.reason) + '</div>' + said +
+    '<div class="sub" style="margin-top:8px">Reported ' + esc(ago(r.at)) + '.</div>' +
+
+    '<div class="label" style="margin-top:20px">The ride</div>' +
+    '<div style="margin-top:8px">' +
+    leg('From', r.pickupText) +
+    leg('To', r.dropoffText) +
+    leg('Fare', ghs(r.fareGhs)) +
+    leg('Type', r.category) +
+    leg('Ride status', r.tripState) +
+    leg('Driver', r.driverName) +
+    '</div>' +
+
+    '<label for="note" style="margin-top:18px">Note (optional)</label>' +
+    '<input id="note" placeholder="What you did about it">' +
+    '<div class="sub" style="margin-top:8px">' +
+    (r.dismissNote ? 'Note on file: ' + esc(r.dismissNote) : '') + '</div>' +
+
+    (r.contactedAt
+      ? '<div class="note" style="margin-top:14px">Called ' + esc(ago(r.contactedAt)) +
+        (r.contactedBy ? ' by ' + esc(r.contactedBy) : '') + '.</div>'
+      : '') +
+    (r.dismissedAt
+      ? '<div class="note" style="margin-top:14px">Marked handled ' + esc(ago(r.dismissedAt)) +
+        (r.dismissedBy ? ' by ' + esc(r.dismissedBy) : '') + '.</div>'
+      : '') +
+    '</div>';
+
+  document.getElementById('back').onclick = function () { currentReport = null; reportsScreen(); };
+  reportButtons(r);
+}
+
+// The bottom bar. Dismissed and reopened both go back to the list, because the
+// thing an employee does after deciding is look at the next one.
+function reportButtons(r) {
+  clearButtons();
+  const bar = document.createElement('div');
+  bar.className = 'rbar';
+  bar.innerHTML =
+    '<button class="call" id="callBtn"' + (r.hasRiderNumber ? '' : ' disabled') + '>Call rider</button>' +
+    (r.open
+      ? '<button class="go" id="markBtn">Mark handled</button>'
+      : '<button class="undo" id="reopenBtn">Reopen</button>');
+  document.body.appendChild(bar);
+
+  const callBtn = document.getElementById('callBtn');
+  if (!r.hasRiderNumber) {
+    callBtn.title = 'This rider has no phone number on file.';
+  } else {
+    callBtn.onclick = function () { callRider(r); };
+  }
+
+  const mark = document.getElementById('markBtn');
+  if (mark) {
+    mark.onclick = function () {
+      const box = document.getElementById('note');
+      decideReport(r, 'dismiss', box ? box.value : '');
+    };
+  }
+  const reopen = document.getElementById('reopenBtn');
+  if (reopen) {
+    reopen.onclick = function () {
+      const box = document.getElementById('note');
+      decideReport(r, 'reopen', box ? box.value : '');
+    };
+  }
+}
+
+// Calling the rider, and recording that it happened.
+//
+// The order matters and it is the order that is easy to get wrong. Opening the
+// dialler first and recording afterwards loses the record most of the time,
+// because the phone app takes the screen away and the response lands on a page
+// nobody is looking at any more. So the write goes first and the dialler opens
+// on the way out.
+//
+// It opens the phone's own dialler. Nothing is sent: this product has no way to
+// message a rider, and a button that looked like it could would be worse than no
+// button at all.
+async function callRider(r) {
+  const res = await call({ action: 'decidereport', reportId: r.id, decision: 'contact' });
+  contactNote = res.status === 200 ? '' : (res.data.error || 'The call was not recorded.');
+  const shown = reports.find(function (x) { return x.id === r.id; });
+  if (shown && res.status === 200) {
+    shown.contactedAt = res.data.report ? res.data.report.contactedAt : shown.contactedAt;
+    shown.contactedBy = res.data.report ? res.data.report.contactedBy : shown.contactedBy;
+  }
+  window.location.href = 'tel:' + String(r.riderPhone).replace(/[^0-9+]/g, '');
+}
+
+async function decideReport(r, decision, note) {
+  clearButtons();
+  const res = await call({
+    action: 'decidereport',
+    reportId: r.id,
+    decision: decision,
+    note: note || '',
+  });
+
+  // A refusal is shown, not swallowed. The one that matters is the second
+  // dismiss, where the server refuses because somebody already handled it, and
+  // an employee who pressed the button and watched nothing happen would assume
+  // the page is broken.
+  if (res.status !== 200) {
+    const note2 = document.createElement('div');
+    note2.className = 'err';
+    note2.textContent = res.data.error || 'That did not save. Try again.';
+    wrap.insertBefore(note2, wrap.children[1]);
+    reportButtons(r);
+    return;
+  }
+
+  // Re-read from the response rather than patching the row, so the screen shows
+  // what the database holds.
+  const updated = res.data.report;
+  const at = reports.findIndex(function (x) { return x.id === r.id; });
+  if (at >= 0 && updated) reports[at] = updated;
+  openReports = reports.filter(function (x) { return x.open; }).length;
+  currentReport = null;
+  reportsScreen();
 }
 
 // -------------------------------------------------------- what I have done
