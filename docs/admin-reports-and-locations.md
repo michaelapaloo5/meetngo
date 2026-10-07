@@ -9,8 +9,13 @@ approvals". Staff sign in with a 4-digit PIN (`staffsignin`), it holds a bearer
 token, and it calls the `admin-drivers` Edge Function. It lists drivers waiting on
 KYC and lets staff approve them.
 
-**KYC acceptance is therefore already built.** It is not currently in git; that is
-the first thing to fix.
+**KYC acceptance is therefore already built.**
+
+**The HTML is a build artifact and must not be edited.** It is gitignored on
+purpose, with the reason written in `.gitignore`. The source of truth is
+`supabase/functions/admin-drivers/staff_page.ts` (about 33 KB of TypeScript), and
+`toolchain/build-admin-page.ps1` writes the page from it. Both are committed. All
+reports and locations work is done in that TypeScript, then the page is regenerated.
 
 It has no reports view and no locations view.
 
@@ -79,12 +84,13 @@ recorded while no trip is active at all — the recommendation is that they are 
 
 ## Order of work
 
-1. Get `admin-page/` into git. Nothing is built on an untracked file.
+1. Decide the staff auth shape (shared PIN vs named accounts) — decided in favour
+   of **named accounts**, see above. It is the expensive thing to change later.
 2. Clean up or gitignore the root APKs.
-3. Decide the staff auth shape (shared PIN vs named accounts) — it is the expensive
-   thing to change later.
+3. Read `staff_page.ts` before changing anything. It is 33 KB and has never been
+   opened by whoever is about to extend it.
 4. **Reports: read, dismiss, contact rider.** Fully specified, data already exists.
-   Needs a new path in the Edge Function.
+   Needs a new path in the Edge Function, then regenerate the page.
 5. **Locations: last-known view** for riders and drivers.
 6. **Retention: 2 weeks**, plus the keep-recording control and its banner.
 
