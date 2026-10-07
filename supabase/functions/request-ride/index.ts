@@ -194,6 +194,19 @@ serve(async (req) => {
       distance_km: distanceKm,
       surge: quote.surge,
       fare_ghs: quote.fareGhs,
+      // Minted here, at booking, and not when the driver sets off.
+      //
+      // This line was missing. `pickupOtp` was imported and never called, so
+      // every trip was booked with `pickup_otp = null` -- and
+      // `SupabaseDriverRepository.verifyPickupOtp` refuses a null expected
+      // value, so *every* code a driver typed was rejected with "That code is
+      // not right" while the rider's own screen read "Not available". No ride
+      // could be started at all.
+      //
+      // Minted at booking rather than on arrival because the rider has to read
+      // it out to the driver from their phone. A code generated after the driver
+      // has arrived is a code the rider cannot possibly know.
+      pickup_otp: pickupOtp(),
       is_demo: true,
       // Null for an ordinary booking, which is then offerable immediately
       // exactly as before. A future value stores the moment, and the trip
