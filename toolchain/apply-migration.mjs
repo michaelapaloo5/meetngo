@@ -17,6 +17,23 @@ const q = async (sql, label) => {
   console.log((okFlag ? 'OK   ' : 'FAIL ') + label + (okFlag ? '' : ' :: ' + (b.message ?? JSON.stringify(b)).slice(0,160)));
   return okFlag;
 };
-const sql = readFileSync('supabase/migrations/20260930000012_trip_reports.sql','utf8');
+// The file to apply comes from the command line.
+//
+// It used to be hardcoded to `20260930000012_trip_reports.sql`, which meant
+// passing any other migration was silently ignored and that one was re-applied
+// instead -- an idempotent no-op that reported OK, so applying a new migration
+// looked like it had worked when it had done nothing at all.
+const target = process.argv[2];
+if (!target) {
+  console.error('usage: node toolchain/apply-migration.mjs <path-to-migration.sql>');
+  process.exit(2);
+}
+let sql;
+try {
+  sql = readFileSync(target, 'utf8');
+} catch (e) {
+  console.error('cannot read ' + target + ': ' + e.code);
+  process.exit(2);
+}
 const ok = await q(sql, 'whole migration as one multi-statement query');
 if (!ok) process.exit(1);
