@@ -159,6 +159,23 @@ export async function handleCancel(req: Request, deps: CancelDeps): Promise<Resp
   if (cancelError) return json(500, { error: cancelError });
   if (!written) return refuse(-1);
 
+  // Releasing the offers happens whether or not a driver was ever assigned.
+  //
+  // It used to sit inside `if (row.driver_id)`, which meant a rider cancelling a
+  // trip that no driver had taken yet -- the common case, and the only case where
+  // offers are still pending -- left every one of those offers pending forever.
+  // They point at a cancelled trip, so a driver browsing offers is shown ride
+  // requests for rides that do not exist, and nothing will ever release them
+  // because the only code that releases them runs after the trip is already
+  // cancelled. Seventeen of exactly these were sitting in the database.
+  //
+  // Checked, and checked before the driver, because a stale offer is visible to
+  // every driver immediately whereas a driver held on a trip is visible to one.
+  const { error: offerError } = await deps.releaseOffers(row.id);
+  if (offerError) {
+    return json(500, { error: `the trip was cancelled but its pending offers were not released: ${offerError}` });
+  }
+
   if (row.driver_id) {
     // Every write below is checked. The trip is already cancelled at this point,
     // so a dropped error here cannot be undone by reporting failure: it leaves a
@@ -170,11 +187,6 @@ export async function handleCancel(req: Request, deps: CancelDeps): Promise<Resp
     const { error: driverError } = await deps.releaseDriver(row.driver_id);
     if (driverError) {
       return json(500, { error: `the trip was cancelled but the driver was not released: ${driverError}` });
-    }
-
-    const { error: offerError } = await deps.releaseOffers(row.id);
-    if (offerError) {
-      return json(500, { error: `the trip was cancelled but its pending offers were not released: ${offerError}` });
     }
 
     if (compensatedGhs > 0) {

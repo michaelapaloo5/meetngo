@@ -1,0 +1,823 @@
+{
+  "writtenAt": "2026-10-07T21:20:22.557Z",
+  "why": "Test and demo accounts left in the production database by an earlier phase of testing, plus the self-trips made by driving both apps with one account. Confirmed by the owner: the only real profile is Michael Apaloo.",
+  "keptEmails": [
+    "edemapaloo73@gmail.com",
+    "lonelymic04@gmail.com"
+  ],
+  "deletedProfiles": [
+    {
+      "id": "90bcf170-1018-4af7-a6f9-60c656d64a11",
+      "full_name": "Kwame Mensah",
+      "role": "rider",
+      "kyc_status": "notStarted",
+      "email": "rider@meetngo.app",
+      "created": "2026-09-28 11:23"
+    },
+    {
+      "id": "bdb5a68c-3f58-43ed-8b32-a8524d9d119c",
+      "full_name": "Ama Boateng",
+      "role": "driver",
+      "kyc_status": "rejected",
+      "email": "driver@meetngo.app",
+      "created": "2026-09-28 11:23"
+    },
+    {
+      "id": "9e729318-c29f-44e3-bc0f-7c689bfb77ad",
+      "full_name": "",
+      "role": "rider",
+      "kyc_status": "notStarted",
+      "email": "matchtest_premium-driver_whpciu@example.com",
+      "created": "2026-09-30 15:32"
+    },
+    {
+      "id": "6e773faf-eefb-4a7c-a24b-44fdacbac73c",
+      "full_name": "",
+      "role": "rider",
+      "kyc_status": "notStarted",
+      "email": "matchtest_premium-driver_pn4px8@example.com",
+      "created": "2026-09-30 15:32"
+    },
+    {
+      "id": "9655e2af-9d6e-4ade-b344-fe27a5672582",
+      "full_name": "",
+      "role": "rider",
+      "kyc_status": "notStarted",
+      "email": "keyprobe25187890@nowhere.test",
+      "created": "2026-09-30 15:58"
+    },
+    {
+      "id": "ed8133f3-9bf1-43ac-a325-3263476ddb91",
+      "full_name": "KYC Freeze Probe",
+      "role": "driver",
+      "kyc_status": "approved",
+      "email": "kyc-freeze-1790812909493-6ucv8@example.test",
+      "created": "2026-10-01 00:01"
+    },
+    {
+      "id": "fe186ed7-5caa-4e8c-bf71-0fe44fb5b325",
+      "full_name": "KYC Freeze Probe",
+      "role": "driver",
+      "kyc_status": "pending",
+      "email": "kyc-freeze-1790812913714-b0lv9@example.test",
+      "created": "2026-10-01 00:01"
+    },
+    {
+      "id": "e8a8fe4a-501e-41e7-9461-b305a1f288c6",
+      "full_name": "Driver",
+      "role": "rider",
+      "kyc_status": "notStarted",
+      "email": "left-item-driver-1790815838379@example.test",
+      "created": "2026-10-01 00:50"
+    },
+    {
+      "id": "65f48aac-e34e-41bc-8593-0166a139a363",
+      "full_name": "Rider",
+      "role": "rider",
+      "kyc_status": "notStarted",
+      "email": "left-item-rider-1790815838379@example.test",
+      "created": "2026-10-01 00:50"
+    },
+    {
+      "id": "6663917c-5d17-49d2-bf5a-6cbf66a30383",
+      "full_name": "Stranger",
+      "role": "rider",
+      "kyc_status": "notStarted",
+      "email": "left-item-stranger-1790815838379@example.test",
+      "created": "2026-10-01 00:50"
+    },
+    {
+      "id": "26082fc3-3ea7-4715-9cbf-572dbe4b2072",
+      "full_name": "Driver",
+      "role": "rider",
+      "kyc_status": "notStarted",
+      "email": "left-item-driver-1790815854583@example.test",
+      "created": "2026-10-01 00:50"
+    },
+    {
+      "id": "89afc44f-ba84-481f-839a-6a96066253f7",
+      "full_name": "Rider",
+      "role": "rider",
+      "kyc_status": "notStarted",
+      "email": "left-item-rider-1790815854583@example.test",
+      "created": "2026-10-01 00:50"
+    },
+    {
+      "id": "9a1ee030-e08f-45eb-b2bd-7963f7841684",
+      "full_name": "Stranger",
+      "role": "rider",
+      "kyc_status": "notStarted",
+      "email": "left-item-stranger-1790815854583@example.test",
+      "created": "2026-10-01 00:50"
+    },
+    {
+      "id": "c2bbff3c-de52-4c28-8afc-9885b29e3525",
+      "full_name": "Driver",
+      "role": "rider",
+      "kyc_status": "notStarted",
+      "email": "leave-driver-1790818414485@example.test",
+      "created": "2026-10-01 01:33"
+    },
+    {
+      "id": "95901732-9dc4-428a-8e9a-d0b37b7e3a4c",
+      "full_name": "Rider",
+      "role": "rider",
+      "kyc_status": "notStarted",
+      "email": "leave-rider-1790818414485@example.test",
+      "created": "2026-10-01 01:33"
+    },
+    {
+      "id": "d3311a90-fe4e-4ac7-bcc5-cdf9bcf8c5ac",
+      "full_name": "Driver",
+      "role": "rider",
+      "kyc_status": "notStarted",
+      "email": "leave-driver-1790818430748@example.test",
+      "created": "2026-10-01 01:33"
+    },
+    {
+      "id": "4f12c47b-2b60-4a7a-9dde-70d156e1b84f",
+      "full_name": "Rider",
+      "role": "rider",
+      "kyc_status": "notStarted",
+      "email": "leave-rider-1790818430748@example.test",
+      "created": "2026-10-01 01:33"
+    },
+    {
+      "id": "c49e2c26-9808-4c6f-8baf-4136cb5c1aa1",
+      "full_name": "Driver",
+      "role": "rider",
+      "kyc_status": "notStarted",
+      "email": "leave-driver-1790818450349@example.test",
+      "created": "2026-10-01 01:34"
+    },
+    {
+      "id": "c9fd4b00-5474-473c-ab76-993480687826",
+      "full_name": "Rider",
+      "role": "rider",
+      "kyc_status": "notStarted",
+      "email": "leave-rider-1790818450349@example.test",
+      "created": "2026-10-01 01:34"
+    },
+    {
+      "id": "1b708bf6-71d5-4a09-a12b-54e71ef42a84",
+      "full_name": "Driver",
+      "role": "rider",
+      "kyc_status": "notStarted",
+      "email": "leave-driver-1790818458407@example.test",
+      "created": "2026-10-01 01:34"
+    },
+    {
+      "id": "ae57de54-885a-421e-ae28-3417dfa2bb9c",
+      "full_name": "Rider",
+      "role": "rider",
+      "kyc_status": "notStarted",
+      "email": "leave-rider-1790818458407@example.test",
+      "created": "2026-10-01 01:34"
+    },
+    {
+      "id": "a6ffa660-d0c5-4c38-81a4-f670f86b9e0e",
+      "full_name": "Driver",
+      "role": "driver",
+      "kyc_status": "approved",
+      "email": "leave-driver-1790818489796@example.test",
+      "created": "2026-10-01 01:34"
+    },
+    {
+      "id": "29d6d3f1-ad8c-401c-863e-0722745f7ba4",
+      "full_name": "Rider",
+      "role": "rider",
+      "kyc_status": "notStarted",
+      "email": "leave-rider-1790818489796@example.test",
+      "created": "2026-10-01 01:34"
+    },
+    {
+      "id": "e1c8528d-4b3c-483a-8d89-ff8d49f45512",
+      "full_name": "Driver",
+      "role": "driver",
+      "kyc_status": "approved",
+      "email": "leave-driver-1790818500987@example.test",
+      "created": "2026-10-01 01:35"
+    },
+    {
+      "id": "57071bfb-30a6-47ed-ad4e-ea6709f21e07",
+      "full_name": "Rider",
+      "role": "rider",
+      "kyc_status": "notStarted",
+      "email": "leave-rider-1790818500987@example.test",
+      "created": "2026-10-01 01:35"
+    },
+    {
+      "id": "0a7caea8-9d1e-40df-b2a1-fe79f0f8d37d",
+      "full_name": "Driver",
+      "role": "driver",
+      "kyc_status": "approved",
+      "email": "leave-driver-1790818619993@example.test",
+      "created": "2026-10-01 01:37"
+    },
+    {
+      "id": "0409aede-8d00-43e8-a8e3-49915be7427c",
+      "full_name": "Rider",
+      "role": "rider",
+      "kyc_status": "notStarted",
+      "email": "leave-rider-1790818619993@example.test",
+      "created": "2026-10-01 01:37"
+    },
+    {
+      "id": "fe15a90f-c39c-4dc8-b7a4-db203e50613c",
+      "full_name": "Nav Probe",
+      "role": "rider",
+      "kyc_status": "notStarted",
+      "email": "nav-verify-1790823036512@example.test",
+      "created": "2026-10-01 02:50"
+    },
+    {
+      "id": "5e09c768-2db4-45a6-9927-c1c46fb39893",
+      "full_name": "",
+      "role": "rider",
+      "kyc_status": "notStarted",
+      "email": "navx-1790823057828@example.test",
+      "created": "2026-10-01 02:50"
+    },
+    {
+      "id": "469ab719-5233-4f02-b059-762e19e406fc",
+      "full_name": "Nav Probe",
+      "role": "rider",
+      "kyc_status": "notStarted",
+      "email": "nav-verify-1790823125150@example.test",
+      "created": "2026-10-01 02:52"
+    },
+    {
+      "id": "e1d51a9b-d8ab-4860-adcf-a3863bde421d",
+      "full_name": "",
+      "role": "rider",
+      "kyc_status": "notStarted",
+      "email": "keyprobe291148616@nowhere.test",
+      "created": "2026-10-01 17:36"
+    },
+    {
+      "id": "b085562a-738a-441d-a8ad-9bc095f47a2d",
+      "full_name": "Stranger",
+      "role": "rider",
+      "kyc_status": "notStarted",
+      "email": "leave-stranger-1790877675249@example.test",
+      "created": "2026-10-01 18:01"
+    },
+    {
+      "id": "a92b5ba2-7b95-4925-bd96-81fa3b0d7618",
+      "full_name": "Stranger",
+      "role": "rider",
+      "kyc_status": "notStarted",
+      "email": "leave-stranger-1790878074820@example.test",
+      "created": "2026-10-01 18:08"
+    },
+    {
+      "id": "e34fe15a-8c00-44c6-9ef0-85de0ab753fb",
+      "full_name": "Stranger",
+      "role": "rider",
+      "kyc_status": "notStarted",
+      "email": "leave-stranger-1790878203445@example.test",
+      "created": "2026-10-01 18:10"
+    },
+    {
+      "id": "abd02df9-f6d5-45b8-a17f-7ea12ee67574",
+      "full_name": "Stranger",
+      "role": "rider",
+      "kyc_status": "notStarted",
+      "email": "leave-stranger-1790878268079@example.test",
+      "created": "2026-10-01 18:11"
+    },
+    {
+      "id": "7b08f99c-0725-4403-bb92-6e048de319dc",
+      "full_name": "",
+      "role": "rider",
+      "kyc_status": "notStarted",
+      "email": "keyprobe400516906@nowhere.test",
+      "created": "2026-10-01 21:33"
+    },
+    {
+      "id": "c1466a41-6c70-45b0-ae2e-791329d280f2",
+      "full_name": "contact driver",
+      "role": "driver",
+      "kyc_status": "approved",
+      "email": "contact-driver-1790891997112@example.test",
+      "created": "2026-10-01 21:59"
+    },
+    {
+      "id": "921b1202-616c-45d5-ad2e-317f15a4d95c",
+      "full_name": "contact rider",
+      "role": "rider",
+      "kyc_status": "notStarted",
+      "email": "contact-rider-1790891997112@example.test",
+      "created": "2026-10-01 21:59"
+    },
+    {
+      "id": "321889a6-612b-43a8-863e-02464c1b522b",
+      "full_name": "Nav Probe",
+      "role": "rider",
+      "kyc_status": "notStarted",
+      "email": "nav-verify-1790892188085@example.test",
+      "created": "2026-10-01 22:03"
+    },
+    {
+      "id": "3f65944b-92a4-4114-9832-0b90480615f2",
+      "full_name": "",
+      "role": "rider",
+      "kyc_status": "notStarted",
+      "email": "keyprobe802005015@nowhere.test",
+      "created": "2026-10-01 22:13"
+    },
+    {
+      "id": "0575d22b-b7a1-40e7-931f-50e293d66522",
+      "full_name": "",
+      "role": "rider",
+      "kyc_status": "notStarted",
+      "email": "keyprobe759703929@nowhere.test",
+      "created": "2026-10-01 22:30"
+    },
+    {
+      "id": "7a2f8664-4bf5-401b-8b95-cda52618ce75",
+      "full_name": "",
+      "role": "rider",
+      "kyc_status": "notStarted",
+      "email": "keyprobe1755865307@nowhere.test",
+      "created": "2026-10-01 22:48"
+    },
+    {
+      "id": "7248a3a1-2b37-4788-98f9-f5136c0433cf",
+      "full_name": "",
+      "role": "rider",
+      "kyc_status": "notStarted",
+      "email": "keyprobe1444958288@nowhere.test",
+      "created": "2026-10-01 23:05"
+    },
+    {
+      "id": "225eb253-72dc-4348-99b8-365f00c198c6",
+      "full_name": "",
+      "role": "rider",
+      "kyc_status": "notStarted",
+      "email": "keyprobe16134316@nowhere.test",
+      "created": "2026-10-01 23:45"
+    },
+    {
+      "id": "5f015f8b-7ca1-4bfc-a48c-c1b5cab045bb",
+      "full_name": "",
+      "role": "rider",
+      "kyc_status": "notStarted",
+      "email": "keyprobe1774837428@nowhere.test",
+      "created": "2026-10-02 00:20"
+    },
+    {
+      "id": "5f448f2d-8f0e-4c52-aa00-83782a8bea74",
+      "full_name": "",
+      "role": "rider",
+      "kyc_status": "notStarted",
+      "email": "keyprobe1090824310@nowhere.test",
+      "created": "2026-10-02 01:00"
+    },
+    {
+      "id": "a62b22e9-2cea-4589-9c0e-5af48f7f1f2d",
+      "full_name": "device-check rider",
+      "role": "rider",
+      "kyc_status": "notStarted",
+      "email": "device-check-rider-1790904776889@example.test",
+      "created": "2026-10-02 01:32"
+    },
+    {
+      "id": "634fed89-2512-44e0-bfc6-2a5b95516465",
+      "full_name": "",
+      "role": "rider",
+      "kyc_status": "notStarted",
+      "email": "keyprobe460349410@nowhere.test",
+      "created": "2026-10-02 01:37"
+    },
+    {
+      "id": "b4aabb50-9eca-49fe-b919-1e8bf985aa94",
+      "full_name": "",
+      "role": "rider",
+      "kyc_status": "notStarted",
+      "email": "keyprobe893463618@nowhere.test",
+      "created": "2026-10-02 02:06"
+    },
+    {
+      "id": "197d727b-ac99-42c6-b435-113a57a74efb",
+      "full_name": "",
+      "role": "rider",
+      "kyc_status": "notStarted",
+      "email": "keyprobe1451978681@nowhere.test",
+      "created": "2026-10-02 02:10"
+    },
+    {
+      "id": "dec6618b-38d2-46bf-98b4-51052de32364",
+      "full_name": "device-check rider",
+      "role": "rider",
+      "kyc_status": "notStarted",
+      "email": "device-check-rider-1790907570747@example.test",
+      "created": "2026-10-02 02:19"
+    },
+    {
+      "id": "bef6490e-3c13-469c-b6f5-52e88b992fca",
+      "full_name": "",
+      "role": "rider",
+      "kyc_status": "notStarted",
+      "email": "keyprobe2118996534@nowhere.test",
+      "created": "2026-10-02 02:29"
+    },
+    {
+      "id": "bab2284f-9f67-40f9-9de1-4c70aeb4838b",
+      "full_name": "",
+      "role": "rider",
+      "kyc_status": "notStarted",
+      "email": "keyprobe656527506@nowhere.test",
+      "created": "2026-10-02 02:36"
+    },
+    {
+      "id": "009fac2c-55ce-4b67-b67d-be9aea41f69e",
+      "full_name": "",
+      "role": "rider",
+      "kyc_status": "notStarted",
+      "email": "keyprobe500582801@nowhere.test",
+      "created": "2026-10-02 02:55"
+    },
+    {
+      "id": "47cc7730-e0a0-4258-80c3-99a2c33b9134",
+      "full_name": "device-check rider",
+      "role": "rider",
+      "kyc_status": "notStarted",
+      "email": "device-check-rider-1790933430156@example.test",
+      "created": "2026-10-02 09:30"
+    },
+    {
+      "id": "e85b0f76-3871-4e9a-aff9-9e88c3ef5d2a",
+      "full_name": "",
+      "role": "rider",
+      "kyc_status": "notStarted",
+      "email": "keyprobe1418141138@nowhere.test",
+      "created": "2026-10-02 10:09"
+    },
+    {
+      "id": "fb23b9ce-ff3b-453c-9be7-f169a8a97a1a",
+      "full_name": "",
+      "role": "rider",
+      "kyc_status": "notStarted",
+      "email": "keyprobe192599855@nowhere.test",
+      "created": "2026-10-02 11:43"
+    },
+    {
+      "id": "0db185fb-7367-49ce-ac43-b46d387239a8",
+      "full_name": "",
+      "role": "rider",
+      "kyc_status": "notStarted",
+      "email": "keyprobe690129032@nowhere.test",
+      "created": "2026-10-02 20:25"
+    },
+    {
+      "id": "95f5618c-2fce-4dc8-a57f-0bb8adadeae2",
+      "full_name": "",
+      "role": "rider",
+      "kyc_status": "notStarted",
+      "email": "keyprobe1186895758@nowhere.test",
+      "created": "2026-10-02 20:46"
+    },
+    {
+      "id": "6d54f30a-c02e-4bf0-9140-a78377ddd069",
+      "full_name": "",
+      "role": "rider",
+      "kyc_status": "notStarted",
+      "email": "keyprobe1494915437@nowhere.test",
+      "created": "2026-10-02 20:56"
+    },
+    {
+      "id": "621aa39b-f0d9-4803-85f2-804e9cef4251",
+      "full_name": "",
+      "role": "rider",
+      "kyc_status": "notStarted",
+      "email": "keyprobe1130911719@nowhere.test",
+      "created": "2026-10-02 21:17"
+    },
+    {
+      "id": "d3d7c68f-0906-4e1a-b2e6-83bf47076b99",
+      "full_name": "",
+      "role": "rider",
+      "kyc_status": "notStarted",
+      "email": "keyprobe267615093@nowhere.test",
+      "created": "2026-10-02 21:33"
+    },
+    {
+      "id": "de175365-8127-4418-a14a-88d87cfe2d05",
+      "full_name": "",
+      "role": "rider",
+      "kyc_status": "notStarted",
+      "email": "keyprobe1541229123@nowhere.test",
+      "created": "2026-10-02 22:01"
+    },
+    {
+      "id": "ee221b6e-9fa2-4402-b0e2-dd3ef50b01d2",
+      "full_name": "",
+      "role": "rider",
+      "kyc_status": "notStarted",
+      "email": "keyprobe297648847@nowhere.test",
+      "created": "2026-10-02 22:25"
+    },
+    {
+      "id": "2eab15e5-3d66-4479-b39b-4f4b8b53b160",
+      "full_name": "",
+      "role": "rider",
+      "kyc_status": "notStarted",
+      "email": "keyprobe935985062@nowhere.test",
+      "created": "2026-10-02 22:34"
+    },
+    {
+      "id": "a4f0cb7b-63a9-4f9e-9385-4f6d558f1f50",
+      "full_name": "",
+      "role": "rider",
+      "kyc_status": "notStarted",
+      "email": "keyprobe1156477749@nowhere.test",
+      "created": "2026-10-02 22:42"
+    },
+    {
+      "id": "22fe7d7b-6aca-41e7-b876-6e1ab33615f4",
+      "full_name": "",
+      "role": "rider",
+      "kyc_status": "notStarted",
+      "email": "keyprobe300200272@nowhere.test",
+      "created": "2026-10-02 22:52"
+    },
+    {
+      "id": "7a792918-142a-46a0-b008-6ae7118a1250",
+      "full_name": "",
+      "role": "rider",
+      "kyc_status": "notStarted",
+      "email": "keyprobe1079951592@nowhere.test",
+      "created": "2026-10-02 22:57"
+    },
+    {
+      "id": "0cf93fa2-2d93-4f84-a02c-af9779b6b43c",
+      "full_name": "",
+      "role": "rider",
+      "kyc_status": "notStarted",
+      "email": "keyprobe1875733731@nowhere.test",
+      "created": "2026-10-02 23:16"
+    },
+    {
+      "id": "caa39bfa-6620-483b-81b9-f1959b61ad50",
+      "full_name": "",
+      "role": "rider",
+      "kyc_status": "notStarted",
+      "email": "keyprobe880557335@nowhere.test",
+      "created": "2026-10-02 23:36"
+    },
+    {
+      "id": "06168b79-1069-44b2-ac5a-cbac052bc6b1",
+      "full_name": "",
+      "role": "rider",
+      "kyc_status": "notStarted",
+      "email": "keyprobe187082996@nowhere.test",
+      "created": "2026-10-02 23:43"
+    },
+    {
+      "id": "f7b1b63e-2cc1-41a1-a66f-776b2603bee7",
+      "full_name": "",
+      "role": "rider",
+      "kyc_status": "notStarted",
+      "email": "keyprobe1482303080@nowhere.test",
+      "created": "2026-10-03 00:32"
+    },
+    {
+      "id": "18605891-2573-42b3-8cf2-ba350506e084",
+      "full_name": "",
+      "role": "rider",
+      "kyc_status": "notStarted",
+      "email": "keyprobe580123563@nowhere.test",
+      "created": "2026-10-03 00:33"
+    },
+    {
+      "id": "0d5b986b-c49f-4bc9-a890-071df835ff4c",
+      "full_name": "",
+      "role": "rider",
+      "kyc_status": "notStarted",
+      "email": "keyprobe1749688921@nowhere.test",
+      "created": "2026-10-03 00:41"
+    },
+    {
+      "id": "7d011d35-a4be-4253-a973-b33df5511c51",
+      "full_name": "",
+      "role": "rider",
+      "kyc_status": "notStarted",
+      "email": "keyprobe926937844@nowhere.test",
+      "created": "2026-10-03 00:58"
+    },
+    {
+      "id": "067d685b-4089-4836-9ae7-baf0040d47f7",
+      "full_name": "",
+      "role": "rider",
+      "kyc_status": "notStarted",
+      "email": "keyprobe1531735117@nowhere.test",
+      "created": "2026-10-03 00:59"
+    },
+    {
+      "id": "3015f410-1110-4118-9f5a-20e2ccda9652",
+      "full_name": "",
+      "role": "rider",
+      "kyc_status": "notStarted",
+      "email": "keyprobe163231893@nowhere.test",
+      "created": "2026-10-03 01:16"
+    },
+    {
+      "id": "d33d0402-48f4-48eb-9e0c-5b4979478ce0",
+      "full_name": "",
+      "role": "rider",
+      "kyc_status": "notStarted",
+      "email": "keyprobe198782860@nowhere.test",
+      "created": "2026-10-03 01:17"
+    },
+    {
+      "id": "11a6216e-06f3-41fc-bde0-721c9ab482e7",
+      "full_name": "",
+      "role": "rider",
+      "kyc_status": "notStarted",
+      "email": "keyprobe1320492827@nowhere.test",
+      "created": "2026-10-03 01:31"
+    },
+    {
+      "id": "ef4652d3-d3e7-4825-be09-541be0068462",
+      "full_name": "",
+      "role": "rider",
+      "kyc_status": "notStarted",
+      "email": "keyprobe1995956064@nowhere.test",
+      "created": "2026-10-03 01:32"
+    },
+    {
+      "id": "14293adb-f29a-4627-9d6c-bf79723686c8",
+      "full_name": "",
+      "role": "rider",
+      "kyc_status": "notStarted",
+      "email": "keyprobe1137374374@nowhere.test",
+      "created": "2026-10-03 07:54"
+    },
+    {
+      "id": "4bac7a34-f4c3-45e6-b670-6e37cc68280d",
+      "full_name": "",
+      "role": "rider",
+      "kyc_status": "notStarted",
+      "email": "keyprobe344508977@nowhere.test",
+      "created": "2026-10-03 07:54"
+    },
+    {
+      "id": "0b4e98d1-4e1b-4c16-95be-b8c9a76aade8",
+      "full_name": "",
+      "role": "rider",
+      "kyc_status": "notStarted",
+      "email": "keyprobe759284883@nowhere.test",
+      "created": "2026-10-03 07:58"
+    },
+    {
+      "id": "452717f8-e809-4f08-b469-b2eb824715b4",
+      "full_name": "",
+      "role": "rider",
+      "kyc_status": "notStarted",
+      "email": "keyprobe503097442@nowhere.test",
+      "created": "2026-10-03 08:02"
+    },
+    {
+      "id": "f4522309-a05b-496a-a576-c5f89908cfa6",
+      "full_name": "",
+      "role": "rider",
+      "kyc_status": "notStarted",
+      "email": "keyprobe337688678@nowhere.test",
+      "created": "2026-10-03 08:48"
+    },
+    {
+      "id": "3683c266-036a-41be-949d-715cda8581d6",
+      "full_name": "",
+      "role": "rider",
+      "kyc_status": "notStarted",
+      "email": "keyprobe1761238638@nowhere.test",
+      "created": "2026-10-03 09:01"
+    },
+    {
+      "id": "200053cf-2653-4912-953d-e55e1f3cece5",
+      "full_name": "",
+      "role": "rider",
+      "kyc_status": "notStarted",
+      "email": "keyprobe111079951@nowhere.test",
+      "created": "2026-10-03 14:09"
+    },
+    {
+      "id": "8e9a3cc6-ea86-4d43-8271-7d5ee543c1c6",
+      "full_name": "",
+      "role": "rider",
+      "kyc_status": "notStarted",
+      "email": "keyprobe1809161291@nowhere.test",
+      "created": "2026-10-03 14:24"
+    },
+    {
+      "id": "a2e66e78-60f8-4eaf-a9b2-11a63dd0f8d8",
+      "full_name": "",
+      "role": "rider",
+      "kyc_status": "notStarted",
+      "email": "keyprobe1359992172@nowhere.test",
+      "created": "2026-10-03 17:10"
+    },
+    {
+      "id": "51e78abf-27e5-4edc-bc53-79a6bc0fb932",
+      "full_name": "",
+      "role": "rider",
+      "kyc_status": "notStarted",
+      "email": "keyprobe1541651674@nowhere.test",
+      "created": "2026-10-03 17:17"
+    },
+    {
+      "id": "7cf44a86-c8db-4bd2-980e-bb4687353f86",
+      "full_name": "",
+      "role": "rider",
+      "kyc_status": "notStarted",
+      "email": "keyprobe120720467@nowhere.test",
+      "created": "2026-10-03 17:28"
+    },
+    {
+      "id": "300de989-52ad-4216-9e8d-084770caa1cf",
+      "full_name": "",
+      "role": "rider",
+      "kyc_status": "notStarted",
+      "email": "keyprobe1556028470@nowhere.test",
+      "created": "2026-10-03 17:44"
+    },
+    {
+      "id": "341204c2-a5ea-42a3-b5d5-f85a3bc87338",
+      "full_name": "",
+      "role": "rider",
+      "kyc_status": "notStarted",
+      "email": "keyprobe508182752@nowhere.test",
+      "created": "2026-10-03 17:53"
+    },
+    {
+      "id": "7efeb877-d573-49b0-b31a-6a9ac5689b7a",
+      "full_name": "",
+      "role": "rider",
+      "kyc_status": "notStarted",
+      "email": "keyprobe877457271@nowhere.test",
+      "created": "2026-10-03 18:01"
+    },
+    {
+      "id": "ff504cc8-5a49-4650-b2e7-11733ce12d93",
+      "full_name": "",
+      "role": "rider",
+      "kyc_status": "notStarted",
+      "email": "keyprobe1743016091@nowhere.test",
+      "created": "2026-10-03 18:09"
+    },
+    {
+      "id": "bd506615-8183-48d0-ade9-4a99e4367a58",
+      "full_name": "",
+      "role": "rider",
+      "kyc_status": "notStarted",
+      "email": "keyprobe105784948@nowhere.test",
+      "created": "2026-10-03 22:26"
+    },
+    {
+      "id": "f8839f9c-3655-4531-8d16-62814388bafa",
+      "full_name": "",
+      "role": "rider",
+      "kyc_status": "notStarted",
+      "email": "keyprobe1146520673@nowhere.test",
+      "created": "2026-10-04 00:57"
+    },
+    {
+      "id": "bb093edb-0c75-4fbf-932b-f9e69b5e44fe",
+      "full_name": "",
+      "role": "rider",
+      "kyc_status": "notStarted",
+      "email": "keyprobe49998761@nowhere.test",
+      "created": "2026-10-04 00:59"
+    },
+    {
+      "id": "e22526d5-0cd7-4e26-b0f8-fa2886caafc5",
+      "full_name": "",
+      "role": "rider",
+      "kyc_status": "notStarted",
+      "email": "keyprobe1721579853@nowhere.test",
+      "created": "2026-10-04 01:13"
+    }
+  ],
+  "deletedSelfTrips": [
+    {
+      "id": "7ea16b5d-ddab-4743-ae0c-c7c62df358ee",
+      "state": "completed",
+      "fare_ghs": "55.41",
+      "created": "2026-10-02 19:41"
+    },
+    {
+      "id": "8979d2dc-9425-4f74-a452-6528b4a915a1",
+      "state": "cancelled",
+      "fare_ghs": "55.41",
+      "created": "2026-10-02 22:48"
+    },
+    {
+      "id": "5b0fcec3-f8ca-44bc-9bba-b68926263065",
+      "state": "cancelled",
+      "fare_ghs": "55.41",
+      "created": "2026-10-02 22:50"
+    }
+  ],
+  "note": "profiles and auth.users cannot be reconstructed from this file. It exists so the list of what was removed is not only in a chat message."
+}

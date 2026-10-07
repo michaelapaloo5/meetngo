@@ -190,10 +190,15 @@ Deno.test('a failed driver release is a 500 that names the step', async () => {
     (await body(res)).error,
     'the trip was cancelled but the driver was not released: profiles is locked',
   );
-  // The trip is already cancelled, so the offer release and the compensation
-  // must not be recorded as though the whole chain had been refused.
+  // The trip is already cancelled, so the compensation must not be recorded as
+  // though the whole chain had been refused.
+  //
+  // The offers ARE released, and deliberately so. They used to be skipped here
+  // too, and that was the bug: a pending offer on a cancelled trip is shown to
+  // every driver who opens the app, and nothing ever releases it afterwards. A
+  // stale offer is a worse failure than a duplicated release.
   assertEquals(calls.writes.length, 1);
-  assertEquals(calls.releasedOffers.length, 0);
+  assertEquals(calls.releasedOffers.length, 1);
   assertEquals(calls.compensations.length, 0);
 });
 
@@ -224,8 +229,17 @@ Deno.test('a trip with no driver releases nobody and records no compensation', a
   const res = await handleCancel(request(), deps);
   assertEquals(res.status, 200);
   assertEquals(calls.releasedDrivers.length, 0);
-  assertEquals(calls.releasedOffers.length, 0);
   assertEquals(calls.compensations.length, 0);
+  // Its offers ARE released, and this used to assert the opposite.
+  //
+  // `releaseOffers` was inside `if (row.driver_id)`, so a trip cancelled before
+  // any driver took it -- the only case where offers are still pending -- left
+  // them pending on a cancelled trip forever, and a driver browsing offers saw
+  // ride requests for rides that no longer existed. Seventeen were found in that
+  // state. The new expectation is in cancel_releases_offers.test.ts, which fails
+  // against the old code; this one is here so the driver and compensation ports
+  // stay untouched by the change.
+  assertEquals(calls.releasedOffers.length, 1);
 });
 
 // --- cancelled_at and the 200 body ----------------------------------------
